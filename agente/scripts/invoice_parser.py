@@ -80,19 +80,46 @@ def _coerce_number(val):
 
 
 def _coerce_date(val):
-    """Valida que una fecha esté en formato YYYY-MM-DD. Si no, None."""
+    """Valida que una fecha esté en formato YYYY-MM-DD y sea semánticamente válida.
+    Si no, None.
+    """
     if not val or not isinstance(val, str):
         return None
     import re
-    if not re.match(r'^\d{4}-\d{2}-\d{2}$', val.strip()):
+    m = re.match(r'^(\d{4})-(\d{2})-(\d{2})$', val.strip())
+    if not m:
+        return None
+    year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    # Validación semántica básica
+    if not (1900 <= year <= 2100):
+        return None
+    if not (1 <= month <= 12):
+        return None
+    if not (1 <= day <= 31):
         return None
     return val.strip()
 
 
 def _normalize_parsed_data(parsed):
-    """Limpia y normaliza el JSON devuelto por la IA."""
+    """Limpia y normaliza el JSON devuelto por la IA.
+
+    Si el input es None, vacío o inválido, devuelve un dict con defaults.
+    """
     if not parsed or not isinstance(parsed, dict):
-        return None
+        return {
+            'invoice_number': None,
+            'invoice_date': None,
+            'due_date': None,
+            'vendor_name': None,
+            'vendor_tax_id': None,
+            'description': None,
+            'base_amount': None,
+            'tax_amount': None,
+            'total_amount': None,
+            'currency': 'EUR',
+            'category': 'otros',
+            'confidence_score': 0.5,
+        }
 
     return {
         'invoice_number': parsed.get('invoice_number') or None,

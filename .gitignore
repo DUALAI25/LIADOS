@@ -1,0 +1,30 @@
+# Secrets
+.env
+.env.bak*
+agente/credentials/*.json
+
+# Runtime data
+data/
+minio_data/
+pgdata/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# IDE / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+/tmp/
+
+# Docker
+.docker/

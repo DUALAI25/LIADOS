@@ -24,13 +24,13 @@ def save_invoice(data, source, source_id, inv_type='expense', minio_url=None):
 
     cur.execute("""
         INSERT INTO invoices (
-            type, source, source_id, invoice_number, invoice_date, due_date,
+            type, source, source_id, source_account, invoice_number, invoice_date, due_date,
             vendor_id, vendor_name, vendor_tax_id,
             base_amount, tax_amount, total_amount, currency,
             category_id, category_raw, description, tags,
             status, raw_file_url, parsed_json, content_hash, confidence_score
         ) VALUES (
-            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
             (SELECT id FROM categories WHERE name = %s LIMIT 1),
             %s, %s, %s, %s, %s, %s, %s, %s
         )
@@ -41,7 +41,7 @@ def save_invoice(data, source, source_id, inv_type='expense', minio_url=None):
             updated_at = NOW()
         RETURNING id
     """, (
-        inv_type, source, source_id,
+        inv_type, source, source_id, data.get('source_account'),
         data.get('invoice_number'),
         data.get('invoice_date'),
         data.get('due_date'),

@@ -46,6 +46,7 @@ CREATE TABLE invoices (
     type TEXT NOT NULL DEFAULT 'expense' CHECK (type IN ('income', 'expense')),
     source TEXT NOT NULL CHECK (source IN ('erp', 'gmail', 'manual')),
     source_id TEXT,
+    source_account TEXT,  -- multi-cuenta: principal, secundaria, etc.
     content_hash TEXT,
     invoice_number TEXT,
     invoice_date DATE,
@@ -80,6 +81,7 @@ CREATE INDEX idx_invoices_vendor ON invoices(vendor_id);
 CREATE INDEX idx_invoices_category ON invoices(category_id);
 CREATE INDEX idx_invoices_status ON invoices(status);
 CREATE INDEX idx_invoices_source ON invoices(source);
+CREATE INDEX idx_invoices_account ON invoices(source_account);
 CREATE INDEX idx_invoices_hash ON invoices(content_hash);
 CREATE INDEX idx_invoices_created ON invoices(created_at DESC);
 

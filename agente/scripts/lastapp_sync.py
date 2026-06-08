@@ -15,8 +15,9 @@ API_TOKEN = os.getenv('LASTAPP_API_TOKEN')
 
 def main():
     if not API_TOKEN:
-        logger.error("LASTAPP_API_TOKEN no configurado")
-        return
+        logger.error("LASTAPP_API_TOKEN no configurado en .env")
+        logger.error("   Añade LASTAPP_API_TOKEN=<tu_token>")
+        return 1
 
     headers = {'Authorization': f'Bearer {API_TOKEN}'}
     last_sync = get_last_sync('erp')
@@ -78,29 +79,44 @@ def main():
               f"Procesadas {processed} facturas, {errors} errores")
     update_last_sync('erp', status='error' if errors > 0 else 'ok')
     logger.info(f"Lastapp: {processed} procesadas, {errors} errores")
+    return 0 if errors == 0 else 1
 
 
 def _fetch_all(headers, url, params):
+    """Hace paginación completa de un endpoint.
+    Returns: lista completa de items
+    """
     results = []
     page = 1
     while True:
-        params['page'] = page
+        # Copia params para no contaminar entre páginas
+        page_params = {**params, 'page': page}
         try:
-            resp = requests.get(url, headers=headers, params=params, timeout=30)
+            resp = requests.get(url, headers=headers, params=page_params, timeout=30)
             resp.raise_for_status()
             data = resp.json()
             items = data.get('data', data.get('results', data.get('items', [])))
             results.extend(items)
+
+            # Detectar si hay más páginas
+            if not items:
+                break  # página vacía = fin
+
             pagination = data.get('pagination', data.get('meta', {}))
             total_pages = pagination.get('totalPages', pagination.get('lastPage', 1))
+
             if page >= total_pages:
                 break
             page += 1
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error fetching {url} page {page}: {e}")
+            break
         except Exception as e:
-            logger.error(f"Error fetching page {page}: {e}")
+            logger.error(f"Error inesperado en {url} page {page}: {e}")
             break
     return results
 
 
 if __name__ == '__main__':
-    main()
+    import sys
+    sys.exit(main())

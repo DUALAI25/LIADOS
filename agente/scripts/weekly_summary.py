@@ -57,10 +57,11 @@ def main():
     top_vendors = cur.fetchall()
 
     cur.execute("""
-        SELECT COUNT(*) FROM invoices
+        SELECT COUNT(*) AS pending_count FROM invoices
         WHERE status = 'pending' AND type = 'expense'
     """)
     pending = cur.fetchone()
+    pending_count = pending['pending_count'] if pending else 0
 
     conn.close()
 
@@ -81,7 +82,7 @@ def main():
         for v in top_vendors:
             msg += f"  • {v['name']}: {v['total']:.2f}€\n"
 
-    msg += f"\n*Pendientes de clasificar:* {pending['count']}"
+    msg += f"\n*Pendientes de clasificar:* {pending_count}"
 
     logger.info("Resumen semanal generado")
     logger.info(f"Resumen:\n{msg}")

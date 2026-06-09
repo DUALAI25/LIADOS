@@ -10,24 +10,47 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 API_URL = os.getenv('LASTAPP_API_URL', 'https://api.last.app/v2')
-API_TOKEN = os.getenv('LASTAPP_API_TOKEN')
+
+
+def _build_headers():
+    """Headers comunes para todas las llamadas a Last.app.
+
+    Last.app v2 exige, ademas de Authorization, un header organizationID
+    en cada peticion. locationID es opcional (si se omite, devuelve datos
+    de todos los locales de la organizacion).
+    """
+    token = os.getenv('LASTAPP_API_TOKEN')
+    org_id = os.getenv('LASTAPP_ORGANIZATION_ID')
+    location_id = os.getenv('LASTAPP_LOCATION_ID')
+
+    if not token:
+        raise RuntimeError("Falta LASTAPP_API_TOKEN en .env")
+    if not org_id:
+        raise RuntimeError("Falta LASTAPP_ORGANIZATION_ID en .env")
+    headers = {
+        'Authorization': 'Bearer ' + token,
+        'organizationID': org_id,
+    }
+    if location_id:
+        headers['locationID'] = location_id
+    return headers
 
 
 def main():
-    if not API_TOKEN:
-        logger.error("LASTAPP_API_TOKEN no configurado en .env")
-        logger.error("   Añade LASTAPP_API_TOKEN=<tu_token>")
+    try:
+        headers = _build_headers()
+    except RuntimeError as e:
+        logger.error(str(e))
         return 1
 
-    headers = {'Authorization': f'Bearer {API_TOKEN}'}
     last_sync = get_last_sync('erp')
     since = last_sync.strftime('%Y-%m-%dT%H:%M:%SZ')
 
     processed = 0
     errors = 0
 
-    bills = _fetch_all(headers, f'{API_URL}/bills', {'since': since})
-    logger.info(f"Lastapp: {len(bills)} facturas nuevas")
+    bills = _fetch_all(headers, API_URL + '/bills', {'since': since})
+    logger.info("Lastapp: " + str(len(bills)) + " facturas nuevas")
 
     for bill in bills:
         try:
@@ -35,7 +58,7 @@ def main():
             total = float(bill.get('total', 0) or 0)
 
             if is_duplicate_by_number(number, total, bill.get('customerName', '')):
-                logger.info(f"  Duplicado: {number}")
+                logger.info("  Duplicado: " + str(number))
                 continue
 
             data = {
@@ -52,14 +75,14 @@ def main():
                 'confidence_score': 1.0,
             }
             inv_id = save_invoice(data, source='erp', source_id=bill.get('id'), inv_type='income')
-            logger.info(f"  Guardada: {number} -> {inv_id}")
+            logger.info("  Guardada: " + str(number) + " -> " + str(inv_id))
             processed += 1
         except Exception as e:
-            logger.error(f"  Error con factura {bill.get('id')}: {e}")
+            logger.error("  Error con factura " + str(bill.get('id')) + ": " + str(e))
             errors += 1
 
-    payments = _fetch_all(headers, f'{API_URL}/payments', {'since': since})
-    logger.info(f"Lastapp: {len(payments)} pagos nuevos")
+    payments = _fetch_all(headers, API_URL + '/payments', {'since': since})
+    logger.info("Lastapp: " + str(len(payments)) + " pagos nuevos")
     for pay in payments:
         try:
             save_payment(
@@ -72,25 +95,26 @@ def main():
             )
             processed += 1
         except Exception as e:
-            logger.error(f"  Error con pago {pay.get('id')}: {e}")
+            logger.error("  Error con pago " + str(pay.get('id')) + ": " + str(e))
             errors += 1
 
     log_agent('lastapp_sync', 'info' if errors == 0 else 'warning',
-              f"Procesadas {processed} facturas, {errors} errores")
+              "Procesadas " + str(processed) + " facturas, " + str(errors) + " errores")
     update_last_sync('erp', status='error' if errors > 0 else 'ok')
-    logger.info(f"Lastapp: {processed} procesadas, {errors} errores")
+    logger.info("Lastapp: " + str(processed) + " procesadas, " + str(errors) + " errores")
     return 0 if errors == 0 else 1
 
 
 def _fetch_all(headers, url, params):
-    """Hace paginación completa de un endpoint.
+    """Hace paginacion completa de un endpoint.
     Returns: lista completa de items
     """
     results = []
     page = 1
     while True:
-        # Copia params para no contaminar entre páginas
-        page_params = {**params, 'page': page}
+        # Copia params para no contaminar entre paginas
+        page_params = dict(params)
+        page_params['page'] = page
         try:
             resp = requests.get(url, headers=headers, params=page_params, timeout=30)
             resp.raise_for_status()
@@ -98,9 +122,9 @@ def _fetch_all(headers, url, params):
             items = data.get('data', data.get('results', data.get('items', [])))
             results.extend(items)
 
-            # Detectar si hay más páginas
+            # Detectar si hay mas paginas
             if not items:
-                break  # página vacía = fin
+                break  # pagina vacia = fin
 
             pagination = data.get('pagination', data.get('meta', {}))
             total_pages = pagination.get('totalPages', pagination.get('lastPage', 1))
@@ -109,10 +133,10 @@ def _fetch_all(headers, url, params):
                 break
             page += 1
         except requests.exceptions.RequestException as e:
-            logger.error(f"Error fetching {url} page {page}: {e}")
+            logger.error("Error fetching " + url + " page " + str(page) + ": " + str(e))
             break
         except Exception as e:
-            logger.error(f"Error inesperado en {url} page {page}: {e}")
+            logger.error("Error inesperado en " + url + " page " + str(page) + ": " + str(e))
             break
     return results
 

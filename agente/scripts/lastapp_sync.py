@@ -3,7 +3,7 @@ import requests
 import logging
 from datetime import datetime
 
-from db_writer import save_invoice, save_payment, update_last_sync, get_last_sync, log_agent
+from db_writer import save_invoice, save_payment, save_orphan_payment, update_last_sync, get_last_sync, log_agent, get_conn
 from dedup_checker import is_duplicate_by_number
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
@@ -85,14 +85,36 @@ def main():
     logger.info("Lastapp: " + str(len(payments)) + " pagos nuevos")
     for pay in payments:
         try:
-            save_payment(
-                invoice_id=None,
-                invoice_number=pay.get('invoiceNumber') or pay.get('invoice_number'),
-                payment_date=pay.get('date'),
-                amount=float(pay.get('amount', 0) or 0),
-                source=pay.get('method', 'tarjeta'),
-                source_detail=pay.get('detail')
-            )
+            invoice_number = pay.get('invoiceNumber') or pay.get('invoice_number')
+            source_payment_id = str(pay.get('id')) if pay.get('id') else None
+            amount = float(pay.get('amount', 0) or 0)
+            payment_date = pay.get('date')
+            method = pay.get('method', 'tarjeta')
+            source_detail = pay.get('detail')
+
+            found_id = _find_invoice_by_number(invoice_number) if invoice_number else None
+
+            if found_id:
+                logger.info("  Pago enlazado: %s -> %s", invoice_number, found_id)
+                save_payment(
+                    invoice_id=found_id,
+                    payment_date=payment_date,
+                    amount=amount,
+                    source=method,
+                    source_detail=source_detail,
+                )
+            else:
+                logger.info("  Pago huerfano: %s - %s", invoice_number, amount)
+                save_orphan_payment(
+                    source='lastapp',
+                    source_payment_id=source_payment_id,
+                    invoice_number=invoice_number,
+                    payment_date=payment_date,
+                    amount=amount,
+                    method=method,
+                    source_detail=source_detail,
+                    raw_json=pay,
+                )
             processed += 1
         except Exception as e:
             logger.error("  Error con pago " + str(pay.get('id')) + ": " + str(e))
@@ -103,6 +125,20 @@ def main():
     update_last_sync('erp', status='error' if errors > 0 else 'ok')
     logger.info("Lastapp: " + str(processed) + " procesadas, " + str(errors) + " errores")
     return 0 if errors == 0 else 1
+
+
+def _find_invoice_by_number(invoice_number):
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT id FROM invoices WHERE invoice_number = %s ORDER BY created_at DESC LIMIT 1",
+            (invoice_number,)
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
 
 
 def _fetch_all(headers, url, params):

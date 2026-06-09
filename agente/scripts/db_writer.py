@@ -138,6 +138,29 @@ def save_payment(invoice_id, payment_date, amount, source, source_detail=None, i
     conn.close()
     return invoice_id
 
+def save_orphan_payment(source, source_payment_id, invoice_number, payment_date,
+                        amount, method, source_detail, raw_json):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO orphan_payments
+            (source, source_payment_id, invoice_number, payment_date,
+             amount, method, source_detail, raw_json)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (source, source_payment_id) DO NOTHING
+        RETURNING id
+    """, (source, source_payment_id, invoice_number, payment_date,
+          amount, method, source_detail, json.dumps(raw_json)))
+    row = cur.fetchone()
+    conn.commit()
+    conn.close()
+    if row:
+        logger.info("Pago huerfano guardado: %s - %s (id=%s)", invoice_number, amount, row[0])
+        return row[0]
+    else:
+        logger.info("Pago huerfano duplicado (omitido): %s", source_payment_id)
+        return None
+
 def log_agent(source, level, message, details=None):
     conn = get_conn()
     cur = conn.cursor()

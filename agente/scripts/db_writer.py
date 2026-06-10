@@ -140,6 +140,14 @@ def save_payment(invoice_id, payment_date, amount, source, source_detail=None, i
 
 def save_orphan_payment(source, source_payment_id, invoice_number, payment_date,
                         amount, method, source_detail, raw_json):
+    """
+    DEPRECATED para Last.app (2026-06-10): la API de Last.app v2 siempre
+    incluye billId en cada pago, asi que NO hay huerfanos desde esa fuente.
+    Esta funcion se mantiene para uso futuro desde Gmail sync, donde un
+    pago puede llegar en un email suelto sin factura adjunta.
+
+    NO LLAMAR desde agente/scripts/lastapp_sync.py.
+    """
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""

@@ -3,7 +3,7 @@ import requests
 import logging
 from datetime import datetime, timezone
 
-from db_writer import save_invoice, save_payment, save_orphan_payment, update_last_sync, get_last_sync, log_agent
+from db_writer import save_invoice, save_payment, update_last_sync, get_last_sync, log_agent
 from dedup_checker import is_duplicate_by_number
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
@@ -107,7 +107,6 @@ def main():
             amount = float(pay.get('amount', 0)) / 100
             payment_date = pay.get('creationTime')
             method = pay.get('type', 'tarjeta')
-            source_payment_id = str(pay.get('id')) if pay.get('id') else None
 
             if bill_id:
                 logger.info("  Pago enlazado: %s -> %s (%.2f EUR)", method, bill_id, amount)
@@ -116,10 +115,10 @@ def main():
                     payment_date=payment_date,
                     amount=amount,
                     source=method,
-                    source_detail=source_payment_id,
+                    source_detail=None,
                 )
             else:
-                logger.warning("  Pago sin billId (omitido): %s", source_payment_id)
+                logger.warning("  Pago sin billId (omitido): %s", str(pay.get('id')))
             processed += 1
         except Exception as e:
             logger.error("  Error con pago %s: %s", str(pay.get('id')), str(e))

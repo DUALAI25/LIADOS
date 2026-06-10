@@ -1,0 +1,99 @@
+"""Orquestador principal: ejecuta Last.app sync + Gmail collector en orden.
+
+Uso:
+    python3 -m agente.scripts.run_all                # ejecucion normal
+    python3 -m agente.scripts.run_all --skip gmail   # saltar gmail
+    python3 -m agente.scripts.run_all --days 7       # override dias iniciales gmail
+    python3 -m agente.scripts.run_all --dry-run      # solo mostrar lo que haria
+"""
+import argparse
+import logging
+import os
+import subprocess
+import sys
+from datetime import datetime, timezone
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+logger = logging.getLogger(__name__)
+
+
+def run_block(name, cmd, dry_run=False):
+    """Ejecuta un subproceso y reporta resultado. Exit code 0 = OK."""
+    logger.info("=" * 60)
+    logger.info("Ejecutando bloque: %s", name)
+    logger.info("  cmd: %s", ' '.join(cmd))
+    logger.info("=" * 60)
+    if dry_run:
+        logger.info("[DRY-RUN] Saltando ejecucion de %s", name)
+        return True
+    start = datetime.now(timezone.utc)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+        if result.returncode == 0:
+            logger.info("  %s OK (%.1fs)", name, elapsed)
+            if result.stdout.strip():
+                last_lines = result.stdout.strip().splitlines()[-5:]
+                for line in last_lines:
+                    logger.info("  %s", line)
+            return True
+        else:
+            logger.error("  %s FALLO (rc=%d, %.1fs)", name, result.returncode, elapsed)
+            logger.error("  stderr: %s", result.stderr[:500])
+            return False
+    except subprocess.TimeoutExpired:
+        logger.error("  %s TIMEOUT (>600s)", name)
+        return False
+    except Exception as e:
+        logger.error("  %s ERROR: %s", name, e)
+        return False
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Orquestador Liados")
+    parser.add_argument("--skip-lastapp", action="store_true", help="Saltar Last.app sync")
+    parser.add_argument("--skip-gmail", action="store_true", help="Saltar Gmail collector")
+    parser.add_argument("--days", type=int, help="Override GMAIL_INITIAL_DAYS para esta ejecucion")
+    parser.add_argument("--dry-run", action="store_true", help="Solo mostrar que haria")
+    args = parser.parse_args()
+
+    env = os.environ.copy()
+    if args.days:
+        env["GMAIL_INITIAL_DAYS"] = str(args.days)
+        logger.info("Override GMAIL_INITIAL_DAYS=%d", args.days)
+
+    base_cmd = ["python3"]
+    script_dir = os.path.join(os.path.dirname(__file__))
+    blocks = []
+
+    if not args.skip_lastapp:
+        blocks.append(("Last.app sync", base_cmd + [os.path.join(script_dir, "lastapp_sync.py")]))
+
+    if not args.skip_gmail:
+        blocks.append(("Gmail collector", base_cmd + [os.path.join(script_dir, "gmail_collector.py")]))
+
+    if not blocks:
+        logger.error("Todos los bloques saltados, nada que hacer")
+        return 1
+
+    results = []
+    for name, cmd in blocks:
+        ok = run_block(name, cmd, dry_run=args.dry_run)
+        results.append((name, ok))
+
+    logger.info("=" * 60)
+    logger.info("RESUMEN")
+    logger.info("=" * 60)
+    failed = [name for name, ok in results if not ok]
+    for name, ok in results:
+        status = "OK" if ok else "FAIL"
+        logger.info("  [%s] %s", status, name)
+    if failed:
+        logger.error("Bloques fallidos: %s", failed)
+        return 1
+    logger.info("Todos los bloques OK")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -223,6 +223,10 @@ def main():
         sys.exit(1)
 
     last_sync = get_last_sync('gmail')
+    # Defensivo: si la BD devuelve datetime naive (sin tz), lo marcamos como UTC
+    if last_sync is not None and last_sync.tzinfo is None:
+        last_sync = last_sync.replace(tzinfo=timezone.utc)
+        logger.warning("last_sync de BD era naive, asumido UTC")
     if last_sync and last_sync.year > 2000:
         since_date = last_sync
         logger.info("Gmail: incremental desde %s", since_date.isoformat())

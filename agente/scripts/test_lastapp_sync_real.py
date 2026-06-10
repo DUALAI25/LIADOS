@@ -217,10 +217,11 @@ class TestLastappSyncBills(unittest.TestCase):
     @patch('lastapp_sync.save_payment')
     @patch('lastapp_sync.save_invoice')
     @patch('lastapp_sync.get_last_sync')
+    @patch('lastapp_sync._find_invoice_by_source_id')
     @patch('lastapp_sync._fetch_all')
     @patch('lastapp_sync._build_headers')
     def test_payment_links_by_billId_not_number(
-        self, mock_headers, mock_fetch, mock_last_sync, mock_save_inv, mock_save_pay
+        self, mock_headers, mock_fetch, mock_find_inv, mock_last_sync, mock_save_inv, mock_save_pay
     ):
         """Pago enlaza por billId (UUID directo), no por invoice_number."""
         from datetime import datetime
@@ -230,6 +231,7 @@ class TestLastappSyncBills(unittest.TestCase):
         mock_last_sync.return_value = datetime(2026, 6, 1)
         mock_save_inv.return_value = 'inv-uuid-1'
         mock_save_pay.return_value = 'pay-uuid-1'
+        mock_find_inv.return_value = 'inv-uuid-from-bill'
 
         mock_fetch.side_effect = [
             [],                # bills (vacio, no importa)
@@ -243,7 +245,7 @@ class TestLastappSyncBills(unittest.TestCase):
         lastapp_sync.main()
 
         mock_save_pay.assert_called_once_with(
-            invoice_id='bill-uuid-1',
+            invoice_id='inv-uuid-from-bill',
             payment_date='2026-06-01T11:29:05.000Z',
             amount=13.00,
             source='card',

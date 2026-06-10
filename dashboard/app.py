@@ -4,10 +4,12 @@ Sirve un solo HTML con 4 paneles: KPIs, top vendors, facturas recientes, resumen
 Datos en vivo desde Postgres.
 """
 import os
+import secrets
 from datetime import date, datetime
 from decimal import Decimal
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
@@ -16,6 +18,21 @@ from dashboard.agent import ask as agent_ask
 
 app = FastAPI(title="Liados Dashboard", version="1.0.0")
 
+security = HTTPBasic()
+
+
+def get_current_user(credentials: HTTPBasicCredentials = Depends(security)):
+    expected_user = os.getenv("DASHBOARD_USER", "jefe")
+    expected_pass = os.getenv("DASHBOARD_PASSWORD", "jefe2026")
+    if not (secrets.compare_digest(credentials.username, expected_user)
+            and secrets.compare_digest(credentials.password, expected_pass)):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Credenciales incorrectas",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
+
 
 def get_conn():
     return psycopg2.connect(
@@ -23,7 +40,7 @@ def get_conn():
         port=int(os.getenv("DB_PORT", "5432")),
         dbname=os.getenv("DB_NAME", "desliado"),
         user=os.getenv("DB_USER", "desliado"),
-        password=os.getenv("DB_PASSWORD", "desliado_pass_2026"),
+        password=os.environ["DB_PASSWORD"],
         connect_timeout=5,
     )
 
@@ -49,7 +66,7 @@ def to_dict(row):
 
 # --- API JSON ---
 @app.get("/api/kpis")
-def api_kpis():
+def api_kpis(user: str = Depends(get_current_user)):
     rows = q("""
         SELECT
             COALESCE(SUM(CASE WHEN type='income'  AND invoice_date >= date_trunc('month', CURRENT_DATE) THEN total_amount END), 0) AS ventas_mes,
@@ -73,7 +90,7 @@ def api_kpis():
 
 
 @app.get("/api/top-vendors")
-def api_top_vendors(limit: int = 8):
+def api_top_vendors(limit: int = 8, user: str = Depends(get_current_user)):
     rows = q("""
         SELECT v.name AS vendor,
                COUNT(i.id) AS n_facturas,
@@ -86,7 +103,7 @@ def api_top_vendors(limit: int = 8):
 
 
 @app.get("/api/recent-invoices")
-def api_recent_invoices(limit: int = 12):
+def api_recent_invoices(limit: int = 12, user: str = Depends(get_current_user)):
     rows = q("""
         SELECT invoice_number, invoice_date, type, status,
                COALESCE(vendor_name, '—') AS vendor,
@@ -98,7 +115,7 @@ def api_recent_invoices(limit: int = 12):
 
 
 @app.get("/api/monthly")
-def api_monthly():
+def api_monthly(user: str = Depends(get_current_user)):
     rows = q("""
         SELECT to_char(month, 'YYYY-MM') AS mes,
                ROUND(income::numeric, 2)  AS ingresos,
@@ -111,7 +128,7 @@ def api_monthly():
 
 # --- Agente de chat ---
 @app.post("/api/chat")
-def api_chat(payload: dict):
+def api_chat(payload: dict, user: str = Depends(get_current_user)):
     """Endpoint de chat con el agente financiero. Body: {"question": "..."}"""
     question = payload.get("question", "").strip()
     if not question:
@@ -400,12 +417,12 @@ load().catch(e => { document.body.innerHTML = '<h1>Error: '+e.message+'</h1>'; }
 
 
 @app.get("/", response_class=HTMLResponse)
-def index():
+def index(user: str = Depends(get_current_user)):
     return HTML
 
 
 @app.get("/healthz")
-def health():
+def health(user: str = Depends(get_current_user)):
     try:
         q("SELECT 1")
         return {"status": "ok", "db": "ok"}

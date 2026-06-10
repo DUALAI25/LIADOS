@@ -1,35 +1,11 @@
 import os
 import json
 import logging
-import psycopg2
-import psycopg2.extras
 from datetime import datetime
 
-logger = logging.getLogger(__name__)
+from db_connection import get_conn
 
-def get_conn():
-    """Conexion a la BD. Falla rapido si falta cualquier variable."""
-    required = {
-        'host': os.getenv('DB_HOST'),
-        'port': os.getenv('DB_PORT', '5432'),
-        'dbname': os.getenv('DB_NAME'),
-        'user': os.getenv('DB_USER'),
-        'password': os.getenv('DB_PASSWORD'),
-    }
-    missing = [k for k, v in required.items() if not v]
-    if missing:
-        raise RuntimeError(
-            "Faltan variables de entorno para la BD: "
-            + ', '.join('DB_' + k.upper() for k in missing)
-            + ". Configuralas en .env (ver .env.example)."
-        )
-    return psycopg2.connect(
-        host=required['host'],
-        port=int(required['port']),
-        dbname=required['dbname'],
-        user=required['user'],
-        password=required['password'],
-    )
+logger = logging.getLogger(__name__)
 
 def save_invoice(data, source, source_id, inv_type='expense', minio_url=None):
     conn = get_conn()

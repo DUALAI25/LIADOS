@@ -5,18 +5,7 @@ Dos estrategias:
 1. Por hash MD5 del contenido (mismo PDF = duplicado seguro)
 2. Por número + monto + vendor (mismo número con datos similares = probable duplicado)
 """
-import os
-import psycopg2
-
-
-def get_conn():
-    return psycopg2.connect(
-        host=os.getenv('DB_HOST', 'localhost'),
-        port=int(os.getenv('DB_PORT', '5432')),
-        dbname=os.getenv('DB_NAME', 'desliado'),
-        user=os.getenv('DB_USER', 'desliado'),
-        password=os.getenv('DB_PASSWORD', 'desliado_pass_2026')
-    )
+from db_connection import get_conn
 
 
 def is_duplicate_by_hash(content_hash):

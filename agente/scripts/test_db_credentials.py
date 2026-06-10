@@ -56,3 +56,11 @@ def test_get_conn_fails_without_db_host(monkeypatch):
     with pytest.raises(RuntimeError) as exc_info:
         db_writer.get_conn()
     assert "DB_HOST" in str(exc_info.value)
+
+
+def test_db_connection_has_no_hardcoded_password():
+    """db_connection.get_conn NO debe tener passwords hardcodeados."""
+    import inspect
+    import db_connection
+    source = inspect.getsource(db_connection.get_conn)
+    assert "desliado_pass" not in source, "PASS HARDCODEADA en db_connection"

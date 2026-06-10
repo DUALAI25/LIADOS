@@ -4,18 +4,10 @@ import requests
 import psycopg2
 import psycopg2.extras
 
+from db_connection import get_conn
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
-
-
-def get_conn():
-    return psycopg2.connect(
-        host=os.getenv('DB_HOST', 'localhost'),
-        port=int(os.getenv('DB_PORT', '5432')),
-        dbname=os.getenv('DB_NAME', 'desliado'),
-        user=os.getenv('DB_USER', 'desliado'),
-        password=os.getenv('DB_PASSWORD', 'desliado_pass_2026')
-    )
 
 
 def main():

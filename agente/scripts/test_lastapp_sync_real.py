@@ -72,6 +72,14 @@ PAYMENT_DELETED = dict(PAYMENT_FIXTURE, id='pay-deleted', deleted=True)
 
 class TestLastappSyncBills(unittest.TestCase):
 
+    def setUp(self):
+        import os
+        os.environ['DB_HOST'] = 'localhost'
+        os.environ['DB_PORT'] = '5432'
+        os.environ['DB_NAME'] = 'test'
+        os.environ['DB_USER'] = 'test'
+        os.environ['DB_PASSWORD'] = 'test'
+
     @patch('db_writer.get_conn')
     @patch('db_writer.save_invoice')
     @patch('db_writer.get_last_sync')

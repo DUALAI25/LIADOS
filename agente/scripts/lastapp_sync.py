@@ -113,7 +113,7 @@ def main():
                     amount=amount,
                     method=method,
                     source_detail=source_detail,
-                    raw_json=pay,
+                    raw_json=None,
                 )
             processed += 1
         except Exception as e:

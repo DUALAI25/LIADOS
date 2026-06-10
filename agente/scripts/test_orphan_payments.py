@@ -181,7 +181,7 @@ class TestOrphanPayments(unittest.TestCase):
                 amount=amount,
                 method=pay.get('method', 'tarjeta'),
                 source_detail=pay.get('detail'),
-                raw_json=pay,
+                raw_json=None,
             )
 
         mock_save_pay.assert_not_called()
@@ -191,7 +191,7 @@ class TestOrphanPayments(unittest.TestCase):
         self.assertEqual(args['amount'], 50.0)
         self.assertEqual(args['method'], 'efectivo')
         self.assertEqual(args['source'], 'lastapp')
-        self.assertEqual(args['raw_json'], pay)
+        self.assertIsNone(args['raw_json'])
 
     @patch('db_writer.get_conn')
     def test_orphan_not_auto_migrated(self, mock_get_conn):

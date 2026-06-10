@@ -109,14 +109,19 @@ def main():
             method = pay.get('type', 'tarjeta')
 
             if bill_id:
-                logger.info("  Pago enlazado: %s -> %s (%.2f EUR)", method, bill_id, amount)
-                save_payment(
-                    invoice_id=bill_id,
-                    payment_date=payment_date,
-                    amount=amount,
-                    source=method,
-                    source_detail=None,
-                )
+                # Resolver el internal invoice ID desde source_id (Last.app bill UUID)
+                inv_internal = _find_invoice_by_source_id(bill_id)
+                if inv_internal:
+                    logger.info("  Pago enlazado: %s -> %s (%.2f EUR)", method, bill_id, amount)
+                    save_payment(
+                        invoice_id=inv_internal,
+                        payment_date=payment_date,
+                        amount=amount,
+                        source=method,
+                        source_detail=None,
+                    )
+                else:
+                    logger.warning("  Pago sin invoice en BD (billId=%s): %s", bill_id, str(pay.get('id')))
             else:
                 logger.warning("  Pago sin billId (omitido): %s", str(pay.get('id')))
             processed += 1
@@ -129,6 +134,21 @@ def main():
     update_last_sync('erp', status='error' if errors > 0 else 'ok')
     logger.info("Lastapp: " + str(processed) + " procesadas, " + str(errors) + " errores")
     return 0 if errors == 0 else 1
+
+
+def _find_invoice_by_source_id(source_id):
+    from db_connection import get_conn
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT id FROM invoices WHERE source = 'erp' AND source_id = %s LIMIT 1",
+            (source_id,)
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
 
 
 def _fetch_all(headers, url, params):

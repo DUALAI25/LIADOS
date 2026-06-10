@@ -95,7 +95,7 @@ def list_invoices(
             c.name AS category,
             i.total_amount,
             i.currency,
-            i.confidence
+            i.confidence_score
         FROM invoices i
         LEFT JOIN vendors v ON v.id = i.vendor_id
         LEFT JOIN categories c ON c.id = i.category_id

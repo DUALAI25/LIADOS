@@ -11,6 +11,9 @@ from fastapi.responses import HTMLResponse, JSONResponse
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
+# Agente de chat con OpenCode Go + MCP
+from dashboard.agent import ask as agent_ask
+
 app = FastAPI(title="Liados Dashboard", version="1.0.0")
 
 
@@ -104,6 +107,20 @@ def api_monthly():
         FROM monthly_net ORDER BY month DESC LIMIT 6;
     """)
     return [to_dict(r) for r in rows]
+
+
+# --- Agente de chat ---
+@app.post("/api/chat")
+def api_chat(payload: dict):
+    """Endpoint de chat con el agente financiero. Body: {"question": "..."}"""
+    question = payload.get("question", "").strip()
+    if not question:
+        return JSONResponse({"error": "Pregunta vacia"}, status_code=400)
+    try:
+        answer = agent_ask(question)
+        return {"question": question, "answer": answer}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 # --- HTML ---

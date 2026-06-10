@@ -239,7 +239,7 @@ class TestLastappSyncBills(unittest.TestCase):
             payment_date='2026-06-01T11:29:05.000Z',
             amount=13.00,
             source='card',
-            source_detail='pay-uuid-1',
+            source_detail=None,
         )
 
 

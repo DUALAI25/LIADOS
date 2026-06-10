@@ -173,3 +173,34 @@ mkdir -p data/invoices/{raw,processed,temp}
 ## 📜 Licencia
 
 Privado — DualAI / Antonio Serrano.
+
+---
+
+## 🎬 Demo rápida (3 pasos)
+
+Para enseñar el sistema funcionando con datos realistas en 5 minutos:
+
+```bash
+# 1. Cargar 80 facturas demo (necesita DB 'desliado' viva)
+cd /home/openclaw/liados
+.venv/bin/python -m agente.scripts.seed_demo --wipe
+
+# 2. Probar el MCP server (6 tools disponibles)
+.venv/bin/python -c "
+import sys; sys.path.insert(0, '.')
+from agente.mcp.invoices_server import list_invoices, monthly_summary, vendor_summary
+print(list_invoices(type='expense', limit=5))
+print(monthly_summary(year=2026))
+print(vendor_summary(limit=5))
+"
+
+# 3. Orquestador end-to-end en dry-run
+.venv/bin/python -m agente.scripts.run_all --dry-run
+```
+
+### Datos que genera el seed
+- **24 facturas expense** de 10 proveedores reales (Coca-Cola, Makro, Endesa, Telefónica, Mahou, Seguros Catalana Occidente, etc.)
+- **56 facturas income** de 4 locales TPV (Liados Centro, Malasaña, La Latina, Chueca)
+- **13 pagos** asociados a facturas pagadas
+- **6 agent_logs** simulando actividad de los últimos 14 días
+- **Margen neto mensual** entre 19k€ y 30k€ (realista para 4 locales)

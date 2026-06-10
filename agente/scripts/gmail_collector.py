@@ -21,11 +21,16 @@ from pathlib import Path
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
-# Carga .env manualmente (este script puede correr sin venv)
-WORKSPACE = Path(__file__).resolve().parent.parent.parent
+# Carga .env manualmente (este script puede correr sin venv, standalone o via -m)
+try:
+    WORKSPACE = Path(__file__).resolve().parent.parent.parent
+except NameError:
+    WORKSPACE = Path(os.getcwd())
 ENV_FILE = WORKSPACE / '.env'
 
 def load_env():
+    """Carga variables del .env en os.environ. Usa setdefault para no pisar
+    valores ya inyectados por el orquestador (run_all.py)."""
     if ENV_FILE.exists():
         with open(ENV_FILE) as f:
             for line in f:
@@ -33,8 +38,11 @@ def load_env():
                 if line and not line.startswith('#') and '=' in line:
                     key, _, val = line.partition('=')
                     os.environ.setdefault(key.strip(), val.strip().strip('"').strip("'"))
+    else:
+        logger = logging.getLogger(__name__)
+        logger.warning(".env no encontrado en %s, usando variables de entorno existentes", WORKSPACE)
 
-# Cargar env al importar
+# Cargar env ANTES de cualquier import que use BD o APIs externas
 load_env()
 
 from invoice_parser import parse_invoice

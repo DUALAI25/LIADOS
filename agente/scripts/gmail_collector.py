@@ -247,6 +247,14 @@ def main():
     search_query = f"{SEARCH_QUERY} after:{date_filter}"
     logger.info("Gmail query: %s", search_query)
 
+    # Marcar sync como en curso ANTES de procesar. Asi, si el proceso muere
+    # por timeout/exception, al menos sabemos que llego a empezar.
+    try:
+        update_last_sync('gmail', status='warning')
+        logger.info("Gmail: sync marcado como en curso en sync_control")
+    except Exception as e:
+        logger.warning("No se pudo marcar sync como en curso: %s", str(e))
+
     total_processed = 0
     total_errors = 0
 
@@ -255,7 +263,10 @@ def main():
         total_processed += processed
         total_errors += errors
 
-    update_last_sync('gmail', status='error' if total_errors > 0 else 'ok')
+    try:
+        update_last_sync('gmail', status='error' if total_errors > 0 else 'ok')
+    except Exception as e:
+        logger.error("No se pudo actualizar sync_control al final: %s", str(e))
     logger.info("")
     logger.info("=" * 60)
     logger.info(f"📊 RESUMEN TOTAL: {total_processed} procesadas, {total_errors} errores")

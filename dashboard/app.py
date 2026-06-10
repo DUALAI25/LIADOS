@@ -127,6 +127,7 @@ def api_chat(payload: dict):
 HTML = """<!DOCTYPE html>
 <html lang="es"><head>
 <meta charset="utf-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍻</text></svg>">
 <title>Liados · Dashboard</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
@@ -222,6 +223,179 @@ async function load() {
 }
 load().catch(e => { document.body.innerHTML = '<h1>Error: '+e.message+'</h1>'; });
 </script>
+
+<!-- ===== CHAT PANEL ===== -->
+<style>
+  .chat-fab {
+    position: fixed; bottom: 24px; right: 24px;
+    width: 56px; height: 56px; border-radius: 50%;
+    background: #8b5cf6; color: white; border: none;
+    font-size: 24px; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    z-index: 1000; transition: transform 0.2s;
+  }
+  .chat-fab:hover { transform: scale(1.1); }
+  .chat-panel {
+    position: fixed; bottom: 90px; right: 24px;
+    width: 380px; height: 520px; max-height: 80vh;
+    background: #1e293b; border: 1px solid #334155; border-radius: 12px;
+    display: none; flex-direction: column;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5); z-index: 999;
+    font-size: 14px;
+  }
+  .chat-panel.open { display: flex; }
+  .chat-header {
+    padding: 14px 16px; border-bottom: 1px solid #334155;
+    display: flex; justify-content: space-between; align-items: center;
+    background: #0f172a; border-radius: 12px 12px 0 0;
+  }
+  .chat-header h3 { font-size: 14px; color: #f8fafc; margin: 0; }
+  .chat-header .close { background: none; border: none; color: #94a3b8; cursor: pointer; font-size: 20px; }
+  .chat-header .close:hover { color: #f8fafc; }
+  .chat-messages {
+    flex: 1; overflow-y: auto; padding: 16px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .chat-messages::-webkit-scrollbar { width: 6px; }
+  .chat-messages::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+  .msg { padding: 10px 14px; border-radius: 12px; max-width: 85%; line-height: 1.4; word-wrap: break-word; }
+  .msg.user {
+    align-self: flex-end; background: #8b5cf6; color: white;
+    border-bottom-right-radius: 4px;
+  }
+  .msg.bot {
+    align-self: flex-start; background: #334155; color: #e2e8f0;
+    border-bottom-left-radius: 4px;
+  }
+  .msg.error { background: #7c2d12; color: #fed7aa; align-self: flex-start; }
+  .msg.thinking {
+    align-self: flex-start; background: #334155; color: #94a3b8;
+    font-style: italic; display: flex; align-items: center; gap: 8px;
+  }
+  .typing-dots { display: inline-flex; gap: 3px; }
+  .typing-dots span {
+    width: 6px; height: 6px; background: #94a3b8; border-radius: 50%;
+    animation: typing 1.4s infinite ease-in-out;
+  }
+  .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+  .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes typing {
+    0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+    30% { transform: translateY(-4px); opacity: 1; }
+  }
+  .chat-input {
+    display: flex; padding: 12px; border-top: 1px solid #334155; gap: 8px;
+  }
+  .chat-input input {
+    flex: 1; padding: 10px 14px; border-radius: 8px;
+    border: 1px solid #475569; background: #0f172a; color: #e2e8f0;
+    font-size: 13px; outline: none;
+  }
+  .chat-input input:focus { border-color: #8b5cf6; }
+  .chat-input input:disabled { opacity: 0.5; }
+  .chat-input button {
+    padding: 10px 16px; background: #8b5cf6; color: white;
+    border: none; border-radius: 8px; cursor: pointer; font-size: 14px;
+  }
+  .chat-input button:disabled { background: #475569; cursor: not-allowed; }
+  .chat-input button:hover:not(:disabled) { background: #7c3aed; }
+  @media (max-width: 480px) {
+    .chat-panel { width: calc(100vw - 32px); right: 16px; bottom: 80px; }
+  }
+</style>
+
+<button class="chat-fab" id="chatFab" title="Abrir chat">💬</button>
+
+<div class="chat-panel" id="chatPanel">
+  <div class="chat-header">
+    <h3>🤖 Asistente Liados</h3>
+    <button class="close" id="chatClose" title="Cerrar">×</button>
+  </div>
+  <div class="chat-messages" id="chatMessages">
+    <div class="msg bot">¡Hola! Pregúntame lo que quieras sobre tus facturas, gastos o ventas. Ej: <em>"¿Cuánto he gastado este mes?"</em></div>
+  </div>
+  <form class="chat-input" id="chatForm">
+    <input type="text" id="chatInput" placeholder="Escribe tu pregunta…" autocomplete="off" maxlength="500" />
+    <button type="submit" id="chatSend">Enviar</button>
+  </form>
+</div>
+
+<script>
+(function() {
+  const fab = document.getElementById('chatFab');
+  const panel = document.getElementById('chatPanel');
+  const close = document.getElementById('chatClose');
+  const form = document.getElementById('chatForm');
+  const input = document.getElementById('chatInput');
+  const send = document.getElementById('chatSend');
+  const messages = document.getElementById('chatMessages');
+
+  fab.addEventListener('click', () => {
+    panel.classList.toggle('open');
+    if (panel.classList.contains('open')) input.focus();
+  });
+  close.addEventListener('click', () => panel.classList.remove('open'));
+
+  function addMsg(text, type) {
+    const div = document.createElement('div');
+    div.className = 'msg ' + type;
+    div.innerHTML = text;
+    messages.appendChild(div);
+    messages.scrollTop = messages.scrollHeight;
+    return div;
+  }
+
+  function addThinking() {
+    const div = document.createElement('div');
+    div.className = 'msg thinking';
+    div.innerHTML = 'Pensando <span class="typing-dots"><span></span><span></span><span></span></span>';
+    messages.appendChild(div);
+    messages.scrollTop = messages.scrollHeight;
+    return div;
+  }
+
+  function esc(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML.replace(/\\n/g, '<br>');
+  }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const q = input.value.trim();
+    if (!q) return;
+
+    addMsg(esc(q), 'user');
+    input.value = '';
+    input.disabled = true;
+    send.disabled = true;
+    const thinking = addThinking();
+
+    try {
+      const resp = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: q })
+      });
+      thinking.remove();
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ error: 'Error desconocido' }));
+        addMsg('⚠️ ' + esc(err.error || 'Error ' + resp.status), 'error');
+      } else {
+        const data = await resp.json();
+        addMsg(esc(data.answer || '(sin respuesta)'), 'bot');
+      }
+    } catch (err) {
+      thinking.remove();
+      addMsg('⚠️ Error de conexión: ' + esc(err.message), 'error');
+    } finally {
+      input.disabled = false;
+      send.disabled = false;
+      input.focus();
+    }
+  });
+})();
+</script>
+
 </body></html>"""
 
 

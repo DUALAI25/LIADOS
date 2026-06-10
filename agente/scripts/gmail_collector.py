@@ -16,6 +16,7 @@ import json
 import hashlib
 import base64
 import logging
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -37,7 +38,7 @@ def load_env():
 load_env()
 
 from invoice_parser import parse_invoice
-from db_writer import save_invoice, log_agent, update_last_sync
+from db_writer import save_invoice, log_agent, update_last_sync, get_last_sync
 from dedup_checker import is_duplicate_by_hash, mark_as_duplicate
 from storage import save_raw_file
 
@@ -46,6 +47,7 @@ logger = logging.getLogger(__name__)
 
 SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
 SEARCH_QUERY = '(factura OR invoice OR receipt OR recibo OR "nota de cargo" OR albarán) has:attachment'
+INITIAL_DAYS = int(os.getenv('GMAIL_INITIAL_DAYS', '30'))
 
 
 def load_env_dict():
@@ -94,8 +96,10 @@ def get_service(account):
         return None
 
 
-def process_account(account):
+def process_account(account, search_query=None):
     """Procesa todas las facturas de una cuenta"""
+    if search_query is None:
+        search_query = SEARCH_QUERY
     logger.info(f"{'='*60}")
     logger.info(f"📧 Procesando cuenta: {account}")
     logger.info(f"{'='*60}")
@@ -115,7 +119,7 @@ def process_account(account):
     next_token = None
     while True:
         results = service.users().messages().list(
-            userId='me', q=SEARCH_QUERY, maxResults=50, pageToken=next_token
+            userId='me', q=search_query, maxResults=50, pageToken=next_token
         ).execute()
         all_messages.extend(results.get('messages', []))
         next_token = results.get('nextPageToken')
@@ -218,11 +222,24 @@ def main():
         logger.error("Añade: GMAIL_ACCOUNTS=cuenta1,cuenta2")
         sys.exit(1)
 
+    last_sync = get_last_sync('gmail')
+    if last_sync and last_sync.year > 2000:
+        since_date = last_sync
+        logger.info("Gmail: incremental desde %s", since_date.isoformat())
+    else:
+        since_date = datetime.now(timezone.utc) - timedelta(days=INITIAL_DAYS)
+        logger.info("Gmail: primera ejecucion, procesando ultimos %d dias desde %s",
+                     INITIAL_DAYS, since_date.isoformat())
+
+    date_filter = since_date.strftime('%Y/%m/%d')
+    search_query = f"{SEARCH_QUERY} after:{date_filter}"
+    logger.info("Gmail query: %s", search_query)
+
     total_processed = 0
     total_errors = 0
 
     for account in accounts:
-        processed, errors = process_account(account)
+        processed, errors = process_account(account, search_query=search_query)
         total_processed += processed
         total_errors += errors
 

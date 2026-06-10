@@ -57,6 +57,18 @@ BILL_FIXTURE = {
 
 BILL_DELETED = dict(BILL_FIXTURE, id='bill-deleted', number='LS1-DEL', deleted=True)
 
+PAYMENT_FIXTURE = {
+    'id': 'pay-uuid-1',
+    'type': 'card',
+    'amount': 1300,
+    'billId': 'bill-uuid-1',
+    'creationTime': '2026-06-01T11:29:05.000Z',
+    'deleted': False,
+    'tip': 0,
+}
+
+PAYMENT_DELETED = dict(PAYMENT_FIXTURE, id='pay-deleted', deleted=True)
+
 
 class TestLastappSyncBills(unittest.TestCase):
 
@@ -153,6 +165,82 @@ class TestLastappSyncBills(unittest.TestCase):
 
         # save_invoice NO debe ser llamada porque la factura esta deleted
         mock_save_inv.assert_not_called()
+
+    @patch('lastapp_sync.save_payment')
+    @patch('lastapp_sync.save_invoice')
+    @patch('lastapp_sync.get_last_sync')
+    @patch('lastapp_sync._fetch_all')
+    @patch('lastapp_sync._build_headers')
+    def test_payments_uses_correct_query_params(
+        self, mock_headers, mock_fetch, mock_last_sync, mock_save_inv, mock_save_pay
+    ):
+        """Payments usa locationId + startDate + endDate como query params."""
+        from datetime import datetime
+
+        mock_headers.return_value = {
+            'Authorization': 'Bearer x', 'organizationID': 'o', 'locationID': 'l'}
+        mock_last_sync.return_value = datetime(2026, 6, 1)
+        mock_save_inv.return_value = 'inv-uuid-1'
+        mock_save_pay.return_value = 'pay-uuid-1'
+
+        calls = []
+        def capture_fetch(*args, **kwargs):
+            calls.append((args, kwargs))
+            if '/bills' in args[1]:
+                return [BILL_FIXTURE]
+            if '/payments' in args[1]:
+                return [PAYMENT_FIXTURE]
+            return []
+        mock_fetch.side_effect = capture_fetch
+
+        import os
+        os.environ['LASTAPP_LOCATION_ID'] = 'loc-1'
+
+        import lastapp_sync
+        lastapp_sync.main()
+
+        pay_call = [c for c in calls if '/payments' in c[0][1]]
+        self.assertEqual(len(pay_call), 1)
+        pay_params = pay_call[0][0][2]
+        self.assertEqual(pay_params['locationId'], 'loc-1')
+        self.assertIn('startDate', pay_params)
+        self.assertIn('endDate', pay_params)
+
+    @patch('lastapp_sync.save_payment')
+    @patch('lastapp_sync.save_invoice')
+    @patch('lastapp_sync.get_last_sync')
+    @patch('lastapp_sync._fetch_all')
+    @patch('lastapp_sync._build_headers')
+    def test_payment_links_by_billId_not_number(
+        self, mock_headers, mock_fetch, mock_last_sync, mock_save_inv, mock_save_pay
+    ):
+        """Pago enlaza por billId (UUID directo), no por invoice_number."""
+        from datetime import datetime
+
+        mock_headers.return_value = {
+            'Authorization': 'Bearer x', 'organizationID': 'o', 'locationID': 'l'}
+        mock_last_sync.return_value = datetime(2026, 6, 1)
+        mock_save_inv.return_value = 'inv-uuid-1'
+        mock_save_pay.return_value = 'pay-uuid-1'
+
+        mock_fetch.side_effect = [
+            [],                # bills (vacio, no importa)
+            [PAYMENT_FIXTURE], # payments
+        ]
+
+        import os
+        os.environ['LASTAPP_LOCATION_ID'] = 'loc-1'
+
+        import lastapp_sync
+        lastapp_sync.main()
+
+        mock_save_pay.assert_called_once_with(
+            invoice_id='bill-uuid-1',
+            payment_date='2026-06-01T11:29:05.000Z',
+            amount=13.00,
+            source='card',
+            source_detail='pay-uuid-1',
+        )
 
 
 if __name__ == '__main__':

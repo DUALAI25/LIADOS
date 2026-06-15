@@ -1,24 +1,28 @@
 version: '3.8'
 
+# NOTA (2026-06-15): PostgreSQL corre de forma nativa en el host (localhost:5432),
+# no en Docker. El servicio postgres está comentado para evitar conflictos de puerto.
+# Si necesitas migrar a Docker, detén primero el postgres nativo.
+
 services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: desliado-db
-    restart: unless-stopped
-    ports:
-      - "5432:5432"
-    environment:
-      POSTGRES_DB: desliado
-      POSTGRES_USER: desliado
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-desliado_pass_2026}
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U desliado -d desliado"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+  # postgres:
+  #   image: postgres:16-alpine
+  #   container_name: desliado-db
+  #   restart: unless-stopped
+  #   ports:
+  #     - "5432:5432"
+  #   environment:
+  #     POSTGRES_DB: desliado
+  #     POSTGRES_USER: desliado
+  #     POSTGRES_PASSWORD: ${DB_PASSWORD:-desliado_pass_2026}
+  #   volumes:
+  #     - pgdata:/var/lib/postgresql/data
+  #     - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U desliado -d desliado"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
 
   minio:
     image: minio/minio:latest
@@ -40,5 +44,5 @@ services:
       retries: 3
 
 volumes:
-  pgdata:
+  # pgdata:  # ver nota arriba: PostgreSQL es nativo
   minio_data:

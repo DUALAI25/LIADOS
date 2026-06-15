@@ -73,6 +73,14 @@ def generate_pkce():
     return code_verifier, code_challenge
 
 
+def _resolve_path(path_str):
+    """Resuelve una ruta de .env: absolutas se usan tal cual, relativas se resuelven contra WORKSPACE."""
+    p = Path(path_str).expanduser()
+    if not p.is_absolute():
+        p = WORKSPACE / p
+    return p
+
+
 def get_credentials_path(account):
     """Resuelve la ruta del JSON de credenciales OAuth para la cuenta"""
     env = load_env()
@@ -94,7 +102,7 @@ def get_credentials_path(account):
         print(f"   4. Añade a .env: {var_name}={default_path}")
         sys.exit(1)
 
-    creds_path = Path(creds_path).expanduser()
+    creds_path = _resolve_path(creds_path)
     if not creds_path.exists():
         print(f"❌ No se encuentra: {creds_path}")
         sys.exit(1)
@@ -113,7 +121,7 @@ def get_token_path(account):
         default_path.parent.mkdir(parents=True, exist_ok=True)
         return str(default_path)
 
-    token_path = Path(token_path).expanduser()
+    token_path = _resolve_path(token_path)
     token_path.parent.mkdir(parents=True, exist_ok=True)
     return str(token_path)
 

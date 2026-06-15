@@ -9,6 +9,17 @@ from dedup_checker import is_duplicate_by_number
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
 
+
+def _sanitize_error(e):
+    """Limpia mensajes de error para evitar filtrar tokens de API."""
+    msg = str(e)
+    for needle in ('Bearer ', 'Authorization', 'api_key', 'bearer'):
+        idx = msg.find(needle)
+        if idx >= 0:
+            msg = msg[:idx + len(needle)] + '[REDACTED]'
+    return msg
+
+
 API_URL = os.getenv('LASTAPP_API_URL', 'https://api.last.app/v2')
 
 
@@ -40,7 +51,7 @@ def main():
     try:
         headers = _build_headers()
     except RuntimeError as e:
-        logger.error(str(e))
+        logger.error(_sanitize_error(e))
         return 1
 
     last_sync = get_last_sync('erp')
@@ -88,7 +99,7 @@ def main():
             logger.info("  Guardada: %s -> %s (%.2f EUR)", number, str(inv_id), total)
             processed += 1
         except Exception as e:
-            logger.error("  Error con factura %s: %s", str(bill.get('id')), str(e))
+            logger.error("  Error con factura %s: %s", str(bill.get('id')), _sanitize_error(e))
             errors += 1
 
     pay_params = {
@@ -126,7 +137,7 @@ def main():
                 logger.warning("  Pago sin billId (omitido): %s", str(pay.get('id')))
             processed += 1
         except Exception as e:
-            logger.error("  Error con pago %s: %s", str(pay.get('id')), str(e))
+            logger.error("  Error con pago %s: %s", str(pay.get('id')), _sanitize_error(e))
             errors += 1
 
     log_agent('lastapp_sync', 'info' if errors == 0 else 'warning',
@@ -164,10 +175,10 @@ def _fetch_all(headers, url, params):
         logger.warning("Respuesta inesperada de %s: %s", url, str(data)[:200])
         return []
     except requests.exceptions.RequestException as e:
-        logger.error("Error fetching %s: %s", url, str(e))
+        logger.error("Error fetching %s: %s", url, _sanitize_error(e))
         return []
     except Exception as e:
-        logger.error("Error inesperado en %s: %s", url, str(e))
+        logger.error("Error inesperado en %s: %s", url, _sanitize_error(e))
         return []
 
 

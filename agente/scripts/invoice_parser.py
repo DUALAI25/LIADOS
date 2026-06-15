@@ -7,6 +7,17 @@ from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
+
+def _sanitize_error(e):
+    """Limpia mensajes de error para evitar filtrar API keys o tokens."""
+    msg = str(e)
+    for needle in ('Bearer ', 'Authorization', 'sk-', 'github_pat_', 'apiKey'):
+        idx = msg.find(needle)
+        if idx >= 0:
+            msg = msg[:idx + len(needle)] + '[REDACTED]'
+    return msg
+
+
 # Categorías válidas (alineadas con el schema de DB)
 VALID_CATEGORIES = {
     'software', 'oficina', 'viajes', 'marketing', 'servicios',
@@ -253,7 +264,7 @@ def _call_with_retry(client, **kwargs):
                     logger.warning(f"API error transitorio ({err_name}), reintento {attempt}/{max_retries} en {wait}s")
                     time.sleep(wait)
                 else:
-                    logger.error(f"API error tras {max_retries} reintentos: {e}")
+                    logger.error(f"API error tras {max_retries} reintentos: {_sanitize_error(e)}")
                     raise
             else:
                 # Error no transitorio
@@ -277,7 +288,7 @@ def _parse_with_text(client, text):
         logger.error(f"IA no devolvió JSON válido: {e}")
         return None
     except Exception as e:
-        logger.error(f"Text parse error: {e.__class__.__name__}: {e}")
+        logger.error(f"Text parse error: {e.__class__.__name__}: {_sanitize_error(e)}")
         return None
 
 
@@ -332,5 +343,5 @@ def _parse_with_vision(client, content, mime_type):
         logger.error(f"IA no devolvió JSON válido: {e}")
         return None
     except Exception as e:
-        logger.error(f"Vision parse error: {e.__class__.__name__}: {e}")
+        logger.error(f"Vision parse error: {e.__class__.__name__}: {_sanitize_error(e)}")
         return None

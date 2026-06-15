@@ -16,6 +16,17 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+
+def _sanitize_error(e):
+    """Limpia mensajes de error para evitar filtrar tokens."""
+    msg = str(e)
+    for needle in ('Bearer ', 'Authorization', 'access_token', 'refresh_token'):
+        idx = msg.find(needle)
+        if idx >= 0:
+            msg = msg[:idx + len(needle)] + '[REDACTED]'
+    return msg
+
+
 MCP_URL = "https://api.last.app/mcp"
 DEFAULT_TIMEOUT = 10
 MAX_RETRIES = 3
@@ -50,7 +61,7 @@ class LastAppClient:
                 if token:
                     headers["Authorization"] = f"Bearer {token}"
             except Exception as e:
-                logger.warning("No se pudo obtener token OAuth: %s", e)
+                logger.warning("No se pudo obtener token OAuth: %s", _sanitize_error(e))
 
         last_exc = None
         for attempt in range(MAX_RETRIES):
@@ -74,7 +85,7 @@ class LastAppClient:
                 if attempt < MAX_RETRIES - 1:
                     backoff = RETRY_BACKOFF_BASE ** (attempt + 1)
                     logger.warning("Intento %d/%d fallido (%s), reintentando en %ds...",
-                                   attempt + 1, MAX_RETRIES, e, backoff)
+                                   attempt + 1, MAX_RETRIES, _sanitize_error(e), backoff)
                     time.sleep(backoff)
                 else:
                     raise RuntimeError(f"Fallo tras {MAX_RETRIES} intentos a {method}: {last_exc}")

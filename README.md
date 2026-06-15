@@ -18,7 +18,7 @@ Sistema automatizado para capturar, parsear y categorizar facturas del cliente L
 | **Fase 0** — Setup base (Postgres + MinIO + scripts) | ✅ Completa |
 | **Fase 1** — Multi-cuenta Gmail + auth paste-back | ✅ Completa |
 | **Fase 2** — Bugfixes scripts (weekly, lastapp, collector) | ✅ Completa |
-| **Fase 3** — Dashboard Streamlit | ⏳ Pendiente |
+| **Fase 3** — Dashboard FastAPI + chat AI | ✅ Completa |
 | **Fase 4** — Deploy producción + apagar n8n | ⏳ Pendiente |
 
 ## 🏗 Arquitectura
@@ -39,14 +39,22 @@ gmail_collector.py    lastapp_sync.py
    │  invoices   │         └──────────────┘
    └─────┬───────┘
          │
-   ┌─────▼──────┐
-   │ MinIO/FS   │  (PDFs originales)
-   └────────────┘
-         │
-   ┌─────▼──────────┐
-   │ weekly_summary │  (Telegram opcional)
-   └────────────────┘
+   ┌─────▼──────┐        ┌──────────────────────┐
+   │ Filesystem │        │ FastAPI Dashboard    │
+   │ (PDFs)     │        │ /api/kpis + /api/chat│
+   └────────────┘        └──────────┬───────────┘
+         │                          │
+   ┌─────▼──────────┐      ┌────────▼────────┐
+   │ weekly_summary │      │ MCP servers     │
+   │ (Telegram)     │      │ invoices+lastapp│
+   └────────────────┘      └─────────────────┘
 ```
+
+**Infraestructura actual (Jun 2026):**
+- **PostgreSQL 16** corre de forma nativa en el host (`localhost:5432`).
+- **MinIO** corre en Docker (`desliado-minio`) pero no está configurado en `.env`; el sistema usa filesystem local para PDFs.
+- **OpenClaw Gateway** corre en Docker y ejecuta el cron cada 15 min sobre `/root/liados`.
+- **Dashboard** corre como servicio systemd (`liados-dashboard`) en el puerto `9121`.
 
 ## 🚀 Setup rápido
 
@@ -63,10 +71,16 @@ cp .env.example .env
 # Editar con tus credenciales
 ```
 
-### 3. Levantar infraestructura (Docker)
+### 3. Levantar infraestructura
+
+PostgreSQL corre de forma nativa en el host. Solo MinIO se levanta con Docker:
 
 ```bash
-bash setup.sh
+# Si no está corriendo MinIO
+docker compose up -d minio
+
+# O para arrancar todo (servicios systemd + Docker)
+bash scripts/start_all.sh
 ```
 
 ### 4. Autorizar cuentas Gmail
@@ -103,10 +117,10 @@ python3 agente/scripts/lastapp_sync.py
 |---|---|---|
 | **Gmail (x N)** | `GMAIL_ACCOUNTS=cuenta1,cuenta2`<br>`GMAIL_CREDENTIALS_FILE_<cuenta>`<br>`GMAIL_TOKEN_FILE_<cuenta>` | Google Cloud Console → Gmail API → OAuth Desktop o Web |
 | **OpenCode Go** | `OPENCODE_API_KEY` | https://opencode.ai/zen |
-| **Lastapp (legacy)** | `LASTAPP_API_TOKEN` | https://developers.last.app/ |
+| **Last.app API** | `LASTAPP_API_TOKEN`<br>`LASTAPP_ORGANIZATION_ID`<br>`LASTAPP_LOCATION_ID` | https://developers.last.app/ |
 | **Last.app MCP** | `LASTAPP_OAUTH_BEARER_TOKEN` o `LASTAPP_OAUTH_CLIENT_ID` + `LASTAPP_OAUTH_CLIENT_SECRET` | Ver sección abajo |
-| **PostgreSQL** | `DB_PASSWORD` | docker-compose.yml lo autogenera |
-| **MinIO** (opcional) | `MINIO_*` | docker-compose.yml lo autogenera |
+| **PostgreSQL** | `DB_*` | Instancia nativa en localhost:5432 |
+| **Dashboard** | `DASHBOARD_USER`<br>`DASHBOARD_PASSWORD` | Configurable en `.env` |
 | **Telegram** (opcional) | `TELEGRAM_BOT_TOKEN`<br>`TELEGRAM_CHAT_ID` | @BotFather |
 
 ## 🤖 Last.app MCP setup
@@ -274,6 +288,29 @@ Comprueba que `DATA_DIR` existe y es escribible:
 mkdir -p data/invoices/{raw,processed,temp}
 ```
 
+## 🛠 Comandos útiles
+
+```bash
+# Health check de todos los servicios
+bash scripts/healthcheck.sh
+
+# Arrancar/reiniciar todos los servicios
+bash scripts/start_all.sh
+
+# Ejecutar tests
+bash scripts/run_tests.sh
+
+# Gestión del dashboard (systemd)
+systemctl status liados-dashboard
+systemctl restart liados-dashboard
+journalctl -u liados-dashboard -f
+
+# Sincronización manual
+.venv/bin/python -m agente.scripts.run_all
+.venv/bin/python -m agente.scripts.lastapp_sync
+.venv/bin/python -m agente.scripts.gmail_collector
+```
+
 ## 📜 Licencia
 
 Privado — DualAI / Antonio Serrano.
@@ -286,7 +323,7 @@ Para enseñar el sistema funcionando con datos realistas en 5 minutos:
 
 ```bash
 # 1. Cargar 80 facturas demo (necesita DB 'desliado' viva)
-cd /home/openclaw/liados
+cd /root/liados
 .venv/bin/python -m agente.scripts.seed_demo --wipe
 
 # 2. Probar el MCP server (6 tools disponibles)

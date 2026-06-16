@@ -7,7 +7,7 @@ Implementa el subconjunto mínimo del protocolo MCP que necesitamos:
   - tools/call (invocar tool)
   - resources/list y resources/read (para KB/soporte)
 
-Usa requests con timeout 10s y reintentos (3 intentos, backoff exponencial 1s/2s/4s).
+Usa requests con timeout 10s y reintentos (3 intentos, backoff exponencial 2s/4s/8s).
 Si el servidor responde 401, fuerza refresh del token y reintenta UNA vez.
 """
 import time
@@ -30,7 +30,7 @@ def _sanitize_error(e):
 MCP_URL = "https://api.last.app/mcp"
 DEFAULT_TIMEOUT = 10
 MAX_RETRIES = 3
-RETRY_BACKOFF_BASE = 1
+RETRY_BACKOFF_BASE = 2
 
 
 class LastAppClient:
@@ -71,8 +71,8 @@ class LastAppClient:
                     if attempt == 0:
                         logger.info("401 recibido, refrescando token y reintentando...")
                         try:
-                            self._auth_token_getter()
-                            headers["Authorization"] = f"Bearer {self._auth_token_getter()}"
+                            token = self._auth_token_getter(force_refresh=True)
+                            headers["Authorization"] = f"Bearer {token}"
                             resp = requests.post(url, json=payload, headers=headers, timeout=DEFAULT_TIMEOUT)
                         except Exception:
                             pass

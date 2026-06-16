@@ -48,7 +48,7 @@ _token_store = {
 }
 
 
-def get_token() -> str:
+def get_token(force_refresh: bool = False) -> str:
     """
     Devuelve un token Bearer válido para el MCP de Last.app.
 
@@ -64,7 +64,7 @@ def get_token() -> str:
         return direct_token
 
     now = time.time()
-    if _token_store["access_token"] and now < _token_store["expires_at"] - 60:
+    if not force_refresh and _token_store["access_token"] and now < _token_store["expires_at"] - 60:
         return _token_store["access_token"]
 
     if _token_store["refresh_token"]:
@@ -159,7 +159,13 @@ def _request_token(client_id: str, client_secret: str) -> str:
     except Exception:
         pass
 
+    deadline = time.time() + 120
     while auth_code is None:
+        if time.time() > deadline:
+            raise RuntimeError(
+                "OAuth callback no recibido en 120s. "
+                "Aborta el flujo y revisa que la URL de authorize se haya abierto correctamente."
+            )
         server.handle_request()
 
     print(f"  Código de autorización recibido. Intercambiando por token...", file=sys.stderr)

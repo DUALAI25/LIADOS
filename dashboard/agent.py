@@ -1,6 +1,8 @@
 """
-Agente de consultas financieras para Liados.
-Usa OpenCode Go (deepseek-v4-flash) con function-calling contra las tools del MCP.
+Agente de consultas para Liados.
+Usa OpenCode Go (deepseek-v4-flash) con function-calling contra dos MCP servers:
+  - invoices_server: facturas (Postgres)
+  - lastapp_server: operativa del restaurante via MCP oficial de Last.app
 """
 import os
 import json
@@ -13,10 +15,44 @@ from invoices_server import (
     vendor_summary, pending_payments, count_invoices
 )
 
+_lastapp_available = False
+_lastapp_tools = {}
+try:
+    from lastapp_server import (
+        list_products, get_product, top_products,
+        list_reservations, reservation_patterns,
+        list_locations, list_printers, list_integrations, search_kb,
+        set_product_unavailable, set_product_available,
+        bump_product_price, open_support_ticket,
+        confirm_action, cancel_action,
+    )
+    _lastapp_available = True
+    _lastapp_tools = {
+        "list_products": list_products,
+        "get_product": get_product,
+        "top_products": top_products,
+        "list_reservations": list_reservations,
+        "reservation_patterns": reservation_patterns,
+        "list_locations": list_locations,
+        "list_printers": list_printers,
+        "list_integrations": list_integrations,
+        "search_kb": search_kb,
+        "set_product_unavailable": set_product_unavailable,
+        "set_product_available": set_product_available,
+        "bump_product_price": bump_product_price,
+        "open_support_ticket": open_support_ticket,
+        "confirm_action": confirm_action,
+        "cancel_action": cancel_action,
+    }
+except ImportError:
+    pass
+
 OPENCODE_GO_URL = "https://opencode.ai/zen/go/v1/chat/completions"
 MODEL = "deepseek-v4-flash"
 
-TOOLS_SCHEMA = [
+# ─── Tools de facturas (invoices_server) ────────────────────────────
+
+INVOICE_TOOLS = [
     {
         "type": "function",
         "function": {
@@ -106,24 +142,248 @@ TOOLS_SCHEMA = [
     }
 ]
 
-SYSTEM_PROMPT = """Eres el asistente financiero del restaurante Liados.
+# ─── Tools de Last.app MCP ──────────────────────────────────────────
+
+LASTAPP_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "list_products",
+            "description": "Lista productos del catalogo del restaurante (carta). Puedes filtrar por local y disponibilidad.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "location_id": {"type": "string", "default": ""},
+                    "available_only": {"type": "boolean", "default": False},
+                    "limit": {"type": "integer", "default": 50}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_product",
+            "description": "Detalle completo de un producto: precio, disponibilidad, stock por local.",
+            "parameters": {
+                "type": "object",
+                "properties": {"product_id": {"type": "string"}},
+                "required": ["product_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "top_products",
+            "description": "Productos mas vendidos en un periodo. period: day, week, month, quarter.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "period": {"type": "string", "enum": ["day", "week", "month", "quarter"], "default": "week"},
+                    "location_id": {"type": "string", "default": ""},
+                    "limit": {"type": "integer", "default": 10}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_reservations",
+            "description": "Reservas en rango de fechas. Fechas en formato YYYY-MM-DD.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "date_from": {"type": "string"},
+                    "date_to": {"type": "string"},
+                    "location_id": {"type": "string", "default": ""}
+                },
+                "required": ["date_from", "date_to"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "reservation_patterns",
+            "description": "Patrones de ocupacion y cancelacion por periodo. period: week, month, quarter.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "period": {"type": "string", "enum": ["week", "month", "quarter"], "default": "month"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_locations",
+            "description": "Ubicaciones (locales) de la organizacion Liados.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_printers",
+            "description": "Impresoras configuradas por local, con su estado actual.",
+            "parameters": {
+                "type": "object",
+                "properties": {"location_id": {"type": "string", "default": ""}}
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_integrations",
+            "description": "Integraciones activas en la organizacion (delivery, ERP, etc).",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_kb",
+            "description": "Busca en la base de conocimiento de Last.app (ayuda, guias, FAQs).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer", "default": 5}
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_product_unavailable",
+            "description": "Marca un producto como NO disponible. ACCION DESTRUCTIVA: devuelve un confirmation_token. No se ejecuta hasta que el usuario confirme explicitamente.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "product_id": {"type": "string"},
+                    "location_id": {"type": "string", "default": ""},
+                    "reason": {"type": "string", "default": ""}
+                },
+                "required": ["product_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_product_available",
+            "description": "Marca un producto como disponible. ACCION DESTRUCTIVA: devuelve un confirmation_token.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "product_id": {"type": "string"},
+                    "location_id": {"type": "string", "default": ""}
+                },
+                "required": ["product_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "bump_product_price",
+            "description": "Sube el precio de un producto en un porcentaje. ACCION DESTRUCTIVA: devuelve confirmation_token con el diff de precio.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "product_id": {"type": "string"},
+                    "percent": {"type": "number"},
+                    "location_id": {"type": "string", "default": ""}
+                },
+                "required": ["product_id", "percent"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "open_support_ticket",
+            "description": "Abre un ticket de soporte en Last.app. ACCION DESTRUCTIVA: devuelve confirmation_token.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "subject": {"type": "string"},
+                    "description": {"type": "string"},
+                    "priority": {"type": "string", "enum": ["low", "normal", "high"], "default": "normal"}
+                },
+                "required": ["subject", "description"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "confirm_action",
+            "description": "Ejecuta una accion pendiente usando el confirmation_token devuelto por una tool destructiva. Usa esto cuando el usuario confirme explicitamente la accion.",
+            "parameters": {
+                "type": "object",
+                "properties": {"confirmation_token": {"type": "string"}},
+                "required": ["confirmation_token"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cancel_action",
+            "description": "Cancela una accion pendiente usando el confirmation_token.",
+            "parameters": {
+                "type": "object",
+                "properties": {"confirmation_token": {"type": "string"}},
+                "required": ["confirmation_token"]
+            }
+        }
+    }
+]
+
+TOOLS_SCHEMA = INVOICE_TOOLS + (LASTAPP_TOOLS if _lastapp_available else [])
+
+SYSTEM_PROMPT = """Eres el asistente operativo del restaurante Liados.
 
 Respondes en espanol de Espana, de forma clara y concisa. Usas los importes en euros.
 
-Tienes 6 herramientas para consultar la base de datos de facturas:
+Tienes DOS grupos de herramientas:
+
+FACTURAS (6 tools):
 - list_invoices, get_invoice, monthly_summary, vendor_summary, pending_payments, count_invoices
+  Consultan facturas historicas en la base de datos.
+
+OPERATIVA LAST.APP (15 tools):
+- Lectura: list_products, get_product, top_products, list_reservations, reservation_patterns,
+  list_locations, list_printers, list_integrations, search_kb
+- Accion (requieren confirmacion): set_product_unavailable, set_product_available,
+  bump_product_price, open_support_ticket
+- Confirmacion: confirm_action, cancel_action
 
 REGLAS:
 1. Cada pregunta es INDEPENDIENTE. No asumas contexto de mensajes anteriores.
 2. Si el usuario no especifica fecha, asume el mes actual.
 3. Si dice "el mes pasado" o similar, usa el mes anterior.
 4. Si dice "este año" o "en 2026", usa el año actual.
-5. Si la pregunta es ambigua (ej: "cuanto he gastado?" sin periodo), pregunta antes de asumir.
-6. Los datos de BD son SOLO LECTURA. NO intentes modificar nada.
+5. Si la pregunta es ambigua, pregunta antes de asumir.
+6. Los datos de BD (facturas) son SOLO LECTURA. NO intentes modificar nada.
 7. Si una tool devuelve error o lista vacia, dilo claramente. No inventes datos.
 8. Para importes grandes, redondea a 2 decimales y usa separador de millares (ej: 12.450,75).
-9. Si el usuario pregunta por un analisis o recomendacion, basa tu respuesta SOLO en los datos que devuelven las tools. No inventes tendencias.
-10. Si no sabes la respuesta con los datos disponibles, di "No tengo datos suficientes para responder a eso" en vez de inventar.
+9. Si el usuario pregunta por un analisis o recomendacion, basa tu respuesta SOLO en los datos devueltos.
+10. Si no sabes la respuesta, di "No tengo datos suficientes para responder a eso".
+
+ACCIONES DESTRUCTIVAS (catalogo, precios, tickets):
+11. Cuando el usuario pida una accion destructiva (ej: "marca la tarta de queso como no disponible"),
+    llama a la tool correspondiente (ej: set_product_unavailable). Esta devolvera un confirmation_token.
+    INFORMA al usuario de que la accion requiere confirmacion y muestrale el token.
+12. NO llames a confirm_action sin que el usuario lo pida explicitamente.
+13. Si el usuario te da un token de confirmacion, usa confirm_action con ese token.
 """
 
 TOOL_MAP = {
@@ -134,6 +394,7 @@ TOOL_MAP = {
     "pending_payments": pending_payments,
     "count_invoices": count_invoices,
 }
+TOOL_MAP.update(_lastapp_tools)
 
 
 def call_llm(messages: list) -> dict:

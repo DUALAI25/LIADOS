@@ -53,6 +53,17 @@ from storage import save_raw_file
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
 
+
+def _sanitize_error(e):
+    """Limpia mensajes de error para evitar filtrar tokens o credenciales."""
+    msg = str(e)
+    for needle in ('Bearer ', 'Authorization', 'sk-', 'github_pat_', 'client_secret', 'refresh_token'):
+        idx = msg.find(needle)
+        if idx >= 0:
+            msg = msg[:idx + len(needle)] + '[REDACTED]'
+    return msg
+
+
 SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
 SEARCH_QUERY = '(factura OR invoice OR receipt OR recibo OR "nota de cargo" OR albarán) has:attachment'
 INITIAL_DAYS = int(os.getenv('GMAIL_INITIAL_DAYS', '30'))
@@ -80,10 +91,13 @@ def get_gmail_accounts():
 
 
 def get_token_path_for_account(account):
-    """Resuelve la ruta del token para una cuenta"""
+    """Resuelve la ruta del token para una cuenta (relativas contra WORKSPACE)."""
     env = load_env_dict()
     var_name = f'GMAIL_TOKEN_FILE_{account}'
-    return env.get(var_name, '')
+    path = env.get(var_name, '')
+    if path and not path.startswith('/'):
+        path = str(WORKSPACE / path)
+    return path
 
 
 def get_service(account):
@@ -100,7 +114,7 @@ def get_service(account):
         creds = Credentials.from_authorized_user_file(token_file, SCOPES)
         return build('gmail', 'v1', credentials=creds)
     except Exception as e:
-        logger.error(f"[{account}] Error creando servicio Gmail: {e}")
+        logger.error(f"[{account}] Error creando servicio Gmail: {_sanitize_error(e)}")
         return None
 
 
@@ -175,7 +189,7 @@ def process_account(account, search_query=None):
                     logger.warning(f"  ⚠️  No se pudo parsear: {att['filename']}")
                     errors += 1
         except Exception as e:
-            logger.error(f"  ❌ Error msg {msg['id']}: {e}")
+            logger.error(f"  ❌ Error msg {msg['id']}: {_sanitize_error(e)}")
             errors += 1
 
     log_agent('gmail_collector', 'info' if errors == 0 else 'warning',

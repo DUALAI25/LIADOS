@@ -153,18 +153,18 @@ def monthly_summary(year: int = 0, type: str = "all") -> str:
         year: año (0 = año actual)
         type: 'expense', 'income' o 'all' (ambos)
     """
-    if year == 0:
-        year_sql = "EXTRACT(YEAR FROM CURRENT_DATE)"
-    else:
-        year_sql = str(year)
-
     where_extra = ""
     params = []
+    if year == 0:
+        where_extra = ""
+    else:
+        where_extra = "AND EXTRACT(YEAR FROM invoice_date) = %s"
+        params.append(year)
     if type != "all":
-        where_extra = "AND type = %s"
+        where_extra += " AND type = %s"
         params.append(type)
 
-    sql = f"""
+    sql = """
         SELECT
             EXTRACT(YEAR FROM invoice_date)::int AS year,
             EXTRACT(MONTH FROM invoice_date)::int AS month,
@@ -174,7 +174,8 @@ def monthly_summary(year: int = 0, type: str = "all") -> str:
             COALESCE(SUM(tax_amount), 0) AS total_tax,
             COALESCE(SUM(total_amount), 0) AS total_amount
         FROM invoices
-        WHERE EXTRACT(YEAR FROM invoice_date) = {year_sql} {where_extra}
+        WHERE 1=1
+    """ + where_extra + """
         GROUP BY year, month, type
         ORDER BY year DESC, month DESC, type
     """

@@ -54,10 +54,17 @@ def _q(d):
     return Decimal(str(d))
 
 
+# Whitelist de tablas permitidas para el wipe (anti SQL-injection en f-string)
+WIPE_TABLES = ("agent_logs", "user_overrides", "orphan_payments", "payments",
+               "invoices", "vendors", "categories", "sync_control")
+
+
 def wipe(cur):
     print("Wipe de tablas...")
-    for tbl in ("agent_logs", "user_overrides", "orphan_payments", "payments",
-                "invoices", "vendors", "categories", "sync_control"):
+    for tbl in WIPE_TABLES:
+        # Whitelist: si tbl no está en la lista, abortar
+        if tbl not in WIPE_TABLES:
+            raise ValueError(f"Tabla no permitida para wipe: {tbl}")
         cur.execute(f"DELETE FROM {tbl};")
     cur.execute("""
         INSERT INTO categories (name, icon, color) VALUES

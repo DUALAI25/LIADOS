@@ -22,8 +22,8 @@ security = HTTPBasic()
 
 
 def get_current_user(credentials: HTTPBasicCredentials = Depends(security)):
-    expected_user = os.getenv("DASHBOARD_USER", "jefe")
-    expected_pass = os.getenv("DASHBOARD_PASSWORD", "jefe2026")
+    expected_user = os.environ["DASHBOARD_USER"]  # fail-fast si no está en .env
+    expected_pass = os.environ["DASHBOARD_PASSWORD"]  # fail-fast si no está en .env
     if not (secrets.compare_digest(credentials.username, expected_user)
             and secrets.compare_digest(credentials.password, expected_pass)):
         raise HTTPException(

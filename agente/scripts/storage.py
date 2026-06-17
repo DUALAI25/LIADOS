@@ -17,7 +17,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # Configuración de rutas (filesystem SIEMPRE activo)
-DATA_DIR = Path(os.getenv('DATA_DIR', '/home/node/.openclaw/workspace-desliado/data'))
+DATA_DIR = Path(os.getenv('DATA_DIR', '/root/liados/data'))
 RAW_DIR = DATA_DIR / 'invoices' / 'raw'
 PROCESSED_DIR = DATA_DIR / 'invoices' / 'processed'
 TEMP_DIR = DATA_DIR / 'invoices' / 'temp'

@@ -2,8 +2,9 @@
 """
 storage_status.py — Muestra el estado del almacenamiento de facturas
 """
+import os
 import sys
-sys.path.insert(0, '/home/node/.openclaw/workspace-desliado/agente/scripts')
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
 
 from storage import get_storage_stats, RAW_DIR, PROCESSED_DIR, TEMP_DIR
 

@@ -19,6 +19,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 
 # Carga .env manualmente (este script puede correr sin venv, standalone o via -m)
@@ -112,6 +113,14 @@ def get_service(account):
         return None
     try:
         creds = Credentials.from_authorized_user_file(token_file, SCOPES)
+        if creds.expired and creds.refresh_token:
+            logger.info(f"[{account}] Token expirado, refrescando...")
+            creds.refresh(Request())
+            import json
+            data = json.loads(Path(token_file).read_text())
+            data['access_token'] = creds.token
+            Path(token_file).write_text(json.dumps(data, indent=2))
+            logger.info(f"[{account}] Token refrescado y guardado")
         return build('gmail', 'v1', credentials=creds)
     except Exception as e:
         logger.error(f"[{account}] Error creando servicio Gmail: {_sanitize_error(e)}")
@@ -128,6 +137,7 @@ def process_account(account, search_query=None):
 
     service = get_service(account)
     if not service:
+        logger.warning(f"[{account}] Saltando cuenta (token inválido o expirado)")
         log_agent('gmail_collector', 'error', f"[{account}] Gmail service no disponible")
         return 0, 1
 

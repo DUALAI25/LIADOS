@@ -28,3 +28,6 @@ venv/
 
 # Docker
 .docker/
+
+# Backups locales de archivos editados manualmente
+*.bak.*

@@ -31,3 +31,9 @@ venv/
 
 # Backups locales de archivos editados manualmente
 *.bak.*
+
+# Backups locales (dumps de BD, no aportan al repo)
+backups/
+
+# Tests ad-hoc (no parte de la suite oficial)
+agente/scripts/test_*.py

@@ -1,21 +1,41 @@
 """
-dedup_checker.py — Detección de facturas duplicadas
+dedup_checker.py - Deteccion de facturas duplicadas
 
 Dos estrategias:
 1. Por hash MD5 del contenido (mismo PDF = duplicado seguro)
-2. Por número + monto + vendor (mismo número con datos similares = probable duplicado)
+2. Por numero + monto + vendor (mismo numero con datos similares = probable duplicado)
 """
 from db_connection import get_conn
 
 
-def is_duplicate_by_hash(content_hash):
-    """¿Existe ya una factura con este hash de contenido?"""
+def is_duplicate_by_hash(content_hash, current_source_id=None):
+    """Existe ya una factura con este hash de contenido?
+
+    Args:
+        content_hash: hash MD5 del attachment
+        current_source_id: si se pasa, se ignora cualquier fila con ese source_id
+            (util cuando re-procesamos un email y queremos saber si OTRO email
+             con el mismo adjunto ya lo guardo, no nosotros mismos).
+
+    Returns:
+        True si existe una fila con ese hash Y (sin current_source_id o con
+        un source_id distinto al actual).
+    """
     if not content_hash:
         return False
     conn = get_conn()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id FROM invoices WHERE content_hash = %s", (content_hash,))
+        if current_source_id is not None:
+            cur.execute(
+                "SELECT id FROM invoices WHERE content_hash = %s AND source_id != %s",
+                (content_hash, current_source_id),
+            )
+        else:
+            cur.execute(
+                "SELECT id FROM invoices WHERE content_hash = %s",
+                (content_hash,),
+            )
         result = cur.fetchone()
         return result is not None
     finally:
@@ -23,10 +43,9 @@ def is_duplicate_by_hash(content_hash):
 
 
 def is_duplicate_by_number(invoice_number, amount, vendor_name):
-    """
-    ¿Existe una factura con el mismo número + monto + vendor?
+    """Existe una factura con el mismo numero + monto + vendor?
 
-    Útil para casos donde el mismo PDF llega 2 veces con adjuntos
+    Util para casos donde el mismo PDF llega 2 veces con adjuntos
     distintos (ej: reenviado por el proveedor con otra cabecera).
     """
     if not invoice_number or not amount:
@@ -34,14 +53,14 @@ def is_duplicate_by_number(invoice_number, amount, vendor_name):
     conn = get_conn()
     try:
         cur = conn.cursor()
-        # Buscamos por número + monto + vendor similar (case-insensitive)
+        # Buscamos por numero + monto + vendor similar (case-insensitive)
         cur.execute(
             """SELECT id FROM invoices
                WHERE invoice_number = %s
                AND total_amount = %s
                AND vendor_name ILIKE %s
                AND status != 'duplicate'""",
-            (invoice_number, amount, vendor_name or '')
+            (invoice_number, amount, vendor_name or ''),
         )
         result = cur.fetchone()
         return result is not None
@@ -58,7 +77,7 @@ def mark_as_duplicate(source, source_id):
             """UPDATE invoices
                SET status = 'duplicate', updated_at = NOW()
                WHERE source = %s AND source_id = %s""",
-            (source, source_id)
+            (source, source_id),
         )
         conn.commit()
         return cur.rowcount > 0
@@ -67,7 +86,7 @@ def mark_as_duplicate(source, source_id):
 
 
 def get_duplicate_stats():
-    """Retorna estadísticas de duplicados (útil para el dashboard)."""
+    """Retorna estadisticas de duplicados (util para el dashboard)."""
     conn = get_conn()
     try:
         cur = conn.cursor()
@@ -79,14 +98,6 @@ def get_duplicate_stats():
                 COUNT(*) AS total
             FROM invoices
         """)
-        row = cur.fetchone()
-        if not row:
-            return {'total': 0, 'duplicates': 0, 'pending': 0, 'classified': 0}
-        return {
-            'total': row[3] or 0,
-            'duplicates': row[0] or 0,
-            'pending': row[1] or 0,
-            'classified': row[2] or 0,
-        }
+        return dict(zip([c[0] for c in cur.description], cur.fetchone()))
     finally:
         conn.close()

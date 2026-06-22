@@ -170,10 +170,14 @@ def process_account(account, search_query=None):
             ).execute()
 
             attachments = _extract_attachments(service, message)
+            # FIX 2026-06-22: source_id se calcula una sola vez por mensaje y se
+            # reutiliza para que is_duplicate_by_hash ignore nuestro propio
+            # re-proceso (bug que marcaba 323 facturas como duplicate).
+            source_id = f"{account}:{msg['id']}"
             for att in attachments:
-                if is_duplicate_by_hash(att['content_hash']):
+                if is_duplicate_by_hash(att['content_hash'], current_source_id=source_id):
                     logger.info(f"  [duplicado] {att['filename']}")
-                    mark_as_duplicate('gmail', f"{account}:{msg['id']}")
+                    mark_as_duplicate('gmail', source_id)
                     continue
 
                 # Guardar archivo
@@ -189,7 +193,6 @@ def process_account(account, search_query=None):
                     parsed['minio_url'] = minio_url
                     parsed['source_account'] = account  # <- multi-cuenta
                     # source_id incluye la cuenta para unicidad
-                    source_id = f"{account}:{msg['id']}"
                     inv_id = save_invoice(parsed, source='gmail', source_id=source_id, inv_type='expense')
                     if minio_url and inv_id:
                         save_raw_file(att['content'], att['filename'], invoice_id=inv_id)

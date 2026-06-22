@@ -235,6 +235,23 @@ def _walk_parts(service, msg_id, parts, attachments):
         if not att_id:
             continue
 
+        size = body.get('size', 0)
+        # FIX 2026-06-22: filtrar adjuntos que NO son facturas reales antes de
+        # descargar. Emails HTML suelen traer iconos/separadores de <1KB que
+        # coinciden con la query "factura/invoice/albaran" del subject pero no
+        # son el documento. Esto causaba 10 facturas pending con imagenes
+        # 12-50px que la IA no puede parsear.
+        if mime_type.startswith('image/'):
+            # Imagen: si <10KB o dimensiones <100x100 -> no es factura
+            if size < 10240:
+                logger.info(f"  [skip imagen pequena] {filename} ({size}b)")
+                continue
+        elif mime_type == 'application/pdf':
+            # PDF: si <5KB probablemente es un PDF vacio o de prueba
+            if size < 5120:
+                logger.info(f"  [skip PDF pequeno] {filename} ({size}b)")
+                continue
+
         att_data = service.users().messages().attachments().get(
             userId='me', messageId=msg_id, id=att_id
         ).execute()

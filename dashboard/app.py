@@ -82,6 +82,7 @@ def api_kpis(user: str = Depends(get_current_user)):
                coalesce(sum(total_amount), 0) as total
         FROM invoices
         WHERE type = 'expense' AND status != 'rejected'
+          AND COALESCE(category_raw, '') NOT IN ('nomina', 'administrativo', 'basura')
           AND date_trunc('month', invoice_date) = date_trunc('month', now())
     """)[0]
 
@@ -162,6 +163,8 @@ def api_gastos_por_proveedor(limit: int = 10, user: str = Depends(get_current_us
                coalesce(category_raw, 'sin categoría') as categoria
         FROM invoices
         WHERE type = 'expense' AND status != 'rejected'
+          AND COALESCE(category_raw, '') NOT IN ('nomina', 'administrativo', 'basura')
+          AND vendor_name IS NOT NULL
         GROUP BY vendor_name, category_raw
         ORDER BY total_eur DESC
         LIMIT %s
@@ -179,6 +182,7 @@ def api_gastos_por_categoria(user: str = Depends(get_current_user)):
         FROM invoices i
         LEFT JOIN categories c ON c.id = i.category_id
         WHERE i.type = 'expense'
+          AND COALESCE(i.category_raw, '') NOT IN ('nomina', 'administrativo', 'basura')
         GROUP BY categoria, color
         ORDER BY total_eur DESC
     """)]
@@ -199,7 +203,9 @@ def api_margen_por_mes(user: str = Depends(get_current_user)):
         SELECT to_char(invoice_date, 'YYYY-MM') as mes,
                coalesce(sum(total_amount), 0) as total_eur
         FROM invoices
-        WHERE type = 'expense' AND status != 'rejected' AND invoice_date >= now() - interval '6 months'
+        WHERE type = 'expense' AND status != 'rejected'
+          AND COALESCE(category_raw, '') NOT IN ('nomina', 'administrativo', 'basura')
+          AND invoice_date >= now() - interval '6 months'
         GROUP BY mes
     """)
     gastos = {}
@@ -325,6 +331,10 @@ tr:hover td{background:#1e293b88}
       <h2>🧾 Gastos por proveedor</h2>
       <div id="proveedores"></div>
     </div>
+    <div class="card">
+      <h2>📦 Gastos por categoría</h2>
+      <div id="categorias"></div>
+    </div>
     <div class="card grid-full">
       <h2>📋 Últimas facturas</h2>
       <div id="facturas"></div>
@@ -343,9 +353,9 @@ async function load(){
   // Use fetch with credentials (browser will send Basic auth from the login prompt)
   const f=async(url)=>{const r=await fetch(url);if(!r.ok)throw new Error(r.status);return r.json()};
 
-  const [kpis,canalMes,canalMeses,margen,ingresos,proveedores,facturas]=await Promise.all([
+  const [kpis,canalMes,canalMeses,margen,ingresos,proveedores,facturas,categorias]=await Promise.all([
     f('/api/kpis'),f('/api/ventas-por-canal'),f('/api/canal-por-mes'),
-    f('/api/margen-por-mes'),f('/api/ingresos-por-mes'),f('/api/gastos-por-proveedor'),f('/api/facturas-recientes')
+    f('/api/margen-por-mes'),f('/api/ingresos-por-mes'),f('/api/gastos-por-proveedor'),f('/api/facturas-recientes'),f('/api/gastos-por-categoria')
   ]);
 
   // KPIs
@@ -415,6 +425,16 @@ async function load(){
       <div class="bar-label" style="min-width:140px">${p.proveedor.slice(0,20)}</div>
       <div class="bar-track"><div class="bar-fill" style="width:${(p.total_eur/maxProv*100).toFixed(1)}%;background:#8b5cf6">${eur(p.total_eur)}</div></div>
       <div class="bar-value">${p.facturas} fc.</div>
+    </div>
+  `).join('');
+
+  // Categorias
+  const maxCat=Math.max(...categorias.map(c=>c.total_eur),1);
+  document.getElementById('categorias').innerHTML=categorias.map(c=>`
+    <div class="bar-row">
+      <div class="bar-label" style="min-width:110px">${c.categoria.slice(0,15)}</div>
+      <div class="bar-track"><div class="bar-fill" style="width:${(c.total_eur/maxCat*100).toFixed(1)}%;background:${c.color||'#6b7280'}">${eur(c.total_eur)}</div></div>
+      <div class="bar-value">${c.facturas} fc.</div>
     </div>
   `).join('');
 

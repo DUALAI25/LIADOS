@@ -262,23 +262,54 @@ def _save_payment_to_lastapp_table(bill_id, payment_date, amount_cents, method, 
 
 
 def _fetch_all(headers, url, params):
-    """Llama un endpoint de Last.app y devuelve el array de items.
-    La API v2 devuelve array plano, sin paginacion.
+    """Llama un endpoint de Last.app y devuelve TODOS los items, paginando.
+
+    La API v2 de Last.app devuelve array plano pero con un maximo de 100
+    items por peticion (rechaza limit > 100 con HTTP 400). Para rangos
+    grandes (varios meses) hay que iterar con ?offset=N hasta que la
+    respuesta llegue vacia o con <100 items.
+
+    FIX 2026-06-22: el codigo original asumia 'sin paginacion' y se
+    quedaba solo con los primeros ~20 items que devuelve la API por
+    defecto. Eso provoco el falso '0 ventas' del 18-22 junio aunque la
+    API S contenia 171 facturas reales (56+42+73).
     """
-    try:
-        resp = requests.get(url, headers=headers, params=params, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-        if isinstance(data, list):
-            return data
-        logger.warning("Respuesta inesperada de %s: %s", url, str(data)[:200])
-        return []
-    except requests.exceptions.RequestException as e:
-        logger.error("Error fetching %s: %s", url, _sanitize_error(e))
-        return []
-    except Exception as e:
-        logger.error("Error inesperado en %s: %s", url, _sanitize_error(e))
-        return []
+    all_items = []
+    offset = 0
+    page_size = 100  # maximo permitido por la API
+    max_pages = 200  # limite de seguridad: 20.000 items
+
+    for page in range(max_pages):
+        page_params = dict(params)
+        page_params['limit'] = page_size
+        page_params['offset'] = offset
+        try:
+            resp = requests.get(url, headers=headers, params=page_params, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.exceptions.RequestException as e:
+            logger.error("Error fetching %s (offset=%d): %s", url, offset, _sanitize_error(e))
+            return all_items
+        except Exception as e:
+            logger.error("Error inesperado en %s (offset=%d): %s", url, offset, _sanitize_error(e))
+            return all_items
+
+        if not isinstance(data, list):
+            logger.warning("Respuesta inesperada de %s (offset=%d): %s", url, offset, str(data)[:200])
+            return all_items
+
+        if not data:
+            break
+
+        all_items.extend(data)
+        logger.debug("  Pagina %d: %d items (acumulado: %d)", page, len(data), len(all_items))
+
+        if len(data) < page_size:
+            break
+
+        offset += page_size
+
+    return all_items
 
 
 if __name__ == '__main__':

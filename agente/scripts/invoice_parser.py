@@ -249,7 +249,13 @@ def _extract_pdf_text(pdf_content):
 
 
 def _call_with_retry(client, **kwargs):
-    """Llama a la API con reintentos en caso de error transitorio."""
+    """Llama a la API con reintentos en caso de error transitorio.
+
+    FIX 2026-06-22: distinguir 'insufficient_quota' (NO transitorio, no se
+    resuelve reintentando) de RateLimitError transitorio. Antes, quota
+    exhausted gastaba 3 reintentos con backoff 2+4+8 = 14s por cada
+    attachment, lo que bloqueaba gmail_collector >600s en una sola tanda.
+    """
     max_retries = 3
     base_delay = 2  # segundos
 
@@ -258,6 +264,13 @@ def _call_with_retry(client, **kwargs):
             return client.chat.completions.create(**kwargs)
         except Exception as e:
             err_name = e.__class__.__name__
+            err_msg = str(e)
+            # Errores NO transitorios: cortar inmediatamente y propagar
+            # para que el caller use el siguiente fallback de la cadena.
+            if 'insufficient_quota' in err_msg or 'billing' in err_msg.lower() or 'Invalid API Key' in err_msg:
+                logger.error(f"API no transitorio ({err_name}: quota/key): fallback inmediato")
+                raise
+            # Errores transitorios: backoff exponencial
             if 'RateLimitError' in err_name or 'APITimeoutError' in err_name or 'APIConnectionError' in err_name:
                 if attempt < max_retries:
                     wait = base_delay * (2 ** (attempt - 1))  # 2, 4, 8
@@ -267,7 +280,7 @@ def _call_with_retry(client, **kwargs):
                     logger.error(f"API error tras {max_retries} reintentos: {_sanitize_error(e)}")
                     raise
             else:
-                # Error no transitorio
+                # Error no transitorio (BadRequest, etc.)
                 raise
 
 

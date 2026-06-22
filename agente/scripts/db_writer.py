@@ -171,14 +171,27 @@ def log_agent(source, level, message, details=None):
     conn.close()
 
 def update_last_sync(source, status='ok'):
+    """Marca sync como terminado. UPSERT: crea la fila si no existe.
+
+    FIX 2026-06-22: el codigo original hacia UPDATE ... WHERE source = %s,
+    que NO crea la fila si no existe. Resultado: para 'gmail' (que nunca
+    tuvo fila en sync_control) cada ejecucion era como si fuera la
+    primera, re-procesando todo el historial. Re-insertar manualmente
+    antes era obligatorio. Ahora ON CONFLICT DO UPDATE crea la fila
+    automaticamente la primera vez y actualiza en las siguientes.
+    """
     conn = get_conn()
     cur = conn.cursor()
 
-    # Actualizar contador de items procesados
     cur.execute(
-        "UPDATE sync_control SET last_sync = NOW(), status = %s, "
-        "items_processed = items_processed + 1 WHERE source = %s",
-        (status, source)
+        "INSERT INTO sync_control (source, last_sync, status, items_processed, errors) "
+        "VALUES (%s, NOW(), %s, 1, 0) "
+        "ON CONFLICT (source) DO UPDATE SET "
+        "  last_sync = NOW(), "
+        "  status = EXCLUDED.status, "
+        "  items_processed = sync_control.items_processed + 1, "
+        "  errors = sync_control.errors + CASE WHEN EXCLUDED.status = 'error' THEN 1 ELSE 0 END",
+        (source, status),
     )
     conn.commit()
     conn.close()

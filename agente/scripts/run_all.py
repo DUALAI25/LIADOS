@@ -61,7 +61,7 @@ def run_block(name, cmd, dry_run=False, child_env=None):
             cmd,
             capture_output=True,
             text=True,
-            timeout=600,
+            timeout=1800,
             cwd=str(WORKSPACE),
             env=child_env or os.environ,
         )

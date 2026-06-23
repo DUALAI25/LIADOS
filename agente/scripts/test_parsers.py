@@ -24,9 +24,31 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 
+def _reload_invoice_parser_real():
+    """Fuerza reimport del invoice_parser REAL, no del mock que pueda haber
+    en sys.modules (e.g. si test_gmail_collector_dates.py se ejecuto antes).
+
+    El mock de test_gmail_collector_dates.py solo expone `parse_invoice`,
+    no las funciones puras que test_parsers valida. Sin este reload, los
+    `from invoice_parser import _normalize_category` fallan en suite
+    completo aunque pasen aislados.
+    """
+    sys.modules.pop('invoice_parser', None)
+    sys.modules.pop('agente.scripts.invoice_parser', None)
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        'invoice_parser', SCRIPTS_DIR / 'invoice_parser.py'
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules['invoice_parser'] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_normalize_category():
     """Verifica el mapeo de categorías"""
-    from invoice_parser import _normalize_category
+    invoice_parser = _reload_invoice_parser_real()
+    _normalize_category = invoice_parser._normalize_category
 
     # Categorías válidas
     assert _normalize_category('marketing') == 'marketing'
@@ -54,7 +76,8 @@ def test_normalize_category():
 
 def test_coerce_number():
     """Verifica la coerción segura de números"""
-    from invoice_parser import _coerce_number
+    invoice_parser = _reload_invoice_parser_real()
+    _coerce_number = invoice_parser._coerce_number
 
     assert _coerce_number('100.50') == 100.50
     assert _coerce_number(100) == 100.0
@@ -70,7 +93,8 @@ def test_coerce_number():
 
 def test_coerce_date():
     """Verifica la validación de fechas"""
-    from invoice_parser import _coerce_date
+    invoice_parser = _reload_invoice_parser_real()
+    _coerce_date = invoice_parser._coerce_date
 
     assert _coerce_date('2026-05-15') == '2026-05-15'
     assert _coerce_date('  2026-05-15  ') == '2026-05-15'
@@ -85,7 +109,8 @@ def test_coerce_date():
 
 def test_normalize_parsed_data():
     """Verifica la limpieza completa del JSON parseado"""
-    from invoice_parser import _normalize_parsed_data
+    invoice_parser = _reload_invoice_parser_real()
+    _normalize_parsed_data = invoice_parser._normalize_parsed_data
 
     raw = {
         'invoice_number': 'F-2026/001',

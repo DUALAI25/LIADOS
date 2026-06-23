@@ -1,47 +1,45 @@
 """
-test_lastapp_sync_real.py — Tests para lastapp_sync.py contra API real
+test_lastapp_sync_real.py — Tests para lastapp_sync.py (refactor 2026-06-22)
 
-Mockea requests.get para verificar:
-- Query params correctos (locationId, startDate, endDate)
-- Importes divididos por 100 (centimos -> EUR)
-- Facturas deleted filtradas
+El refactor del 22-06 cambió la API:
+  - save_invoice(data, source, source_id, ...) → _save_bill_to_lastapp_table(bill)
+  - save_payment(...) → _save_payment_to_lastapp_table(bill_id, ...)
+  - _find_invoice_by_source_id(...) → _find_bill_by_id(bill_id)
+
+Objetivo de los tests:
+  - Query params correctos (locationId, startDate, endDate)
+  - Importes se mantienen en CENTIMOS en la BD
+  - Facturas deleted se filtran antes de persistir
+  - Pagos sin billId se omiten
+  - Pagos enlazan por billId (UUID de Last.app)
+
+CRÍTICO: NO usar `sys.modules['db_writer'] = mock` a nivel de módulo.
+Eso contamina los tests que se ejecutan DESPUÉS de este archivo en la misma
+sesión pytest (e.g. test_orphan_payments.py, test_parsers.py que importan
+gmail_collector → db_writer real).
+
+En su lugar, importar lastapp_sync UNA SOLA VEZ y parchear sus atributos
+con MagicMock localmente en cada test.
 
 Ejecutar:
-    python3 agente/scripts/test_lastapp_sync_real.py
+    python3 -m pytest agente/scripts/test_lastapp_sync_real.py
 """
 import unittest
 from unittest.mock import MagicMock, patch
+import os
 import sys
-import types
 from pathlib import Path
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPTS_DIR))
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
 
-# Mock psycopg2
-psycopg2_mock = types.ModuleType('psycopg2')
-psycopg2_mock.connect = MagicMock()
-extras_mock = types.ModuleType('psycopg2.extras')
-extras_mock.RealDictCursor = object
-psycopg2_mock.extras = extras_mock
-sys.modules['psycopg2'] = psycopg2_mock
-sys.modules['psycopg2.extras'] = extras_mock
+# Importar lastapp_sync UNA VEZ al cargar el módulo. Esto importa db_writer
+# y gmail_collector de forma natural. Los tests luego parchean los métodos
+# específicos de lastapp_sync con @patch, sin tocar sys.modules.
+import lastapp_sync  # noqa: E402
 
-# Mock dedup_checker (no DB real)
-dedup_mock = types.ModuleType('dedup_checker')
-dedup_mock.is_duplicate_by_number = MagicMock(return_value=False)
-sys.modules['dedup_checker'] = dedup_mock
-
-# Mock db_writer methods
-def fake_save_invoice(data, source, source_id, inv_type='expense', minio_url=None):
-    return 'inv-uuid-123'
-
-def fake_get_last_sync(source):
-    from datetime import datetime
-    return datetime(2026, 6, 1)
-
-FakeResponse = MagicMock()
-
+# Constants
 BILL_FIXTURE = {
     'id': 'bill-uuid-1',
     'number': 'LS1-7061',
@@ -52,7 +50,10 @@ BILL_FIXTURE = {
     'creationTime': '2026-06-01T11:29:05.000Z',
     'finalizingTime': '2026-06-01T11:29:05.000Z',
     'company': {'name': 'Vamos al lio S.L.', 'taxId': 'B22774590'},
+    'customer': {'name': 'Cliente Mostrador'},
     'deleted': False,
+    'locationId': 'loc-1',
+    'organizationId': 'org-1',
 }
 
 BILL_DELETED = dict(BILL_FIXTURE, id='bill-deleted', number='LS1-DEL', deleted=True)
@@ -69,44 +70,34 @@ PAYMENT_FIXTURE = {
 
 PAYMENT_DELETED = dict(PAYMENT_FIXTURE, id='pay-deleted', deleted=True)
 
+PAYMENT_NO_BILLID = dict(PAYMENT_FIXTURE, id='pay-no-billid', billId=None)
 
-class TestLastappSyncBills(unittest.TestCase):
+
+def _set_env():
+    os.environ['LASTAPP_API_TOKEN'] = 'test-token'
+    os.environ['LASTAPP_ORGANIZATION_ID'] = 'org-1'
+    os.environ['LASTAPP_LOCATION_ID'] = 'loc-1'
+
+
+class TestLastappSyncFetchAll(unittest.TestCase):
+    """Verifica que _fetch_all pasa los query params correctos a requests.get."""
 
     def setUp(self):
-        import os
-        os.environ['DB_HOST'] = 'localhost'
-        os.environ['DB_PORT'] = '5432'
-        os.environ['DB_NAME'] = 'test'
-        os.environ['DB_USER'] = 'test'
-        os.environ['DB_PASSWORD'] = 'test'
+        _set_env()
 
-    @patch('db_writer.get_conn')
-    @patch('db_writer.save_invoice')
-    @patch('db_writer.get_last_sync')
-    @patch('requests.get')
-    def test_fetch_all_uses_correct_params(self, mock_get, mock_last_sync, mock_save_inv, mock_get_conn):
+    @patch('lastapp_sync.requests.get')
+    def test_fetch_all_uses_correct_params(self, mock_get):
         """_fetch_all llama con los query params correctos."""
-        import lastapp_sync
-
-        mock_last_sync.return_value = __import__('datetime').datetime(2026, 6, 1)
-        mock_save_inv.return_value = 'inv-uuid-1'
-
         mock_resp = MagicMock()
         mock_resp.json.return_value = []
         mock_resp.raise_for_status.return_value = None
         mock_get.return_value = mock_resp
 
-        import os
-        os.environ['LASTAPP_API_TOKEN'] = 'test-token'
-        os.environ['LASTAPP_ORGANIZATION_ID'] = 'org-1'
-        os.environ['LASTAPP_LOCATION_ID'] = 'loc-1'
-
         headers = lastapp_sync._build_headers()
-        result = lastapp_sync._fetch_all(headers, 'https://api.last.app/v2/bills', {
-            'locationId': 'loc-1',
-            'startDate': '2026-06-01',
-            'endDate': '2026-06-10',
-        })
+        result = lastapp_sync._fetch_all(
+            headers, 'https://api.last.app/v2/bills',
+            {'locationId': 'loc-1', 'startDate': '2026-06-01', 'endDate': '2026-06-10'}
+        )
 
         mock_get.assert_called_once()
         call_args = mock_get.call_args
@@ -115,142 +106,166 @@ class TestLastappSyncBills(unittest.TestCase):
         self.assertEqual(call_args[1]['params']['startDate'], '2026-06-01')
         self.assertEqual(call_args[1]['params']['endDate'], '2026-06-10')
 
-    @patch('lastapp_sync.save_invoice')
+
+class TestLastappSyncBills(unittest.TestCase):
+    """Verifica comportamiento de main() para facturas."""
+
+    def setUp(self):
+        _set_env()
+
     @patch('lastapp_sync.get_last_sync')
+    @patch('lastapp_sync._save_bill_to_lastapp_table')
     @patch('lastapp_sync._fetch_all')
     @patch('lastapp_sync._build_headers')
-    def test_bill_amounts_divided_by_100(self, mock_headers, mock_fetch, mock_last_sync, mock_save_inv):
-        """Importes en centimos se dividen por 100 para guardar en EUR."""
-        import lastapp_sync
+    def test_bill_amounts_stored_in_cents(
+        self, mock_headers, mock_fetch, mock_save, mock_last_sync
+    ):
+        """Importes en centimos se mantienen en centimos en BD."""
         from datetime import datetime
-
         mock_headers.return_value = {'Authorization': 'Bearer x', 'organizationID': 'o', 'locationID': 'l'}
         mock_last_sync.return_value = datetime(2026, 6, 1)
-        mock_save_inv.return_value = 'inv-uuid-1'
-
-        mock_fetch.side_effect = [
-            [BILL_FIXTURE],   # bills
-            [],                # payments
-        ]
-
-        import os
-        os.environ['LASTAPP_LOCATION_ID'] = 'loc-1'
+        mock_fetch.side_effect = [[BILL_FIXTURE], []]
+        mock_save.return_value = 'bill-uuid-1'
 
         lastapp_sync.main()
 
-        # Verificar que save_invoice recibio los importes / 100
-        call_kwargs = mock_save_inv.call_args[1]
-        data = mock_save_inv.call_args[0][0]
-        self.assertAlmostEqual(data['total_amount'], 13.00)
-        self.assertAlmostEqual(data['base_amount'], 11.82)
-        self.assertAlmostEqual(data['tax_amount'], 1.18)
-        self.assertEqual(data['invoice_number'], 'LS1-7061')
-        self.assertEqual(data['vendor_name'], 'Vamos al lio S.L.')
-        self.assertEqual(data['vendor_tax_id'], 'B22774590')
+        mock_save.assert_called_once()
+        bill_arg = mock_save.call_args[0][0]
+        self.assertEqual(bill_arg['total'], 1300)
+        self.assertEqual(bill_arg['tax'], 118)
+        self.assertEqual(bill_arg['taxableBase'], 1182)
+        self.assertEqual(bill_arg['number'], 'LS1-7061')
+        self.assertEqual(bill_arg['company']['name'], 'Vamos al lio S.L.')
+        self.assertEqual(bill_arg['company']['taxId'], 'B22774590')
 
-    @patch('lastapp_sync.save_invoice')
     @patch('lastapp_sync.get_last_sync')
+    @patch('lastapp_sync._save_bill_to_lastapp_table')
     @patch('lastapp_sync._fetch_all')
     @patch('lastapp_sync._build_headers')
-    def test_deleted_bills_are_filtered(self, mock_headers, mock_fetch, mock_last_sync, mock_save_inv):
-        """Facturas con deleted=true NO se guardan."""
-        import lastapp_sync
+    def test_deleted_bills_are_filtered(
+        self, mock_headers, mock_fetch, mock_save, mock_last_sync
+    ):
+        """Facturas con deleted=true NO se persisten."""
         from datetime import datetime
-
         mock_headers.return_value = {'Authorization': 'Bearer x', 'organizationID': 'o', 'locationID': 'l'}
         mock_last_sync.return_value = datetime(2026, 6, 1)
-        mock_save_inv.return_value = 'inv-uuid-1'
-
-        mock_fetch.side_effect = [
-            [BILL_DELETED],    # solo una factura deleted
-            [],                # payments
-        ]
-
-        import os
-        os.environ['LASTAPP_LOCATION_ID'] = 'loc-1'
+        mock_fetch.side_effect = [[BILL_DELETED], []]
+        mock_save.return_value = 'bill-deleted'
 
         lastapp_sync.main()
 
-        # save_invoice NO debe ser llamada porque la factura esta deleted
-        mock_save_inv.assert_not_called()
+        mock_save.assert_not_called()
 
-    @patch('lastapp_sync.save_payment')
-    @patch('lastapp_sync.save_invoice')
+
+class TestLastappSyncPayments(unittest.TestCase):
+    """Verifica comportamiento de main() para pagos."""
+
+    def setUp(self):
+        _set_env()
+
     @patch('lastapp_sync.get_last_sync')
+    @patch('lastapp_sync._save_payment_to_lastapp_table')
+    @patch('lastapp_sync._find_bill_by_id')
     @patch('lastapp_sync._fetch_all')
     @patch('lastapp_sync._build_headers')
     def test_payments_uses_correct_query_params(
-        self, mock_headers, mock_fetch, mock_last_sync, mock_save_inv, mock_save_pay
+        self, mock_headers, mock_fetch, mock_find_bill, mock_save_pay, mock_last_sync
     ):
-        """Payments usa locationId + startDate + endDate como query params."""
+        """Payments se consulta con locationId + startDate + endDate."""
         from datetime import datetime
-
         mock_headers.return_value = {
             'Authorization': 'Bearer x', 'organizationID': 'o', 'locationID': 'l'}
         mock_last_sync.return_value = datetime(2026, 6, 1)
-        mock_save_inv.return_value = 'inv-uuid-1'
-        mock_save_pay.return_value = 'pay-uuid-1'
+        mock_find_bill.return_value = 'inv-internal-uuid-1'
 
         calls = []
-        def capture_fetch(*args, **kwargs):
-            calls.append((args, kwargs))
-            if '/bills' in args[1]:
-                return [BILL_FIXTURE]
-            if '/payments' in args[1]:
+        def capture_fetch(headers, url, params):
+            calls.append((url, params))
+            if '/bills' in url:
+                return []
+            if '/payments' in url:
                 return [PAYMENT_FIXTURE]
             return []
         mock_fetch.side_effect = capture_fetch
+        mock_save_pay.return_value = 'pay-uuid-1'
 
-        import os
-        os.environ['LASTAPP_LOCATION_ID'] = 'loc-1'
-
-        import lastapp_sync
         lastapp_sync.main()
 
-        pay_call = [c for c in calls if '/payments' in c[0][1]]
+        pay_call = [c for c in calls if '/payments' in c[0]]
         self.assertEqual(len(pay_call), 1)
-        pay_params = pay_call[0][0][2]
+        pay_params = pay_call[0][1]
         self.assertEqual(pay_params['locationId'], 'loc-1')
         self.assertIn('startDate', pay_params)
         self.assertIn('endDate', pay_params)
 
-    @patch('lastapp_sync.save_payment')
-    @patch('lastapp_sync.save_invoice')
     @patch('lastapp_sync.get_last_sync')
-    @patch('lastapp_sync._find_invoice_by_source_id')
+    @patch('lastapp_sync._save_payment_to_lastapp_table')
+    @patch('lastapp_sync._find_bill_by_id')
     @patch('lastapp_sync._fetch_all')
     @patch('lastapp_sync._build_headers')
-    def test_payment_links_by_billId_not_number(
-        self, mock_headers, mock_fetch, mock_find_inv, mock_last_sync, mock_save_inv, mock_save_pay
+    def test_payment_links_by_billId(
+        self, mock_headers, mock_fetch, mock_find_bill, mock_save_pay, mock_last_sync
     ):
-        """Pago enlaza por billId (UUID directo), no por invoice_number."""
+        """Pago enlaza por billId (UUID de Last.app) buscando en lastapp_bills."""
         from datetime import datetime
-
         mock_headers.return_value = {
             'Authorization': 'Bearer x', 'organizationID': 'o', 'locationID': 'l'}
         mock_last_sync.return_value = datetime(2026, 6, 1)
-        mock_save_inv.return_value = 'inv-uuid-1'
+        mock_find_bill.return_value = 'inv-internal-uuid-from-bill'
+        mock_fetch.side_effect = [[], [PAYMENT_FIXTURE]]
         mock_save_pay.return_value = 'pay-uuid-1'
-        mock_find_inv.return_value = 'inv-uuid-from-bill'
 
-        mock_fetch.side_effect = [
-            [],                # bills (vacio, no importa)
-            [PAYMENT_FIXTURE], # payments
-        ]
-
-        import os
-        os.environ['LASTAPP_LOCATION_ID'] = 'loc-1'
-
-        import lastapp_sync
         lastapp_sync.main()
 
-        mock_save_pay.assert_called_once_with(
-            invoice_id='inv-uuid-from-bill',
-            payment_date='2026-06-01T11:29:05.000Z',
-            amount=13.00,
-            source='card',
-            source_detail=None,
-        )
+        mock_find_bill.assert_called_with('bill-uuid-1')
+
+        mock_save_pay.assert_called_once()
+        kwargs = mock_save_pay.call_args.kwargs
+        self.assertEqual(kwargs['bill_id'], 'inv-internal-uuid-from-bill')
+        self.assertEqual(kwargs['amount_cents'], 1300)
+        self.assertEqual(kwargs['method'], 'card')
+        self.assertEqual(kwargs['payment_id'], 'pay-uuid-1')
+        self.assertEqual(kwargs['payment_date'], '2026-06-01T11:29:05.000Z')
+
+    @patch('lastapp_sync.get_last_sync')
+    @patch('lastapp_sync._save_payment_to_lastapp_table')
+    @patch('lastapp_sync._find_bill_by_id')
+    @patch('lastapp_sync._fetch_all')
+    @patch('lastapp_sync._build_headers')
+    def test_payment_without_billId_is_skipped(
+        self, mock_headers, mock_fetch, mock_find_bill, mock_save_pay, mock_last_sync
+    ):
+        """Pago sin billId se omite (no se puede enlazar)."""
+        from datetime import datetime
+        mock_headers.return_value = {
+            'Authorization': 'Bearer x', 'organizationID': 'o', 'locationID': 'l'}
+        mock_last_sync.return_value = datetime(2026, 6, 1)
+        mock_fetch.side_effect = [[], [PAYMENT_NO_BILLID]]
+        mock_save_pay.return_value = 'pay-uuid-1'
+
+        lastapp_sync.main()
+
+        mock_save_pay.assert_not_called()
+        mock_find_bill.assert_not_called()
+
+    @patch('lastapp_sync.get_last_sync')
+    @patch('lastapp_sync._save_payment_to_lastapp_table')
+    @patch('lastapp_sync._find_bill_by_id')
+    @patch('lastapp_sync._fetch_all')
+    @patch('lastapp_sync._build_headers')
+    def test_deleted_payments_are_filtered(
+        self, mock_headers, mock_fetch, mock_find_bill, mock_save_pay, mock_last_sync
+    ):
+        """Pagos con deleted=true NO se persisten."""
+        from datetime import datetime
+        mock_headers.return_value = {
+            'Authorization': 'Bearer x', 'organizationID': 'o', 'locationID': 'l'}
+        mock_last_sync.return_value = datetime(2026, 6, 1)
+        mock_fetch.side_effect = [[], [PAYMENT_DELETED]]
+
+        lastapp_sync.main()
+
+        mock_save_pay.assert_not_called()
 
 
 if __name__ == '__main__':

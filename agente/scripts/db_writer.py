@@ -22,7 +22,7 @@ def save_invoice(data, source, source_id, inv_type='expense', minio_url=None):
             status, raw_file_url, parsed_json, content_hash, confidence_score
         ) VALUES (
             %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-            (SELECT id FROM categories WHERE name = %s LIMIT 1),
+            (SELECT cm.category_id FROM category_mapping cm WHERE cm.category_raw = %s LIMIT 1),
             %s, %s, %s, %s, %s, %s, %s, %s
         )
         ON CONFLICT (source, source_id) DO UPDATE SET

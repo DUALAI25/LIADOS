@@ -21,6 +21,7 @@ from pathlib import Path
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
+from db_connection import get_conn
 
 # Carga .env manualmente (este script puede correr sin venv, standalone o via -m)
 try:
@@ -127,6 +128,34 @@ def get_service(account):
         return None
 
 
+def save_non_invoice(account, source_id, attachment, reason, subject):
+    """Guarda un adjunto descartado por el filtro `is_invoice` en la tabla
+    `gmail_non_invoices` para auditoría.
+
+    Args:
+        account: nombre de la cuenta Gmail (ej: 'principal')
+        source_id: identificador único del mensaje (ej: 'principal:msgid')
+        attachment: dict con filename, content_hash, mime_type
+        reason: motivo del descarte (ej: 'keyword:\\bcontrato\\b')
+        subject: asunto del email
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO gmail_non_invoices (
+            account, source_id, filename, mime_type, content_hash,
+            reason, subject, detected_at
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+        ON CONFLICT (account, source_id, content_hash) DO NOTHING
+    """, (
+        account, source_id, attachment['filename'], attachment['mime_type'],
+        attachment['content_hash'], reason, (subject or '')[:500]
+    ))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
 def process_account(account, search_query=None):
     """Procesa todas las facturas de una cuenta"""
     if search_query is None:
@@ -184,6 +213,29 @@ def process_account(account, search_query=None):
                 storage_info = save_raw_file(att['content'], att['filename'])
                 local_path = storage_info['local_path']
                 minio_url = storage_info.get('minio_url')
+
+                # FIX 2026-06-23: filtrar adjuntos que NO son facturas reales ANTES de
+                # parsear. Evita meter contratos, propuestas, info legal y modelos
+                # Hacienda en la tabla `invoices`. Lo que se descarta se guarda
+                # en `gmail_non_invoices` para auditoría.
+                try:
+                    from is_invoice_filter import is_invoice_attachment
+                    msg_subject = ''
+                    for h in message.get('payload', {}).get('headers', []):
+                        if h.get('name', '').lower() == 'subject':
+                            msg_subject = h.get('value', '')
+                            break
+                    is_inv, reason = is_invoice_attachment(att['filename'], msg_subject)
+                    if not is_inv:
+                        try:
+                            save_non_invoice(account, source_id, att, reason, msg_subject)
+                        except Exception as e:
+                            logger.warning(f"  [skip no-factura, no se pudo guardar en non_invoices: {e}]")
+                        logger.info(f"  [skip no-factura] {att['filename']} ({reason})")
+                        continue
+                except ImportError:
+                    # Si is_invoice_filter no está disponible, continuar sin filtrar
+                    logger.debug("is_invoice_filter no disponible, saltando filtro")
 
                 # Parsear con IA
                 parsed = parse_invoice(local_path, att['mime_type'], att['filename'])

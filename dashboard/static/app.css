@@ -351,6 +351,19 @@ select.seg:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3
 @keyframes msgin { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 .msg.user { align-self: flex-end; background: var(--blue); color: #fff; border-bottom-right-radius: var(--r-sm); }
 .msg.bot { align-self: flex-start; background: var(--bg-inset); border: 1px solid var(--border); color: var(--fg-0); border-bottom-left-radius: var(--r-sm); }
+/* Markdown dentro de mensajes del bot */
+.msg.bot p { margin: 0 0 6px; }
+.msg.bot p:last-child { margin-bottom: 0; }
+.msg.bot ul.md-ul, .msg.bot ol.md-ol { margin: 4px 0 6px; padding-left: 20px; }
+.msg.bot ul.md-ul li, .msg.bot ol.md-ol li { margin-bottom: 2px; }
+.msg.bot b { color: var(--fg-0); font-weight: 700; }
+.msg.bot .md-amt { font-family: var(--font-mono); font-weight: 600; color: var(--green-fg); }
+.msg.bot .md-code-i { background: var(--bg-3); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 0 5px; font-family: var(--font-mono); font-size: var(--fz-sm); color: var(--blue-fg); }
+.msg.bot pre.md-code { background: var(--bg-0); border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--s-3); margin: 6px 0; overflow-x: auto; }
+.msg.bot pre.md-code code { font-family: var(--font-mono); font-size: var(--fz-sm); color: var(--fg-1); white-space: pre; }
+.msg.bot .table-wrap { margin: 6px 0; }
+.msg.bot .table-wrap table { font-size: var(--fz-sm); }
+.msg.bot .table-wrap th, .msg.bot .table-wrap td { padding: 5px 9px; }
 .msg.error { align-self: center; background: var(--red-bg); color: var(--red-fg); font-size: var(--fz-sm); border-radius: var(--r-md); }
 .msg .tools { font-size: var(--fz-xs); color: var(--fg-3); margin-top: var(--s-2); padding-top: var(--s-2); border-top: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: 4px; }
 .msg .tools .tchip { background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--r-pill); padding: 1px 7px; font-family: var(--font-mono); }

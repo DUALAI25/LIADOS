@@ -14,7 +14,7 @@ import secrets
 from datetime import date, datetime
 from decimal import Decimal
 from fastapi import Query, FastAPI, Depends, HTTPException, status, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
@@ -414,6 +414,36 @@ def api_chat_confirm(req: ConfirmRequest, user: str = Depends(get_current_user))
 def api_chat_cancel(req: ConfirmRequest, user: str = Depends(get_current_user)):
     """Cancela una accion pendiente usando su token."""
     return chat_engine.cancel(req.confirmation_token)
+
+
+@app.post("/api/chat/stream")
+def api_chat_stream(req: ChatRequest, user: str = Depends(get_current_user)):
+    """Chat conversacional STREAMING via Server-Sent Events.
+
+    Emite eventos SSE:
+      event: token  data: {"text": "..."}        (tokens de la respuesta final)
+      event: tool   data: {"name": "..."}        (inicio de ejecucion de tool)
+      event: done   data: {"reply","pending_confirmation","tools_used","history"}
+      event: error  data: {"message": "..."}
+    """
+    import json as _json
+
+    def gen():
+        try:
+            for ev in chat_engine.chat_stream(req.message, req.history):
+                yield f"event: {ev['type']}\ndata: {_json.dumps(ev, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            yield f"event: error\ndata: {_json.dumps({'message': str(e)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # desactivar buffering en proxies
+            "Connection": "keep-alive",
+        },
+    )
 
 
 # ── HTML Dashboard ─────────────────────────────────────────────

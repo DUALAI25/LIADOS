@@ -18,6 +18,48 @@ const fmt = n => Math.abs(n)>=1000 ? (n/1000).toFixed(1).replace('.0','')+'k' : 
 const pct = (cur, prev) => { if (!prev) return null; return (cur-prev)/Math.abs(prev)*100; };
 const esc = s => (s||'').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 
+// ── Markdown renderer (minimal, seguro: escapa primero) ──────────────────
+function mdToHtml(md) {
+  if (!md) return '';
+  // 1. Extraer bloques de codigo ``` ... ```
+  const blocks = [];
+  let text = md.replace(/```(\w*)\n?([\s\S]*?)```/g, (m, lang, code) => {
+    blocks.push(`<pre class="md-code"><code>${esc(code.replace(/\n$/,''))}</code></pre>`);
+    return `\u0000BLOCK${blocks.length-1}\u0000`;
+  });
+  // 2. Escapar el resto
+  text = esc(text);
+  // 3. Tablas: | a | b |\n| --- | --- |\n...
+  text = text.replace(/^(\|.+\|)\n(\|[\s\-:|]+\|)\n((?:\|.+\|\n?)+)/gm, (m, hdr, sep, body) => {
+    const cols = hdr.split('|').filter((_,i,a)=>i>0&&i<a.length-1).map(c=>c.trim());
+    const rows = body.trim().split('\n').map(r => r.split('|').filter((_,i,a)=>i>0&&i<a.length-1).map(c=>c.trim()));
+    const thead = '<tr>' + cols.map(c=>`<th>${c}</th>`).join('') + '</tr>';
+    const tbody = rows.map(r => '<tr>' + r.map((c,i)=>`<td${i===0?' class="num"':''}>${c}</td>`).join('') + '</tr>').join('');
+    return `<div class="table-wrap"><table><thead>${thead}</thead><tbody>${tbody}</tbody></table></div>`;
+  });
+  // 4. Inline: bold, codigo, separadores de linea en listas
+  const lines = text.split('\n');
+  let out = '', inUl = false, inOl = false;
+  const closeLists = () => { if(inUl){out+='</ul>';inUl=false;} if(inOl){out+='</ol>';inOl=false;} };
+  for (let line of lines) {
+    if (/^\s*[-•]\s+/.test(line)) { if(!inUl){closeLists();out+='<ul class="md-ul">';inUl=true;} out += '<li>'+inlineMd(line.replace(/^\s*[-•]\s+/,''))+'</li>'; }
+    else if (/^\s*\d+\.\s+/.test(line)) { if(!inOl){closeLists();out+='<ol class="md-ol">';inOl=true;} out += '<li>'+inlineMd(line.replace(/^\s*\d+\.\s+/,''))+'</li>'; }
+    else if (line.trim()==='') { closeLists(); out += ''; }
+    else { closeLists(); out += '<p>'+inlineMd(line)+'</p>'; }
+  }
+  closeLists();
+  out = out.replace(/<\/p><p>/g, '<br>');
+  // 5. Restaurar bloques de codigo
+  out = out.replace(/\u0000BLOCK(\d+)\u0000/g, (m,i) => blocks[+i]);
+  return out;
+}
+function inlineMd(s) {
+  return s
+    .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+    .replace(/`([^`]+)`/g, '<code class="md-code-i">$1</code>')
+    .replace(/(^|\s)(\d[\d.\u00a0]*\s?€)/g, '$1<span class="md-amt">$2</span>');
+}
+
 // ── Theme ────────────────────────────────────────────────────────────────
 function initTheme() {
   const saved = localStorage.getItem('liados_theme');
@@ -368,23 +410,83 @@ function initChat() {
 function renderSuggest() { $('#chatSuggest').innerHTML = SUGGEST.map(s=>`<button>${s}</button>`).join(''); $$('#chatSuggest button').forEach(b=>b.onclick=()=>{$('#chatText').value=b.textContent;sendMsg();}); }
 function saveHist(){ try{ localStorage.setItem('liados_chat_hist',JSON.stringify(chatHistory.slice(-20))); }catch(e){} }
 function addMsg(text,cls,extra){ const d=document.createElement('div'); d.className='msg '+cls; d.innerHTML=text+(extra||''); $('#chatBody').appendChild(d); d.scrollIntoView({behavior:'smooth'}); return d; }
-function renderHistory(){ $('#chatBody').innerHTML=''; if(chatHistory.length===0){$('#chatBody').innerHTML='<div class="msg bot">¡Hola! 👋 Soy el asistente de Liados. Pregúntame sobre ventas, gastos, productos o reservas.</div>';} else chatHistory.forEach(m=>addMsg(esc(m.content), m.role==='user'?'user':'bot')); }
+function renderHistory(){ $('#chatBody').innerHTML=''; if(chatHistory.length===0){$('#chatBody').innerHTML='<div class="msg bot">¡Hola! 👋 Soy el asistente de Liados. Pregúntame sobre ventas, gastos, productos o reservas.</div>';} else chatHistory.forEach(m=>addMsg(m.role==='user'?esc(m.content):mdToHtml(m.content), m.role==='user'?'user':'bot')); }
 
 async function sendMsg(){
   const txt=$('#chatText'); const msg=txt.value.trim(); if(!msg) return;
   txt.value=''; $('#chatSend').disabled=true;
   addMsg(esc(msg),'user');
+
+  // Indicador "pensando" (se reemplaza al llegar el primer token/tool)
   const typing=document.createElement('div'); typing.className='typing'; typing.innerHTML='<span></span><span></span><span></span>'; $('#chatBody').appendChild(typing); typing.scrollIntoView();
+
+  let botMsg = null;          // burbuja del bot (se crea con el primer token)
+  let fullReply = '';
+  let toolsUsed = [];
+  let pending = null;
+  let toolsChip = null;       // contenedor de chips de tools (live)
+
   try {
-    const r = await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg,history:chatHistory})});
-    const data = await r.json();
-    typing.remove();
-    const tools = data.tools_used && data.tools_used.length ? `<div class="tools">${data.tools_used.map(t=>`<span class="tchip">🔧 ${t}</span>`).join('')}</div>` : '';
-    addMsg(esc(data.reply||'(sin respuesta)'), 'bot', tools);
-    chatHistory = [...chatHistory, {role:'user',content:msg}, {role:'assistant',content:data.reply||''}].slice(-20);
-    saveHist();
-    if (data.pending_confirmation && data.pending_confirmation.token) { pendingToken = data.pending_confirmation.token; showConfirm(data.pending_confirmation); }
-  } catch(e) { typing.remove(); addMsg('Error de conexión: '+e.message,'error'); }
+    const r = await fetch('/api/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg,history:chatHistory})});
+    if (!r.ok) throw new Error('HTTP '+r.status);
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, {stream:true});
+      const events = buffer.split('\n\n');
+      buffer = events.pop();  // conserva el incompleto
+      for (const ev of events) {
+        const lines = ev.split('\n');
+        let type='', data='';
+        for (const l of lines) { if (l.startsWith('event: ')) type=l.slice(7); else if (l.startsWith('data: ')) data=l.slice(6); }
+        if (!type) continue;
+        const payload = data ? JSON.parse(data) : {};
+
+        if (type === 'tool') {
+          if (typing.parentNode) typing.remove();
+          toolsUsed.push(payload.name);
+          // Crear/actualizar chips de tools en la burbuja bot (si ya existe) o en una provisional
+          if (!toolsChip) { toolsChip = document.createElement('div'); toolsChip.className='msg bot'; toolsChip.style.background='transparent'; toolsChip.style.border='none'; toolsChip.style.padding='0'; toolsChip.style.alignSelf='flex-start'; toolsChip.innerHTML='<div class="tools" style="border:none;padding:0;margin:0"></div>'; $('#chatBody').appendChild(toolsChip); }
+          toolsChip.querySelector('.tools').innerHTML += `<span class="tchip">🔧 ${esc(payload.name)}</span>`;
+          toolsChip.scrollIntoView({behavior:'smooth'});
+        } else if (type === 'token') {
+          if (typing.parentNode) typing.remove();
+          if (!botMsg) { botMsg = addMsg('', 'bot'); }
+          fullReply += payload.text || '';
+          botMsg.innerHTML = mdToHtml(fullReply);
+          botMsg.scrollIntoView({behavior:'smooth'});
+        } else if (type === 'done') {
+          if (typing.parentNode) typing.remove();
+          fullReply = payload.reply !== undefined ? payload.reply : fullReply;
+          pending = payload.pending_confirmation;
+          // Adjuntar chips de tools a la burbuja final si existen
+          if (toolsUsed.length) {
+            const chips = `<div class="tools">${toolsUsed.map(t=>`<span class="tchip">🔧 ${esc(t)}</span>`).join('')}</div>`;
+            if (botMsg) botMsg.innerHTML = mdToHtml(fullReply) + chips;
+            if (toolsChip) toolsChip.remove();
+          }
+          chatHistory = [...chatHistory, {role:'user',content:msg}, {role:'assistant',content:fullReply}].slice(-20);
+          saveHist();
+          if (pending && pending.token) { pendingToken = pending.token; showConfirm(pending); }
+        } else if (type === 'error') {
+          if (typing.parentNode) typing.remove();
+          if (toolsChip) toolsChip.remove();
+          addMsg('⚠️ '+(payload.message||'Error desconocido'),'error');
+          return;
+        }
+      }
+    }
+    // Si no llegó evento done (caída de conexión)
+    if (!botMsg && fullReply === '') { if (typing.parentNode) typing.remove(); addMsg('Sin respuesta del servidor.','error'); }
+  } catch(e) {
+    if (typing.parentNode) typing.remove();
+    if (toolsChip) toolsChip.remove();
+    addMsg('Error de conexión: '+e.message,'error');
+  }
   $('#chatSend').disabled=false; $('#chatText').focus();
 }
 

@@ -382,6 +382,7 @@ async function loadAll() {
   buildCanalFilter();
   renderCharts();
   renderRest();
+  wireBarDrillDown();
 }
 
 // ── MoM toggle (chart diario) ────────────────────────────────────────────
@@ -501,11 +502,136 @@ function showConfirm(p){
 // ── Reloj ────────────────────────────────────────────────────────────────
 function tick(){ const d=new Date(); $('#clock').textContent=d.toLocaleString('es-ES',{weekday:'short',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}); }
 
+// ── Modales + búsqueda + drill-down + atajos (Capa 6) ────────────────────
+function openModal(id){ $('#'+id).classList.add('open'); }
+function closeModal(id){ $('#'+id).classList.remove('open'); }
+function closeAllModals(){ $$('.modal-overlay').forEach(m=>m.classList.remove('open')); }
+
+function highlight(text, q) {
+  if (!q) return esc(text);
+  const re = new RegExp('('+q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','ig');
+  return esc(text).replace(re,'<mark>$1</mark>');
+}
+
+let searchTimer = null;
+function initSearch() {
+  const input = $('#searchInput');
+  // Click en la barra de búsqueda del header abre el modal
+  const headerSearch = $('.header .search');
+  if (headerSearch) headerSearch.onclick = (e) => { e.preventDefault(); openModal('searchModal'); input.focus(); };
+  input.oninput = () => {
+    clearTimeout(searchTimer);
+    const q = input.value.trim();
+    if (q.length < 2) { $('#searchResults').innerHTML = ''; return; }
+    searchTimer = setTimeout(() => doSearch(q), 200);
+  };
+  input.onkeydown = (e) => { if (e.key === 'Enter') doSearch(input.value.trim()); };
+}
+
+async function doSearch(q) {
+  $('#searchResults').innerHTML = '<div class="search-empty">Buscando…</div>';
+  try {
+    const data = await getJSON('/api/search?q=' + encodeURIComponent(q));
+    let html = '';
+    if (data.proveedores.length) {
+      html += '<div class="search-group"><div class="sg-title">Proveedores</div>';
+      html += data.proveedores.map(p => `
+        <div class="search-item" data-drill="proveedor" data-name="${esc(p.proveedor)}">
+          <div class="si-main"><div class="si-name">${highlight(p.proveedor,q)}</div><div class="si-sub">${p.facturas} facturas</div></div>
+          <div class="si-amount">${eur(p.total_eur)}</div>
+        </div>`).join('');
+      html += '</div>';
+    }
+    if (data.facturas.length) {
+      html += '<div class="search-group"><div class="sg-title">Facturas</div>';
+      html += data.facturas.map(f => `
+        <div class="search-item" data-drill="proveedor" data-name="${esc(f.vendor_name||'')}">
+          <div class="si-main"><div class="si-name">${highlight(f.vendor_name||'Sin nombre',q)} ${f.invoice_number?'· '+esc(f.invoice_number):''}</div><div class="si-sub">${f.invoice_date||''} · ${esc(f.category_raw||'')}</div></div>
+          <div class="si-amount">${eur(f.total_amount)}</div>
+        </div>`).join('');
+      html += '</div>';
+    }
+    if (!html) html = '<div class="search-empty">Sin resultados para "'+esc(q)+'"</div>';
+    $('#searchResults').innerHTML = html;
+    // Wire click → drill-down
+    $$('#searchResults .search-item').forEach(item => item.onclick = () => {
+      const name = item.getAttribute('data-name');
+      if (name) { closeAllModals(); openDrill('proveedor', name); }
+    });
+  } catch(e) { $('#searchResults').innerHTML = '<div class="search-empty">Error: '+esc(e.message)+'</div>'; }
+}
+
+async function openDrill(type, name) {
+  openModal('drillModal');
+  $('#drillTitle').textContent = (type==='proveedor'?'🧾 ':'📦 ') + name;
+  $('#drillBody').innerHTML = '<div class="search-empty">Cargando…</div>';
+  try {
+    const url = type==='proveedor'
+      ? '/api/proveedor/' + encodeURIComponent(name) + '/facturas'
+      : '/api/categoria/' + encodeURIComponent(name) + '/facturas';
+    const data = await getJSON(url);
+    let html = '';
+    if (data.stats) {
+      html += '<div class="drill-stats">' +
+        `<div class="drill-stat"><div class="ds-label">Facturas</div><div class="ds-value">${data.stats.total_facturas}</div></div>` +
+        `<div class="drill-stat"><div class="ds-label">Total</div><div class="ds-value">${eur(data.stats.total_eur)}</div></div>` +
+        `<div class="drill-stat"><div class="ds-label">Ticket medio</div><div class="ds-value">${eur(data.stats.ticket_medio)}</div></div>` +
+        `<div class="drill-stat"><div class="ds-label">Periodo</div><div class="ds-value" style="font-size:var(--fz-sm)">${data.stats.primera||'—'} → ${data.stats.ultima||'—'}</div></div>` +
+        '</div>';
+    }
+    const rows = data.facturas || [];
+    html += `<div class="table-wrap"><table><thead><tr><th>Fecha</th><th>${type==='proveedor'?'Nº':'Proveedor'}</th><th>Categoría</th><th class="num">Total</th></tr></thead><tbody>` +
+      rows.map(r => `<tr><td>${r.invoice_date||'—'}</td><td>${esc(type==='proveedor'?(r.invoice_number||''):(r.proveedor||''))}</td><td>${esc(r.category_raw||'')}</td><td class="num"><b>${eur(r.total_amount)}</b></td></tr>`).join('') +
+      '</tbody></table></div>';
+    $('#drillBody').innerHTML = html || '<div class="search-empty">Sin facturas.</div>';
+  } catch(e) { $('#drillBody').innerHTML = '<div class="search-empty">Error: '+esc(e.message)+'</div>'; }
+}
+
+// Drill-down click en barras de proveedores/categorías
+function wireBarDrillDown() {
+  $$('#proveedores .bar-row').forEach(row => {
+    row.style.cursor = 'pointer';
+    const name = row.querySelector('.bar-label')?.textContent?.trim();
+    row.onclick = () => name && openDrill('proveedor', name);
+    row.onmouseenter = () => row.style.filter = 'brightness(1.1)';
+    row.onmouseleave = () => row.style.filter = '';
+  });
+  $$('#categorias .bar-row').forEach(row => {
+    row.style.cursor = 'pointer';
+    const name = row.querySelector('.bar-label')?.textContent?.trim();
+    row.onclick = () => name && openDrill('categoria', name);
+    row.onmouseenter = () => row.style.filter = 'brightness(1.1)';
+    row.onmouseleave = () => row.style.filter = '';
+  });
+}
+
+function initShortcuts() {
+  document.addEventListener('keydown', (e) => {
+    const tag = (e.target.tagName || '').toLowerCase();
+    const typing = tag === 'input' || tag === 'textarea';
+    // Esc cierra todo
+    if (e.key === 'Escape') { closeAllModals(); $('#chatPanel').classList.remove('open'); return; }
+    // En inputs: solo Esc (ya gestionado)
+    if (typing) return;
+    if (e.key === '/') { e.preventDefault(); openModal('searchModal'); $('#searchInput').focus(); }
+    else if (e.key.toLowerCase() === 'c') { $('#chatFab').click(); }
+    else if (e.key.toLowerCase() === 'r') { location.reload(); }
+    else if (e.key.toLowerCase() === 't') { toggleTheme(); }
+    else if (e.key === '?') { e.preventDefault(); openModal('helpModal'); }
+  });
+  // Botones data-close
+  $$('[data-close]').forEach(b => b.onclick = () => closeModal(b.getAttribute('data-close')));
+  // Click fuera del modal cierra
+  $$('.modal-overlay').forEach(m => m.onclick = (e) => { if (e.target === m) m.classList.remove('open'); });
+}
+
 // ── Init ─────────────────────────────────────────────────────────────────
 function init() {
   initTheme();
   initSidebar();
   initChat();
+  initSearch();
+  initShortcuts();
   applyChartTheme();
   $('#themeToggle').onclick = toggleTheme;
   tick(); setInterval(tick, 30000);

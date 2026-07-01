@@ -446,6 +446,158 @@ def api_chat_stream(req: ChatRequest, user: str = Depends(get_current_user)):
     )
 
 
+# ── Capa 6: Búsqueda global, export CSV, drill-down ─────────────
+
+from fastapi.responses import Response
+
+
+@app.get("/api/search")
+def api_search(term: str = Query("", alias="q"), user: str = Depends(get_current_user)):
+    """Busqueda global full-text sobre facturas + ilike sobre vendors."""
+    term = (term or "").strip()
+    if len(term) < 2:
+        return {"facturas": [], "proveedores": [], "total": 0}
+
+    # 1. Facturas (full-text con el indice GIN existente + ilike)
+    facturas = q("""
+        SELECT id, invoice_number, vendor_name, total_amount, invoice_date,
+               category_raw, type, status, description,
+               ts_rank(
+                   to_tsvector('spanish', coalesce(vendor_name,'')||' '||coalesce(description,'')||' '||coalesce(invoice_number,'')),
+                   plainto_tsquery('spanish', %s)
+               ) as rank
+        FROM invoices
+        WHERE to_tsvector('spanish', coalesce(vendor_name,'')||' '||coalesce(description,'')||' '||coalesce(invoice_number,'')) @@ plainto_tsquery('spanish', %s)
+           OR vendor_name ILIKE %s
+        ORDER BY rank DESC NULLS LAST, invoice_date DESC
+        LIMIT 15
+    """, (term, term, f"%{term}%"))
+
+    # 2. Proveedores agregados (por vendor_name)
+    proveedores = q("""
+        SELECT coalesce(vendor_name, 'Sin nombre') as proveedor,
+               count(*) as facturas,
+               coalesce(sum(total_amount), 0) as total_eur
+        FROM invoices
+        WHERE vendor_name ILIKE %s AND is_invoice = true
+        GROUP BY vendor_name
+        ORDER BY total_eur DESC
+        LIMIT 8
+    """, (f"%{term}%",))
+
+    return {
+        "facturas": [to_dict(r) for r in facturas],
+        "proveedores": [to_dict(r) for r in proveedores],
+        "total": len(facturas) + len(proveedores),
+    }
+
+
+@app.get("/api/proveedor/{nombre}/facturas")
+def api_proveedor_facturas(nombre: str, limit: int = 50, user: str = Depends(get_current_user)):
+    """Drill-down: todas las facturas de un proveedor."""
+    rows = q("""
+        SELECT invoice_number, invoice_date, total_amount, base_amount, tax_amount,
+               category_raw, status, description
+        FROM invoices
+        WHERE vendor_name ILIKE %s
+          AND type = 'expense' AND status != 'rejected' AND is_invoice = true
+        ORDER BY invoice_date DESC
+        LIMIT %s
+    """, (f"%{nombre}%", limit))
+    stats = q("""
+        SELECT count(*) as total_facturas,
+               coalesce(sum(total_amount), 0) as total_eur,
+               coalesce(avg(total_amount), 0) as ticket_medio,
+               min(invoice_date) as primera,
+               max(invoice_date) as ultima
+        FROM invoices
+        WHERE vendor_name ILIKE %s
+          AND type = 'expense' AND status != 'rejected' AND is_invoice = true
+    """, (f"%{nombre}%",))[0]
+    return {"stats": to_dict(stats), "facturas": [to_dict(r) for r in rows]}
+
+
+@app.get("/api/categoria/{categoria}/facturas")
+def api_categoria_facturas(categoria: str, limit: int = 50, user: str = Depends(get_current_user)):
+    """Drill-down: todas las facturas de una categoria."""
+    rows = q("""
+        SELECT coalesce(vendor_name, 'Sin nombre') as proveedor,
+               invoice_number, invoice_date, total_amount, status
+        FROM invoices
+        WHERE category_raw ILIKE %s
+          AND type = 'expense' AND status != 'rejected' AND is_invoice = true
+        ORDER BY invoice_date DESC
+        LIMIT %s
+    """, (f"%{categoria}%", limit))
+    return {"facturas": [to_dict(r) for r in rows]}
+
+
+def _csv(rows: list, columns: list, filename: str) -> Response:
+    """Genera una respuesta CSV a partir de filas (dicts) + columnas."""
+    import csv
+    import io
+    buf = io.StringIO()
+    buf.write("\ufeff")  # BOM para que Excel lea UTF-8
+    w = csv.writer(buf, delimiter=";", lineterminator="\n")
+    w.writerow(columns)
+    for r in rows:
+        w.writerow([r.get(c, "") for c in columns])
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/export/{view}")
+def api_export(view: str, user: str = Depends(get_current_user)):
+    """Exporta a CSV: proveedores | categorias | facturas | ingresos."""
+    if view == "proveedores":
+        rows = q(f"""
+            SELECT coalesce(vendor_name, 'Sin nombre') as proveedor,
+                   count(*) as facturas,
+                   coalesce(sum(total_amount), 0) as total_eur,
+                   string_agg(distinct category_raw, ', ') as categorias
+            FROM invoices
+            WHERE {expense_filter()} AND vendor_name IS NOT NULL
+            GROUP BY vendor_name ORDER BY total_eur DESC
+        """)
+        return _csv([to_dict(r) for r in rows],
+                    ["proveedor", "facturas", "total_eur", "categorias"], "gastos-proveedores.csv")
+    if view == "categorias":
+        rows = q(f"""
+            SELECT coalesce(c.name, i.category_raw, 'Sin categoria') as categoria,
+                   count(*) as facturas, coalesce(sum(i.total_amount), 0) as total_eur
+            FROM invoices i
+            LEFT JOIN categories c ON c.id = i.category_id
+            WHERE {expense_filter('i.')}
+            GROUP BY categoria ORDER BY total_eur DESC
+        """)
+        return _csv([to_dict(r) for r in rows],
+                    ["categoria", "facturas", "total_eur"], "gastos-categorias.csv")
+    if view == "facturas":
+        rows = q(f"""
+            SELECT invoice_number, invoice_date, vendor_name, total_amount,
+                   category_raw, status, description
+            FROM invoices
+            WHERE {expense_filter()}
+            ORDER BY invoice_date DESC LIMIT 500
+        """)
+        return _csv([to_dict(r) for r in rows],
+                    ["invoice_number", "invoice_date", "vendor_name", "total_amount",
+                     "category_raw", "status", "description"], "facturas-gastos.csv")
+    if view == "ingresos":
+        rows = q("""
+            SELECT to_char(creation_time, 'YYYY-MM') as mes, number, customer_name,
+                   total_cents/100.0 as total_eur, tax_cents/100.0 as iva_eur
+            FROM lastapp_bills WHERE deleted = false
+            ORDER BY creation_time DESC LIMIT 500
+        """)
+        return _csv([to_dict(r) for r in rows],
+                    ["mes", "number", "customer_name", "total_eur", "iva_eur"], "ingresos.csv")
+    raise HTTPException(status_code=404, detail="Vista no soportada")
+
+
 # ── HTML Dashboard ─────────────────────────────────────────────
 
 INDEX_HTML = """<!DOCTYPE html>
@@ -543,22 +695,22 @@ INDEX_HTML = """<!DOCTYPE html>
       </div>
 
       <div class="card">
-        <div class="card-head"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg><h2>Ingresos por mes</h2></div>
+        <div class="card-head"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg><h2>Ingresos por mes</h2><div class="actions"><a class="icon-btn sm" href="/api/export/ingresos" title="Exportar CSV" download><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a></div></div>
         <div class="card-body" id="ingresos"></div>
       </div>
 
       <div class="card">
-        <div class="card-head"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg><h2>Gastos por proveedor</h2></div>
+        <div class="card-head"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg><h2>Gastos por proveedor</h2><div class="actions"><a class="icon-btn sm" href="/api/export/proveedores" title="Exportar CSV" download><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a></div></div>
         <div class="card-body"><div class="bars" id="proveedores"></div></div>
       </div>
 
       <div class="card">
-        <div class="card-head"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg><h2>Gastos por categoría</h2></div>
+        <div class="card-head"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg><h2>Gastos por categoría</h2><div class="actions"><a class="icon-btn sm" href="/api/export/categorias" title="Exportar CSV" download><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a></div></div>
         <div class="card-body"><div class="bars" id="categorias"></div></div>
       </div>
 
       <div class="card grid-full">
-        <div class="card-head"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h4"/></svg><h2>Últimas facturas</h2></div>
+        <div class="card-head"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h4"/></svg><h2>Últimas facturas</h2><div class="actions"><a class="icon-btn sm" href="/api/export/facturas" title="Exportar CSV" download><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a></div></div>
         <div class="card-body" id="facturas"></div>
       </div>
     </div>
@@ -579,6 +731,46 @@ INDEX_HTML = """<!DOCTYPE html>
   <div class="chat-input">
     <input id="chatText" type="text" placeholder="Pregúntame sobre ventas, facturas, productos…" autocomplete="off">
     <button id="chatSend"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
+  </div>
+</div>
+
+<!-- ── Modal: búsqueda global ── -->
+<div class="modal-overlay" id="searchModal">
+  <div class="modal modal-search" role="dialog" aria-label="Búsqueda">
+    <div class="modal-search-bar">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+      <input id="searchInput" type="text" placeholder="Buscar proveedores, categorías, facturas…" autocomplete="off">
+      <kbd class="esc-hint">Esc</kbd>
+    </div>
+    <div class="modal-search-results" id="searchResults"></div>
+  </div>
+</div>
+
+<!-- ── Modal: drill-down ── -->
+<div class="modal-overlay" id="drillModal">
+  <div class="modal" role="dialog" aria-label="Detalle">
+    <div class="modal-head">
+      <h3 id="drillTitle">Detalle</h3>
+      <button class="icon-btn" data-close="drillModal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+    </div>
+    <div class="modal-body" id="drillBody"></div>
+  </div>
+</div>
+
+<!-- ── Modal: ayuda atajos ── -->
+<div class="modal-overlay" id="helpModal">
+  <div class="modal" role="dialog" aria-label="Atajos">
+    <div class="modal-head"><h3>⌨️ Atajos de teclado</h3><button class="icon-btn" data-close="helpModal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
+    <div class="modal-body">
+      <table class="kbd-table">
+        <tr><td><kbd>/</kbd></td><td>Buscar</td></tr>
+        <tr><td><kbd>C</kbd></td><td>Abrir/cerrar asistente AI</td></tr>
+        <tr><td><kbd>R</kbd></td><td>Refrescar datos</td></tr>
+        <tr><td><kbd>T</kbd></td><td>Cambiar tema claro/oscuro</td></tr>
+        <tr><td><kbd>?</kbd></td><td>Esta ayuda</td></tr>
+        <tr><td><kbd>Esc</kbd></td><td>Cerrar ventana activa</td></tr>
+      </table>
+    </div>
   </div>
 </div>
 

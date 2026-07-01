@@ -390,3 +390,61 @@ select.seg:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3
 
 /* Utility */
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+
+/* icon-btn variant pequeña (export, etc.) */
+.icon-btn.sm { width: 28px; height: 28px; }
+.icon-btn.sm svg { width: 15px; height: 15px; }
+.icon-btn.sm { color: var(--fg-3); }
+.icon-btn.sm:hover { color: var(--blue-fg); }
+
+/* ── Modales ──────────────────────────────────────────────────────────── */
+.modal-overlay {
+  position: fixed; inset: 0; z-index: 2000;
+  background: rgba(2, 6, 23, .6); backdrop-filter: blur(4px);
+  display: none; align-items: flex-start; justify-content: center;
+  padding: 8vh var(--s-4);
+  animation: fadein var(--dur-1) var(--ease);
+}
+.modal-overlay.open { display: flex; }
+@keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
+.modal {
+  background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--r-xl);
+  box-shadow: var(--shadow-3); width: 100%; max-width: 640px; max-height: 80vh;
+  display: flex; flex-direction: column; overflow: hidden;
+  animation: modalin var(--dur-2) var(--ease);
+}
+@keyframes modalin { from { opacity: 0; transform: translateY(12px) scale(.98); } to { opacity: 1; transform: none; } }
+.modal.modal-search { max-width: 600px; }
+.modal-head { display: flex; align-items: center; justify-content: space-between; padding: var(--s-4) var(--s-5); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.modal-head h3 { font-size: var(--fz-lg); font-weight: 600; color: var(--fg-0); }
+.modal-body { padding: var(--s-5); overflow-y: auto; }
+
+/* Búsqueda */
+.modal-search-bar { display: flex; align-items: center; gap: var(--s-3); padding: var(--s-4) var(--s-5); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.modal-search-bar svg { width: 20px; height: 20px; color: var(--fg-3); flex-shrink: 0; }
+.modal-search-bar input { flex: 1; background: none; border: none; outline: none; color: var(--fg-0); font-size: var(--fz-lg); font-family: var(--font-sans); }
+.modal-search-bar input::placeholder { color: var(--fg-3); }
+.modal-search-results { padding: var(--s-3); overflow-y: auto; }
+.search-group { margin-bottom: var(--s-3); }
+.search-group .sg-title { font-size: var(--fz-xs); text-transform: uppercase; letter-spacing: .06em; color: var(--fg-3); font-weight: 600; padding: var(--s-2) var(--s-3); }
+.search-item { display: flex; align-items: center; gap: var(--s-3); padding: var(--s-3); border-radius: var(--r-md); cursor: pointer; transition: background var(--dur-1); }
+.search-item:hover { background: var(--bg-2); }
+.search-item .si-main { flex: 1; min-width: 0; }
+.search-item .si-name { font-size: var(--fz-base); color: var(--fg-0); font-weight: 500; }
+.search-item .si-name mark { background: var(--yellow-bg); color: var(--yellow-fg); border-radius: 3px; padding: 0 2px; }
+.search-item .si-sub { font-size: var(--fz-sm); color: var(--fg-3); }
+.search-item .si-amount { font-family: var(--font-mono); font-size: var(--fz-md); color: var(--fg-1); font-weight: 600; }
+.search-empty { text-align: center; padding: var(--s-7); color: var(--fg-3); }
+
+/* Kbd + tabla ayuda */
+kbd { font-family: var(--font-mono); font-size: 11px; background: var(--bg-inset); border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: var(--r-sm); padding: 2px 7px; color: var(--fg-1); display: inline-block; min-width: 18px; text-align: center; }
+.esc-hint { background: none; border: 1px solid var(--border); }
+.kbd-table td { padding: var(--s-3) var(--s-2); border: none; }
+.kbd-table td:first-child { width: 70px; }
+.kbd-table td:nth-child(2) { color: var(--fg-1); }
+
+/* Drill-down stats */
+.drill-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px,1fr)); gap: var(--s-3); margin-bottom: var(--s-4); }
+.drill-stat { background: var(--bg-inset); border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--s-3) var(--s-4); }
+.drill-stat .ds-label { font-size: var(--fz-xs); text-transform: uppercase; letter-spacing: .05em; color: var(--fg-3); font-weight: 600; }
+.drill-stat .ds-value { font-family: var(--font-mono); font-size: var(--fz-xl); font-weight: 700; color: var(--fg-0); margin-top: 2px; }

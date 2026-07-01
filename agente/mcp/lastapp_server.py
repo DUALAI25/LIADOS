@@ -1,5 +1,5 @@
 """
-import threading
+
 MCP server que envuelve https://api.last.app/mcp con caché,
 normalización y patrón de confirmación para acciones.
 
@@ -41,6 +41,7 @@ import uuid
 import logging
 from datetime import datetime, timedelta, timezone
 from functools import wraps
+import threading
 from mcp.server.fastmcp import FastMCP
 
 from lastapp_client import LastAppClient

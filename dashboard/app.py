@@ -81,7 +81,7 @@ def api_kpis(user: str = Depends(get_current_user)):
         SELECT count(*) as facturas,
                coalesce(sum(total_amount), 0) as total
         FROM invoices
-        WHERE type = 'expense' AND status != 'rejected'
+        WHERE type = 'expense' AND status != 'rejected' AND is_invoice = true
           AND COALESCE(category_raw, '') NOT IN ('nomina', 'administrativo', 'basura')
           AND date_trunc('month', invoice_date) = date_trunc('month', now())
     """)[0]
@@ -160,13 +160,14 @@ def api_gastos_por_proveedor(limit: int = 10, user: str = Depends(get_current_us
         SELECT coalesce(vendor_name, 'Sin nombre') as proveedor,
                count(*) as facturas,
                coalesce(sum(total_amount), 0) as total_eur,
-               coalesce(category_raw, 'sin categoría') as categoria
+               string_agg(distinct category_raw, ', ') as categorias
         FROM invoices
-        WHERE type = 'expense' AND status != 'rejected'
+        WHERE type = 'expense' AND status != 'rejected' AND is_invoice = true
           AND COALESCE(category_raw, '') NOT IN ('nomina', 'administrativo', 'basura')
           AND vendor_name IS NOT NULL
-        GROUP BY vendor_name, category_raw
-        ORDER BY total_eur DESC
+          AND is_invoice = true
+        GROUP BY vendor_name
+        ORDER BY total_eur DESC, facturas DESC
         LIMIT %s
     """, (limit,))]
 
@@ -181,7 +182,7 @@ def api_gastos_por_categoria(user: str = Depends(get_current_user)):
                coalesce(sum(i.total_amount), 0) as total_eur
         FROM invoices i
         LEFT JOIN categories c ON c.id = i.category_id
-        WHERE i.type = 'expense'
+        WHERE i.type = 'expense' AND i.is_invoice = true
           AND COALESCE(i.category_raw, '') NOT IN ('nomina', 'administrativo', 'basura')
         GROUP BY categoria, color
         ORDER BY total_eur DESC
@@ -203,7 +204,7 @@ def api_margen_por_mes(user: str = Depends(get_current_user)):
         SELECT to_char(invoice_date, 'YYYY-MM') as mes,
                coalesce(sum(total_amount), 0) as total_eur
         FROM invoices
-        WHERE type = 'expense' AND status != 'rejected'
+        WHERE type = 'expense' AND status != 'rejected' AND is_invoice = true
           AND COALESCE(category_raw, '') NOT IN ('nomina', 'administrativo', 'basura')
           AND invoice_date >= now() - interval '6 months'
         GROUP BY mes

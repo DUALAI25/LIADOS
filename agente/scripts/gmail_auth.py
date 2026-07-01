@@ -189,6 +189,14 @@ def exchange_code_for_tokens(code, client_id, client_secret, redirect_uri, code_
         sys.exit(1)
 
 
+def extract_state_from_url(url):
+    """Extrae el parametro state de una URL de callback OAuth."""
+    parsed = urllib.parse.urlparse(url)
+    params = urllib.parse.parse_qs(parsed.query)
+    return params.get('state', [None])[0]
+
+
+
 def extract_code_from_url(url):
     """Extrae el 'code' de una URL completa de callback"""
     parsed = urllib.parse.urlparse(url)

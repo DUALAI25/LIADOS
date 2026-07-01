@@ -70,7 +70,7 @@ TOOL_MAP = {
 }
 
 _message_cache = {}
-_cache_lock = False
+# _cache_lock = False  # unused, removed
 
 
 def _check_or_init_client():
@@ -134,13 +134,13 @@ def cached(ttl_seconds: int):
                         return value
                 value = fn(*args, **kwargs)
                 _message_cache[key] = (value, now + ttl_seconds)
-            # A-1: limit cache size (LRU-style: remove oldest if over 1000)
-            if len(_message_cache) > 1000:
-                try:
-                    oldest = min(_message_cache, key=lambda k: _message_cache[k][1])
-                    del _message_cache[oldest]
-                except (ValueError, KeyError):
-                    pass
+                # A-1: limit cache size (LRU-style: remove oldest if over 1000)
+                if len(_message_cache) > 1000:
+                    try:
+                        oldest = min(_message_cache, key=lambda k: _message_cache[k][1])
+                        del _message_cache[oldest]
+                    except (ValueError, KeyError):
+                        pass
             return value
         return wrapper
     return decorator

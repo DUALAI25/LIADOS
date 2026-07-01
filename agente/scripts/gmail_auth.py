@@ -141,8 +141,8 @@ def load_client_config(creds_path):
         sys.exit(1)
 
 
-def generate_auth_url(client_id, redirect_uri, code_challenge):
-    """Genera la URL de autorización OAuth con PKCE"""
+def generate_auth_url(client_id, redirect_uri, code_challenge, state=None):
+    """Genera la URL de autorización OAuth con PKCE y state"""
     params = {
         'client_id': client_id,
         'redirect_uri': redirect_uri,
@@ -153,6 +153,8 @@ def generate_auth_url(client_id, redirect_uri, code_challenge):
         'access_type': 'offline',
         'prompt': 'consent',  # Forzar refresh_token
     }
+    if state:
+        params['state'] = state
     base_url = 'https://accounts.google.com/o/oauth2/v2/auth'
     return f"{base_url}?{urllib.parse.urlencode(params)}"
 
@@ -249,8 +251,11 @@ def authorize_account(account, force=False):
     # Generar PKCE
     code_verifier, code_challenge = generate_pkce()
 
+    # Generar state (anti-CSRF)
+    oauth_state = secrets.token_urlsafe(32)
+
     # Generar URL
-    auth_url = generate_auth_url(client_id, redirect_uri, code_challenge)
+    auth_url = generate_auth_url(client_id, redirect_uri, code_challenge, state=oauth_state)
 
     print("📋 PASOS:")
     print(f"   1. Abre esta URL en tu navegador (con la cuenta Gmail de '{account}'):")
@@ -270,8 +275,14 @@ def authorize_account(account, force=False):
         print("❌ No pegaste ninguna URL. Cancelando.")
         sys.exit(1)
 
-    # Extraer code
+    # Extraer code y validar state
     code = extract_code_from_url(callback_url)
+    callback_state = extract_state_from_url(callback_url)
+    if callback_state and callback_state != oauth_state:
+        print("❌ ERROR: state de OAuth no coincide (posible ataque CSRF). Cancelando.")
+        sys.exit(1)
+    if callback_state:
+        print("✅ State OAuth validado correctamente.")
 
     # Canjear code por tokens
     print()

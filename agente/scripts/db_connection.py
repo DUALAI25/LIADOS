@@ -25,10 +25,19 @@ def get_conn():
             + ', '.join('DB_' + k.upper() for k in missing)
             + ". Configuralas en .env (ver .env.example)."
         )
-    return psycopg2.connect(
+    conn = psycopg2.connect(
         host=required['host'],
         port=int(required['port']),
         dbname=required['dbname'],
         user=required['user'],
         password=required['password'],
     )
+    # C-3 fix: close connection on context manager exit
+    orig_exit = conn.__exit__
+    def _close_on_exit(*args, **kwargs):
+        try:
+            orig_exit(*args, **kwargs)
+        finally:
+            conn.close()
+    conn.__exit__ = _close_on_exit
+    return conn

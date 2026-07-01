@@ -278,6 +278,15 @@ def main():
         with get_conn() as conn:
             with conn.cursor() as cur:
                 if args.wipe:
+                    print("\n" + "!" * 60)
+                    print("\u26a0\ufe0f  ATENCI\u00d3N: --wipe va a BORRAR TODOS LOS DATOS de las tablas:")
+                    print("   invoices, payments, vendors, categories, agent_logs, etc.")
+                    print("!" * 60)
+                    confirm = input("   Escribe 'BORRAR' para confirmar: ").strip()
+                    if confirm != 'BORRAR':
+                        print("   Cancelado.")
+                        sys.exit(0)
+                    print("   Confirmado. Limpiando...")
                     wipe(cur)
                 n_expense = 0 if args.no_seed else insert_expense_invoices(cur, args.days)
                 n_income = 0 if args.no_seed else insert_sales_invoices(cur, args.days)

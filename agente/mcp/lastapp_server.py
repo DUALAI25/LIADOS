@@ -1,4 +1,5 @@
 """
+import threading
 MCP server que envuelve https://api.last.app/mcp con caché,
 normalización y patrón de confirmación para acciones.
 
@@ -125,27 +126,41 @@ def cached(ttl_seconds: int):
                 sort_keys=True, default=str,
             )
             now = time.time()
-            if key in _message_cache:
-                value, expires_at = _message_cache[key]
-                if now < expires_at:
-                    return value
-            value = fn(*args, **kwargs)
-            _message_cache[key] = (value, now + ttl_seconds)
+            with _msg_cache_lock:
+                if key in _message_cache:
+                    value, expires_at = _message_cache[key]
+                    if now < expires_at:
+                        return value
+                value = fn(*args, **kwargs)
+                _message_cache[key] = (value, now + ttl_seconds)
+            # A-1: limit cache size (LRU-style: remove oldest if over 1000)
+            if len(_message_cache) > 1000:
+                try:
+                    oldest = min(_message_cache, key=lambda k: _message_cache[k][1])
+                    del _message_cache[oldest]
+                except (ValueError, KeyError):
+                    pass
             return value
         return wrapper
     return decorator
 
 
 _pending_actions = {}
+
+# Thread-safety locks
+_msg_cache_lock = threading.Lock()
+_pending_lock = threading.Lock()
+_tool_map_lock = threading.Lock()
 PENDING_TTL = 300
 
 
 def _clean_expired():
     now = datetime.now(timezone.utc)
-    expired = [t for t, a in _pending_actions.items()
-               if a["expires_at"] < now]
-    for t in expired:
-        del _pending_actions[t]
+    with _pending_lock:
+        expired = [t for t, a in _pending_actions.items()
+                   if a["expires_at"] < now]
+        for t in expired:
+            del _pending_actions[t]
 
 
 def _normalize_result(result: dict) -> str:
@@ -343,13 +358,13 @@ def open_support_ticket(subject: str, description: str, priority: str = "normal"
 def confirm_action(confirmation_token: str) -> str:
     """Ejecuta una acción pendiente. Devuelve el resultado de la acción."""
     _clean_expired()
-    if confirmation_token not in _pending_actions:
-        return json.dumps({
-            "status": "error",
-            "reason": "Token no encontrado o ha expirado (TTL: 5 minutos).",
-        }, ensure_ascii=False)
-
-    action = _pending_actions.pop(confirmation_token)
+    with _pending_lock:
+        if confirmation_token not in _pending_actions:
+            return json.dumps({
+                "status": "error",
+                "reason": "Token no encontrado o ha expirado (TTL: 5 minutos).",
+            }, ensure_ascii=False)
+        action = _pending_actions.pop(confirmation_token)
     try:
         result = _call_remote(action["tool"], action["args"])
         return json.dumps({
@@ -369,13 +384,13 @@ def confirm_action(confirmation_token: str) -> str:
 def cancel_action(confirmation_token: str) -> str:
     """Cancela una acción pendiente."""
     _clean_expired()
-    if confirmation_token not in _pending_actions:
-        return json.dumps({
-            "status": "error",
-            "reason": "Token no encontrado o ha expirado (TTL: 5 minutos).",
-        }, ensure_ascii=False)
-
-    action = _pending_actions.pop(confirmation_token)
+    with _pending_lock:
+        if confirmation_token not in _pending_actions:
+            return json.dumps({
+                "status": "error",
+                "reason": "Token no encontrado o ha expirado (TTL: 5 minutos).",
+            }, ensure_ascii=False)
+        action = _pending_actions.pop(confirmation_token)
     return json.dumps({
         "status": "cancelled",
         "action": action["tool"],

@@ -113,6 +113,14 @@ def _maybe_notify_telegram(failed_blocks):
 
 
 def main():
+    # C-4 fix: file lock to prevent concurrent runs
+    import fcntl
+    lock_file = open('/tmp/run_all.lock', 'w')
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except IOError:
+        logger.error("Otra instancia de run_all ya esta en ejecucion. Abortando.")
+        return
     parser = argparse.ArgumentParser(description="Orquestador Liados")
     parser.add_argument("--skip-lastapp", action="store_true", help="Saltar Last.app sync")
     parser.add_argument("--skip-gmail", action="store_true", help="Saltar Gmail collector")

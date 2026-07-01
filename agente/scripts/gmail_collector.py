@@ -103,30 +103,40 @@ def get_token_path_for_account(account):
 
 
 def get_service(account):
-    """Crea el servicio Gmail para una cuenta"""
+    """Crea el servicio Gmail para una cuenta.
+
+    VERSION HARDENED 2026-07-01: distingue 3 estados (revoked/expired/ok),
+    purga tokens muertos a /root/liados/data/tokens_revoked/, avisa con TAG.
+
+    Returns:
+        (service, status):
+          - (svc, 'ok')               - servicio construido
+          - (None, 'revoked')         - refresh_token invalid_grant (purga automatica)
+          - (None, 'missing')         - token file no existe
+          - (None, 'transient_error') - red/5xx/etc
+          - (None, 'config_error')    - archivo malformado
+    """
+    from oauth_hardening import get_service_v2
     token_file = get_token_path_for_account(account)
     if not token_file:
         logger.error(f"[{account}] GMAIL_TOKEN_FILE_{account} no configurado en .env")
-        return None
-    if not os.path.exists(token_file):
-        logger.error(f"[{account}] Token no encontrado: {token_file}")
-        logger.error(f"  Ejecuta: python3 gmail_auth.py --account {account}")
-        return None
-    try:
-        creds = Credentials.from_authorized_user_file(token_file, SCOPES)
-        if creds.expired and creds.refresh_token:
-            logger.info(f"[{account}] Token expirado, refrescando...")
-            creds.refresh(Request())
-            import json
-            data = json.loads(Path(token_file).read_text())
-            data['access_token'] = creds.token
-            Path(token_file).write_text(json.dumps(data, indent=2))
-            logger.info(f"[{account}] Token refrescado y guardado")
-        return build('gmail', 'v1', credentials=creds)
-    except Exception as e:
-        logger.error(f"[{account}] Error creando servicio Gmail: {_sanitize_error(e)}")
-        return None
+        return None, 'config_error'
 
+    svc, status = get_service_v2(account, token_file)
+
+    if status == 'revoked':
+        logger.warning(
+            f"[{account}] TOKEN REVOCADO POR GOOGLE. Reautorizar con:"
+            f" python3 -m agente.scripts.gmail_auth --account {account} --force"
+        )
+        log_agent(
+            'gmail_collector', 'error',
+            f"[{account}] OAuth token REVOKED - reauth required",
+        )
+    elif status == 'missing':
+        logger.error(f"[{account}] Token no encontrado: {token_file}")
+        logger.error(f"  Ejecuta: python3 -m agente.scripts.gmail_auth --account {account}")
+    return svc, status
 
 def save_non_invoice(account, source_id, attachment, reason, subject):
     """Guarda un adjunto descartado por el filtro `is_invoice` en la tabla
@@ -164,10 +174,18 @@ def process_account(account, search_query=None):
     logger.info(f"📧 Procesando cuenta: {account}")
     logger.info(f"{'='*60}")
 
-    service = get_service(account)
+    service, status = get_service(account)
     if not service:
-        logger.warning(f"[{account}] Saltando cuenta (token inválido o expirado)")
-        log_agent('gmail_collector', 'error', f"[{account}] Gmail service no disponible")
+        if status == 'revoked':
+            logger.warning(
+                f"[{account}] Saltando cuenta: token revocado por Google."
+                f" El token moribundo fue purgado a data/tokens_revoked/."
+                f" Reautorizar con gmail_auth.py --account {account} --force"
+            )
+            # CRITICO: devolver 0, 1 para que el caller sepa que NO se procesaron
+            return 0, 1
+        logger.warning(f"[{account}] Saltando cuenta ({status})")
+        log_agent('gmail_collector', 'error', f"[{account}] Gmail service no disponible ({status})")
         return 0, 1
 
     if not os.getenv('OPENCODE_API_KEY'):

@@ -184,8 +184,20 @@ let charts = {};
 let canalFilter = 'all';
 let showMom = false;
 
+// Credenciales en sessionStorage (no localStorage)
+function _getAuthHeaders() {
+  let auth = sessionStorage.getItem('liados_basic');
+  if (auth) return { 'Authorization': 'Basic ' + auth };
+  const u = prompt("Usuario:");
+  const p = prompt("Contrasena:");
+  if (!u || !p) throw new Error("Credenciales requeridas");
+  auth = btoa(u + ":" + p);
+  sessionStorage.setItem('liados_basic', auth);
+  return { 'Authorization': 'Basic ' + auth };
+}
+
 async function getJSON(url) {
-  const r = await fetch(url);
+  const r = await fetch(url, { headers: _getAuthHeaders(), cache: "no-store" });
   if (!r.ok) throw new Error(`${url} → ${r.status}`);
   return r.json();
 }
@@ -428,7 +440,7 @@ async function sendMsg(){
   let toolsChip = null;       // contenedor de chips de tools (live)
 
   try {
-    const r = await fetch('/api/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg,history:chatHistory})});
+    const r = await fetch('/api/chat/stream',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_getAuthHeaders()),body:JSON.stringify({message:msg,history:chatHistory})});
     if (!r.ok) throw new Error('HTTP '+r.status);
     const reader = r.body.getReader();
     const decoder = new TextDecoder();
@@ -495,8 +507,8 @@ function showConfirm(p){
   const box=document.createElement('div'); box.className='confirm-box';
   box.innerHTML=`<div><b>⚠️ ${esc(p.action)}</b><br>${esc(p.message||'Esta acción requiere confirmación.')}</div><div class="btns"><button class="yes">Confirmar</button><button class="no">Cancelar</button></div>`;
   $('#chatBody').appendChild(box); box.scrollIntoView();
-  box.querySelector('.yes').onclick=async()=>{box.innerHTML='Ejecutando…';const r=await fetch('/api/chat/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmation_token:pendingToken})});const d=await r.json();box.remove();addMsg(esc(JSON.stringify(d,null,1)),'bot');pendingToken=null;};
-  box.querySelector('.no').onclick=async()=>{await fetch('/api/chat/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmation_token:pendingToken})});box.remove();addMsg('Acción cancelada.','bot');pendingToken=null;};
+  box.querySelector('.yes').onclick=async()=>{box.innerHTML='Ejecutando…';const r=await fetch('/api/chat/confirm',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_getAuthHeaders()),body:JSON.stringify({confirmation_token:pendingToken})});const d=await r.json();box.remove();addMsg(esc(JSON.stringify(d,null,1)),'bot');pendingToken=null;};
+  box.querySelector('.no').onclick=async()=>{await fetch('/api/chat/cancel',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_getAuthHeaders()),body:JSON.stringify({confirmation_token:pendingToken})});box.remove();addMsg('Acción cancelada.','bot');pendingToken=null;};
 }
 
 // ── Reloj ────────────────────────────────────────────────────────────────

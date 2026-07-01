@@ -33,7 +33,10 @@ def _build_child_env(days_override=None):
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
                     k, _, v = line.partition("=")
-                    child_env[k.strip()] = v.strip().strip('"').strip("'")
+                    val = v.strip().strip('"').strip("'")
+                    # No sobreescribir env vars del padre si el .env tiene vacio
+                    if val:
+                        child_env[k.strip()] = val
 
     # Añadir agente/scripts/ al PYTHONPATH para que los imports relativos funcionen
     existing = child_env.get("PYTHONPATH", "")
@@ -75,14 +78,38 @@ def run_block(name, cmd, dry_run=False, child_env=None):
             return True
         else:
             logger.error("  %s FALLO (rc=%d, %.1fs)", name, result.returncode, elapsed)
-            logger.error("  stderr: %s", result.stderr[:500])
+            logger.error("  stderr (completo): %s", result.stderr)
             return False
     except subprocess.TimeoutExpired:
-        logger.error("  %s TIMEOUT (>600s)", name)
+        logger.error("  %s TIMEOUT (>1800s = 30min)", name)
         return False
     except Exception as e:
         logger.error("  %s ERROR: %s", name, e)
         return False
+
+
+
+def _maybe_notify_telegram(failed_blocks):
+    """Notifica al jefe por Telegram si hay bloques fallando. Best-effort."""
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        return
+    try:
+        import requests
+        msg = (
+            "*Liados sync FALLO*\n\n"
+            "Bloques fallidos: " + ", ".join(failed_blocks) + "\n"
+            "Ver /root/liados/data/run_all.log para detalles."
+        )
+        requests.post(
+            "https://api.telegram.org/bot" + token + "/sendMessage",
+            json={"chat_id": chat_id, "text": msg},
+            timeout=10,
+        )
+        logger.info("Notificacion enviada a Telegram")
+    except Exception as e:
+        logger.warning("No se pudo notificar a Telegram: " + str(e))
 
 
 def main():
@@ -121,6 +148,7 @@ def main():
         logger.info("  [%s] %s", status, name)
     if failed:
         logger.error("Bloques fallidos: %s", failed)
+        _maybe_notify_telegram(failed)
         return 1
     logger.info("Todos los bloques OK")
     return 0

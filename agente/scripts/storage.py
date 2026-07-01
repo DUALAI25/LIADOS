@@ -99,7 +99,7 @@ def save_raw_file(content: bytes, filename: str, invoice_id: str = None) -> dict
     local_dir.mkdir(parents=True, exist_ok=True)
 
     # Nombre único con hash para evitar colisiones
-    safe_filename = f"{content_hash}_{filename}"
+    safe_filename = f"{content_hash}_{os.path.basename(filename)}"
     local_path = local_dir / safe_filename
 
     # Guardar localmente (SIEMPRE)

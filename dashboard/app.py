@@ -13,7 +13,7 @@ import os
 import secrets
 from datetime import date, datetime
 from decimal import Decimal
-from fastapi import FastAPI, Depends, HTTPException, status, Request
+from fastapi import Query, FastAPI, Query, Depends, HTTPException, status, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
@@ -173,7 +173,7 @@ def api_ingresos_por_mes(user: str = Depends(get_current_user)):
 
 
 @app.get("/api/gastos-por-proveedor")
-def api_gastos_por_proveedor(limit: int = 10, user: str = Depends(get_current_user)):
+def api_gastos_por_proveedor(limit: int = Query(10, ge=1, le=200, description='Maximo 200 proveedores'), user: str = Depends(get_current_user)):
     """Top proveedores por gasto total."""
     return [to_dict(r) for r in q(f"""
         SELECT coalesce(vendor_name, 'Sin nombre') as proveedor,
@@ -240,7 +240,7 @@ def api_margen_por_mes(user: str = Depends(get_current_user)):
 
 
 @app.get("/api/facturas-recientes")
-def api_facturas_recientes(limit: int = 15, user: str = Depends(get_current_user)):
+def api_facturas_recientes(limit: int = Query(15, ge=1, le=100, description='Maximo 100 facturas'), user: str = Depends(get_current_user)):
     """Ultimas facturas de Last.app con su canal de pago."""
     return [to_dict(r) for r in q("""
         SELECT b.number,
@@ -342,7 +342,7 @@ def api_ventas_por_local(user: str = Depends(get_current_user)):
 
 
 @app.get("/api/ventas-por-dia")
-def api_ventas_por_dia(days: int = 30, user: str = Depends(get_current_user)):
+def api_ventas_por_dia(days: int = Query(30, ge=1, le=365, description='Maximo 365 dias'), user: str = Depends(get_current_user)):
     """Serie diaria de ventas (ingresos + nº facturas) para los ultimos N dias."""
     rows = q("""
         SELECT to_char(date(d), 'YYYY-MM-DD') as dia,

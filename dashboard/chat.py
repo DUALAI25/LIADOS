@@ -9,23 +9,30 @@ Diferencias vs agent.ask():
 
 El historial viaja en el payload (no hay estado de sesion en servidor) -> el
 frontend lo guarda en localStorage y lo reenvia en cada mensaje.
+
+FIX 2026-07-01 (ciclo 9): inyecta fecha actual al system prompt y al primer
+mensaje del usuario. Sin esto el LLM alucinaba fechas (e.g. diciembre 2025
+cuando estamos en julio 2026) porque no le dabamos contexto temporal.
 """
 import json
+from datetime import datetime, timezone
 
 from dashboard.agent import (
     call_llm, execute_tool, TOOLS_SCHEMA, SYSTEM_PROMPT
 )
 
-# Confirmacion/cancelacion directas (sin pasar por el LLM) para el 2º paso.
+# Confirmacion/cancelacion directas (sin pasar por el LLM) para el 2o paso.
 try:
     from agente.mcp.lastapp_server import confirm_action, cancel_action
     _CONFIRM = confirm_action
     _CANCEL = cancel_action
-except Exception:
+    import logging
+    logging.getLogger(__name__).info("Last.app MCP cargado: confirm/cancel disponibles")
+except Exception as e:
     _CONFIRM = None
     _CANCEL = None
     import logging
-    logging.getLogger(__name__).warning("Last.app MCP NO cargado: confirm/cancel no disponibles. Flujo 2-paso desactivado.")
+    logging.getLogger(__name__).warning("Last.app MCP NO cargado (puede afectar flujo 2-paso): " + str(e))
 
 MAX_ITERS = 6
 
@@ -45,9 +52,14 @@ def _extract_pending(tool_result_str: str, tool_name: str):
         "token": token,
         "action": tool_name,
         "message": parsed.get("message") or parsed.get("summary")
-                   or f"Accion pendiente: {tool_name}",
+                   or "Accion pendiente: " + tool_name,
         "detail": parsed,
     }
+
+
+def _now_str():
+    """Fecha actual del sistema en formato estandar (UTC)."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
 def chat(question: str, history: list = None) -> dict:
@@ -57,33 +69,44 @@ def chat(question: str, history: list = None) -> dict:
     Devuelve:
       {
         "reply": str,
-        "pending_confirmation": dict | None,  # si una tool destructiva pidio confirmar
+        "pending_confirmation": dict | None,
         "tools_used": [str],
-        "history": [...]  # historial actualizado para reenviar
+        "history": [...]
       }
     """
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    now_str = _now_str()
+    system_with_date = (
+        SYSTEM_PROMPT
+        + "\n\n---\nFecha actual del sistema: "
+        + now_str
+        + "\nSi el usuario no especifica periodo, asume el mes/ano en curso basandote en esta fecha."
+    )
+    messages = [{"role": "system", "content": system_with_date}]
     if history:
-        # Sanitizar: solo roles validos y sin system duplicado.
         for m in history:
             if m.get("role") in ("user", "assistant"):
                 messages.append({"role": m["role"], "content": m.get("content", "")})
-    messages.append({"role": "user", "content": question})
+
+    if not history and question:
+        question_with_date = "[Fecha actual: " + now_str + "] " + question
+    else:
+        question_with_date = question or ""
+    messages.append({"role": "user", "content": question_with_date})
 
     pending = None
     tools_used = []
-    new_history = list(messages[1:])  # todo lo conversado (sin system)
+    new_history = list(messages[1:])
 
     for _ in range(MAX_ITERS):
         try:
             result = call_llm(messages)
             if not result.get("choices"):
-                raise RuntimeError(f"LLM devolvio sin choices: {result}")
+                raise RuntimeError("LLM devolvio sin choices: " + str(result))
             choice = result["choices"][0]
             msg = choice["message"]
         except Exception as e:
             import logging
-            logging.getLogger(__name__).error(f"Error en LLM call: {type(e).__name__}: {e}")
+            logging.getLogger(__name__).error("Error en LLM call: " + str(e))
             return {
                 "reply": "Lo siento, hubo un error al procesar tu pregunta (LLM). Intentalo de nuevo.",
                 "pending_confirmation": pending,
@@ -119,7 +142,7 @@ def chat(question: str, history: list = None) -> dict:
             }
 
     return {
-        "reply": "Lo siento, no he podido procesar tu pregunta tras varios intentos.",
+        "reply": "Lo siento, no he podido procesar tu pregunta tras varios intentos. Intenta reformularla con menos ambiguedad o con un periodo explicito (ej: 'este mes' o 'marzo 2026').",
         "pending_confirmation": pending,
         "tools_used": tools_used,
         "history": new_history,
@@ -127,7 +150,7 @@ def chat(question: str, history: list = None) -> dict:
 
 
 def confirm(confirmation_token: str) -> dict:
-    """Ejecuta una accion pendiente directamente (2º paso del flujo)."""
+    """Ejecuta una accion pendiente directamente (2o paso del flujo)."""
     if not _CONFIRM:
         return {"error": "Confirmacion no disponible (Last.app MCP no cargado)"}
     raw = _CONFIRM(confirmation_token=confirmation_token)

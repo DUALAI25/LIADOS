@@ -1,0 +1,420 @@
+/* =========================================================================
+   Liados Dashboard · app.js (v5 premium)
+   Depende de Chart.js (CDN)
+   ========================================================================= */
+
+// ── Constantes ───────────────────────────────────────────────────────────
+const COLORS = { card:'#3b82f6', cash:'#22c55e', uber:'#f97316', glovo:'#eab308', shop:'#a855f7', justeat:'#ef4444' };
+const LABELS = { card:'Tarjeta', cash:'Efectivo', uber:'Uber Eats', glovo:'Glovo', shop:'Shop', justeat:'Just Eat' };
+const ICONS  = { card:'💳', cash:'💵', uber:'🚗', glovo:'🟡', shop:'🛒', justeat:'🛵' };
+
+const $  = (s, r=document) => r.querySelector(s);
+const $$ = (s, r=document) => [...r.querySelectorAll(s)];
+const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+const eur = n => Number(n||0).toLocaleString('es-ES', {minimumFractionDigits:2, maximumFractionDigits:2}) + '€';
+const eur0 = n => Number(n||0).toLocaleString('es-ES', {maximumFractionDigits:0}) + '€';
+const fmt = n => Math.abs(n)>=1000 ? (n/1000).toFixed(1).replace('.0','')+'k' : Math.round(n).toString();
+const pct = (cur, prev) => { if (!prev) return null; return (cur-prev)/Math.abs(prev)*100; };
+const esc = s => (s||'').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+// ── Theme ────────────────────────────────────────────────────────────────
+function initTheme() {
+  const saved = localStorage.getItem('liados_theme');
+  const theme = saved || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+  document.documentElement.setAttribute('data-theme', theme);
+  updateThemeBtn(theme);
+}
+function toggleTheme() {
+  const cur = document.documentElement.getAttribute('data-theme');
+  const next = cur === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('liados_theme', next);
+  updateThemeBtn(next);
+  // Re-tematizar charts
+  applyChartTheme();
+  chartsRefreshColors();
+}
+function updateThemeBtn(theme) {
+  const btn = $('#themeToggle');
+  if (!btn) return;
+  btn.innerHTML = theme === 'dark'
+    ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>'
+    : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
+}
+
+// ── Sidebar toggle ───────────────────────────────────────────────────────
+function initSidebar() {
+  const app = $('#app');
+  $('#sidebarToggle').onclick = () => {
+    if (matchMedia('(max-width: 900px)').matches) {
+      $('#sidebar').classList.add('open');
+      $('#backdrop').classList.add('show');
+    } else {
+      app.classList.toggle('collapsed');
+      localStorage.setItem('liados_sidebar', app.classList.contains('collapsed') ? '1' : '0');
+      // charts necesitan resize tras transición
+      setTimeout(() => Object.values(charts).forEach(c => c && c.resize()), 320);
+    }
+  };
+  $('#backdrop').onclick = () => { $('#sidebar').classList.remove('open'); $('#backdrop').classList.remove('show'); };
+  if (localStorage.getItem('liados_sidebar') === '1') app.classList.add('collapsed');
+}
+
+// ── Counter animation ────────────────────────────────────────────────────
+function animateCount(el, to, opts={}) {
+  const { dur=900, decimals=2, suffix='€', prefix='' } = opts;
+  const from = 0;
+  const start = performance.now();
+  const ease = t => 1 - Math.pow(1 - t, 3);
+  function frame(now) {
+    const p = Math.min((now - start) / dur, 1);
+    const v = from + (to - from) * ease(p);
+    el.textContent = prefix + v.toLocaleString('es-ES', {minimumFractionDigits:decimals, maximumFractionDigits:decimals}) + suffix;
+    if (p < 1) requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+}
+
+// ── Chart.js theme ───────────────────────────────────────────────────────
+Chart.defaults.font.family = "'Inter', sans-serif";
+Chart.defaults.font.size = 12;
+
+function chartColors() {
+  const dark = document.documentElement.getAttribute('data-theme') !== 'light';
+  return {
+    grid: dark ? 'rgba(148,163,184,.08)' : 'rgba(15,23,42,.07)',
+    ticks: dark ? '#94a3b8' : '#475569',
+    fg: dark ? '#f1f5f9' : '#0f172a',
+    fg2: dark ? '#cbd5e1' : '#1e293b',
+    fg3: dark ? '#64748b' : '#94a3b8',
+    tipBg: dark ? '#243044' : '#ffffff',
+    tipBorder: dark ? '#3b4a63' : '#e6ebf3',
+  };
+}
+
+// Tooltip custom HTML
+function externalTooltip(handler) {
+  return (ctx) => {
+    const { chart, tooltip } = ctx;
+    let el = chart.canvas.parentNode.querySelector('.chart-tip');
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'chart-tip';
+      el.style.cssText = 'position:absolute;background:var(--bg-3);border:1px solid var(--border-strong);border-radius:10px;padding:10px 12px;pointer-events:none;opacity:0;transition:opacity .12s;box-shadow:var(--shadow-3);z-index:50;font-size:12px;min-width:160px;transform:translate(-50%,-100%)';
+      chart.canvas.parentNode.appendChild(el);
+    }
+    if (tooltip.opacity === 0) { el.style.opacity = 0; return; }
+    const c = chartColors();
+    const title = tooltip.title[0] || '';
+    const items = tooltip.dataPoints.map(p => {
+      const label = p.dataset.label || p.label;
+      const val = p.raw;
+      const color = p.dataset.backgroundColor || p.dataset.borderColor;
+      return `<div style="display:flex;align-items:center;gap:6px;margin-top:4px"><span style="width:8px;height:8px;border-radius:2px;background:${color}"></span><span style="color:${c.fg2};flex:1">${label}</span><b style="font-family:var(--font-mono);color:${c.fg}">${eur(val)}</b></div>`;
+    }).join('');
+    const total = tooltip.dataPoints.reduce((s,p) => s + (p.raw||0), 0);
+    const totalRow = tooltip.dataPoints.length > 1 ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border);display:flex;justify-content:space-between"><span style="color:${c.fg3}">Total</span><b style="font-family:var(--font-mono);color:${c.fg}">${eur(total)}</b></div>` : '';
+    el.innerHTML = `<div style="font-weight:600;color:${c.fg};font-size:13px">${title}</div>${items}${totalRow}`;
+    const pos = chart.canvas.getBoundingClientRect();
+    el.style.opacity = 1;
+    el.style.left = tooltip.caretX + 'px';
+    el.style.top = (tooltip.caretY - 8) + 'px';
+  };
+}
+
+function applyChartTheme() {
+  const c = chartColors();
+  Chart.defaults.color = c.ticks;
+  Chart.defaults.borderColor = c.grid;
+}
+
+function chartsRefreshColors() {
+  // Recrear para que adopten el nuevo tema (sencillo y robusto)
+  Object.values(charts).forEach(ch => ch && ch.destroy());
+  charts = {};
+  renderCharts();
+}
+
+// ── Estado global ────────────────────────────────────────────────────────
+let DATA = {};
+let charts = {};
+let canalFilter = 'all';
+let showMom = false;
+
+async function getJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${url} → ${r.status}`);
+  return r.json();
+}
+
+// ── Render ───────────────────────────────────────────────────────────────
+function renderHero() {
+  const k = DATA.kpis, comp = DATA.comp, sp = DATA.spark6m;
+  const margin = k.margen_mes;
+  const dp = comp.margen.delta_pct;
+  const dpU = dp != null && dp >= 0;
+  $('#heroValue').className = 'hero-value ' + (margin >= 0 ? 'pos' : 'neg');
+  animateCount($('#heroValue'), margin, {decimals:2});
+  // delta (margen: subir = bueno)
+  $('#heroDelta').className = 'delta ' + (dp==null ? 'flat' : (dpU ? 'up' : 'down'));
+  $('#heroDelta').innerHTML = deltaInner(comp.margen.delta_pct);
+  const margenPct = k.ventas_mes ? (margin/k.ventas_mes*100) : 0;
+  $('#heroMeta').innerHTML = `
+    <div class="meta">Ventas <b>${eur(k.ventas_mes)}</b></div>
+    <div class="meta">Gastos <b>${eur(k.gastos_mes)}</b></div>
+    <div class="meta">Margen s/ventas <b>${margenPct.toFixed(1)}%</b></div>`;
+  // sparkline hero
+  const ctx = $('#heroSpark');
+  if (charts.hero) charts.hero.destroy();
+  charts.hero = new Chart(ctx, {
+    type:'line',
+    data:{ labels: sp.map(r=>r.mes.slice(5)), datasets:[{
+      data: sp.map(r=>r.total_eur), borderColor: css('--blue'),
+      backgroundColor: 'rgba(59,130,246,.12)', fill:true, tension:.4,
+      pointRadius:0, borderWidth:2.5
+    }]},
+    options:{ responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{display:false}, tooltip:{ enabled:false } },
+      scales:{ x:{display:false}, y:{display:false} } }
+  });
+}
+
+function deltaInner(d) {
+  if (d == null) return '— sin dato anterior';
+  const arrow = d >= 0 ? '▲' : '▼';
+  return `${arrow} ${Math.abs(d).toFixed(1)}% <span style="opacity:.7;font-weight:500">vs mes ant.</span>`;
+}
+
+function renderKpis() {
+  const k = DATA.kpis, comp = DATA.comp;
+  const cards = [
+    { label:'Ventas mes', value:k.ventas_mes, color:'green', sub:`${k.facturas_ventas} facturas`, delta:comp.ventas.delta_pct, deltaGood: v=>v>=0 },
+    { label:'Gastos mes', value:k.gastos_mes, color:'red', sub:`${k.facturas_gastos} facturas`, delta:comp.gastos.delta_pct, deltaGood: v=>v<0 },
+    { label:'IVA repercutido', value:k.iva_mes, color:'blue', sub:'Soportado sobre ventas', delta:null },
+    { label:'Delivery', value:k.delivery_mes, color:'yellow', sub:'Comisiones reparto', delta:null },
+  ];
+  $('#kpis').innerHTML = cards.map((c,i) => {
+    let dhtml = '';
+    if (c.delta != null) {
+      const good = c.deltaGood(c.delta);
+      dhtml = `<span class="delta ${good?'good':'bad'}">${c.delta>=0?'▲':'▼'} ${Math.abs(c.delta).toFixed(1)}%</span>`;
+    }
+    return `<div class="kpi">
+      <div class="accent-bar" style="background:var(--${c.color})"></div>
+      <div class="label">${c.label}</div>
+      <div class="value ${c.color}" id="kpi-${i}" style="color:var(--${c.color}-fg)">0€</div>
+      <div class="sub">${c.sub} ${dhtml}</div>
+    </div>`;
+  }).join('');
+  cards.forEach((c,i) => animateCount($(`#kpi-${i}`), c.value, {decimals:2}));
+}
+
+function renderBars(target, rows, colorFn, labelFn, valueFn, extraFn) {
+  const max = Math.max(...rows.map(valueFn), 1);
+  $(target).innerHTML = rows.map(r => {
+    const color = colorFn(r);
+    return `<div class="bar-row">
+      <div class="bar-label">${labelFn(r)}</div>
+      <div class="bar-track"><div class="bar-fill" style="width:${(valueFn(r)/max*100).toFixed(1)}%;background:${color}">${eur(valueFn(r))}</div></div>
+      <div class="bar-value">${extraFn(r)}</div>
+    </div>`;
+  }).join('') || emptyState('Sin datos este mes', 'Aún no se han registrado movimientos en el periodo actual.');
+}
+
+function emptyState(title, desc, err=false) {
+  const ico = err
+    ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>'
+    : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 3 5-6"/></svg>';
+  return `<div class="state ${err?'error':''}">${ico}<div class="title">${title}</div><div class="desc">${desc}</div></div>`;
+}
+
+function renderCharts() {
+  const c = chartColors();
+  const tip = { enabled:false, external: externalTooltip() };
+
+  // 1. Stacked canales x mes (con filtro)
+  let canalMeses = DATA.canalMeses;
+  if (canalFilter !== 'all') canalMeses = canalMeses.filter(r => r.canal === canalFilter);
+  const meses = [...new Set(canalMeses.map(r=>r.mes))].sort();
+  const canales = canalFilter !== 'all' ? [canalFilter] : [...new Set(canalMeses.map(r=>r.canal))];
+  const byMes = {}; canalMeses.forEach(r => { (byMes[r.mes] = byMes[r.mes]||{})[r.canal] = r.total_eur; });
+  const ds = canales.map(cn => ({
+    label: ICONS[cn]+' '+LABELS[cn], icon: ICONS[cn],
+    data: meses.map(m => byMes[m]?.[cn]||0),
+    backgroundColor: COLORS[cn]||'#64748b', stack:'s', borderRadius:4, borderSkipped:false,
+  }));
+  if (charts.canales) charts.canales.destroy();
+  charts.canales = new Chart($('#chart-canales'), {
+    type:'bar', data:{ labels: meses.map(m=>m.slice(5)), datasets: ds },
+    options:{ responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{ display:true, position:'bottom', labels:{ boxWidth:10, boxHeight:10, padding:14, font:{size:11}, color:c.ticks } }, tooltip: tip },
+      scales:{ x:{ stacked:true, grid:{display:false}, ticks:{color:c.ticks} }, y:{ stacked:true, grid:{color:c.grid}, border:{display:false}, ticks:{color:c.ticks, callback:v=>fmt(v)} } } }
+  });
+
+  // 2. Tendencia diaria (+ MoM opcional)
+  const dia = DATA.dia;
+  const labels = dia.map(r=>r.dia.slice(5));
+  const datasets = [{
+    label:'Ingresos/día', data: dia.map(r=>r.total_eur),
+    borderColor: css('--blue'), backgroundColor:'rgba(59,130,246,.14)', fill:true,
+    tension:.35, pointRadius:0, pointHoverRadius:5, borderWidth:2.5
+  }];
+  if (showMom && DATA.diaMom) {
+    datasets.push({
+      label:'Mes anterior', data: DATA.diaMom.map(r=>r.total_eur),
+      borderColor: css('--fg-3'), backgroundColor:'transparent', fill:false,
+      tension:.35, pointRadius:0, borderWidth:1.5, borderDash:[5,4]
+    });
+  }
+  if (charts.diario) charts.diario.destroy();
+  charts.diario = new Chart($('#chart-diario'), {
+    type:'line', data:{ labels, datasets },
+    options:{ responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{ display: showMom, position:'bottom', labels:{boxWidth:18, padding:12, color:c.ticks} }, tooltip: tip },
+      interaction:{ mode:'index', intersect:false },
+      scales:{ x:{ grid:{display:false}, ticks:{color:c.ticks, maxTicksLimit:10} }, y:{ grid:{color:c.grid}, border:{display:false}, ticks:{color:c.ticks, callback:v=>fmt(v)} } } }
+  });
+}
+
+function renderRest() {
+  // Canal este mes
+  renderBars('#canal-mes', DATA.canalMes, r=>COLORS[r.canal]||css('--cyan'), r=>ICONS[r.canal]+' '+LABELS[r.canal], r=>r.total_eur, r=>`${r.pagos} pagos`);
+  // Por local
+  renderBars('#local-mes', DATA.localesMes, r=>css('--cyan'), r=>(r.nombre||'Local').slice(0,16), r=>r.total_eur, r=>`${r.facturas} fact.`);
+  // Margen por mes
+  const mmax = Math.max(...DATA.margen.map(m=>Math.max(m.ingresos,m.gastos)), 1);
+  $('#margen').innerHTML = DATA.margen.map(m => `
+    <div style="margin-bottom:var(--s-3)">
+      <div style="font-size:var(--fz-sm);color:var(--fg-3);margin-bottom:4px;display:flex;justify-content:space-between"><span>${m.mes}</span><span class="${m.margen>=0?'delta good':'delta bad'}" style="padding:1px 7px">Margen ${eur(m.margen)}</span></div>
+      <div class="bar-row">
+        <div class="bar-label" style="min-width:64px;font-size:var(--fz-sm)">Ingresos</div>
+        <div class="bar-track"><div class="bar-fill" style="width:${(m.ingresos/mmax*100).toFixed(1)}%;background:var(--green)">${eur(m.ingresos)}</div></div>
+      </div>
+      <div class="bar-row" style="margin-top:4px">
+        <div class="bar-label" style="min-width:64px;font-size:var(--fz-sm)">Gastos</div>
+        <div class="bar-track"><div class="bar-fill" style="width:${(m.gastos/mmax*100).toFixed(1)}%;background:var(--red)">${eur(m.gastos)}</div></div>
+      </div>
+    </div>`).join('');
+
+  // Ingresos por mes (tabla)
+  $('#ingresos').innerHTML = `<div class="table-wrap"><table>
+    <thead><tr><th>Mes</th><th class="num">Fact.</th><th class="num">Total</th><th class="num">Base</th><th class="num">IVA</th><th class="num">Deliv.</th><th class="num">Dto.</th></tr></thead>
+    <tbody>${DATA.ingresos.map(r=>`<tr><td>${r.mes}</td><td class="num">${r.facturas}</td><td class="num"><b>${eur(r.total_eur)}</b></td><td class="num">${eur(r.base_eur)}</td><td class="num">${eur(r.iva_eur)}</td><td class="num">${eur(r.delivery_eur)}</td><td class="num">${eur(r.descuentos_eur)}</td></tr>`).join('')}</tbody>
+  </table></div>`;
+
+  // Proveedores
+  renderBars('#proveedores', DATA.proveedores, r=>'#8b5cf6', r=>(r.proveedor||'').slice(0,18), r=>r.total_eur, r=>`${r.facturas} fc.`);
+  // Categorías
+  renderBars('#categorias', DATA.categorias, r=>r.color||'#6b7280', r=>(r.categoria||'').slice(0,15), r=>r.total_eur, r=>`${r.facturas} fc.`);
+  // Facturas recientes
+  $('#facturas').innerHTML = `<div class="table-wrap"><table>
+    <thead><tr><th>Nº</th><th>Fecha</th><th>Cliente</th><th>Canales</th><th class="num">Total</th></tr></thead>
+    <tbody>${DATA.facturas.map(f=>{const tags=(f.canales||'').split(',').map(x=>x.trim()).filter(Boolean).map(x=>`<span class="tag tag-${x}">${ICONS[x]||''} ${x}</span>`).join(' ');return `<tr><td>${f.number}</td><td>${f.fecha}</td><td>${esc(f.cliente)}</td><td>${tags}</td><td class="num"><b>${eur(f.total_eur)}</b></td></tr>`;}).join('')}</tbody>
+  </table></div>`;
+}
+
+function buildCanalFilter() {
+  const sel = $('#canalFilter');
+  const opts = ['all', ...Object.keys(LABELS)];
+  sel.innerHTML = opts.map(o => `<option value="${o}">${o==='all'?'Todos los canales':ICONS[o]+' '+LABELS[o]}</option>`).join('');
+  sel.value = canalFilter;
+  sel.onchange = () => { canalFilter = sel.value; renderCharts(); };
+}
+
+// ── Carga principal ──────────────────────────────────────────────────────
+async function loadAll() {
+  const [kpis, comp, canalMes, canalMeses, margen, ingresos, proveedores, facturas, categorias, localesMes, dia, spark6m] = await Promise.all([
+    getJSON('/api/kpis'), getJSON('/api/kpis-comparativa'),
+    getJSON('/api/ventas-por-canal'), getJSON('/api/canal-por-mes'),
+    getJSON('/api/margen-por-mes'), getJSON('/api/ingresos-por-mes'),
+    getJSON('/api/gastos-por-proveedor'), getJSON('/api/facturas-recientes'),
+    getJSON('/api/gastos-por-categoria'), getJSON('/api/ventas-por-local'),
+    getJSON('/api/ventas-por-dia?days=30'), getJSON('/api/ingresos-6m'),
+  ]);
+  DATA = { kpis, comp, canalMes, canalMeses, margen, ingresos, proveedores, facturas, categorias, localesMes, dia, spark6m };
+  // Mostrar "última sync"
+  $('#syncTime').textContent = 'hace unos segundos';
+  renderHero();
+  renderKpis();
+  buildCanalFilter();
+  renderCharts();
+  renderRest();
+}
+
+// ── MoM toggle (chart diario) ────────────────────────────────────────────
+async function toggleMom(on) {
+  showMom = on;
+  if (on && !DATA.diaMom) {
+    DATA.diaMom = await getJSON('/api/ventas-por-dia?days=60').then(rows => rows.slice(0,30));
+  }
+  renderCharts();
+}
+
+// ── Chat ─────────────────────────────────────────────────────────────────
+const SUGGEST = ['¿Cuánto he vendido este mes?','Top 5 productos de la semana','Facturas pendientes de pago','¿Qué reservas tengo mañana?','Resumen de gastos por categoría'];
+let chatHistory = JSON.parse(localStorage.getItem('liados_chat_hist')||'[]');
+let pendingToken = null;
+
+function initChat() {
+  const fab=$('#chatFab'), panel=$('#chatPanel');
+  fab.onclick = () => { panel.classList.toggle('open'); if (panel.classList.contains('open')) { renderHistory(); renderSuggest(); $('#chatText').focus(); } };
+  $('#chatClose').onclick = () => panel.classList.remove('open');
+  const txt=$('#chatText');
+  txt.onkeydown = e => { if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); } };
+  $('#chatSend').onclick = sendMsg;
+  $('#momToggle').onclick = (e) => { const on=!e.currentTarget.classList.contains('active'); e.currentTarget.classList.toggle('active',on); toggleMom(on); };
+}
+function renderSuggest() { $('#chatSuggest').innerHTML = SUGGEST.map(s=>`<button>${s}</button>`).join(''); $$('#chatSuggest button').forEach(b=>b.onclick=()=>{$('#chatText').value=b.textContent;sendMsg();}); }
+function saveHist(){ try{ localStorage.setItem('liados_chat_hist',JSON.stringify(chatHistory.slice(-20))); }catch(e){} }
+function addMsg(text,cls,extra){ const d=document.createElement('div'); d.className='msg '+cls; d.innerHTML=text+(extra||''); $('#chatBody').appendChild(d); d.scrollIntoView({behavior:'smooth'}); return d; }
+function renderHistory(){ $('#chatBody').innerHTML=''; if(chatHistory.length===0){$('#chatBody').innerHTML='<div class="msg bot">¡Hola! 👋 Soy el asistente de Liados. Pregúntame sobre ventas, gastos, productos o reservas.</div>';} else chatHistory.forEach(m=>addMsg(esc(m.content), m.role==='user'?'user':'bot')); }
+
+async function sendMsg(){
+  const txt=$('#chatText'); const msg=txt.value.trim(); if(!msg) return;
+  txt.value=''; $('#chatSend').disabled=true;
+  addMsg(esc(msg),'user');
+  const typing=document.createElement('div'); typing.className='typing'; typing.innerHTML='<span></span><span></span><span></span>'; $('#chatBody').appendChild(typing); typing.scrollIntoView();
+  try {
+    const r = await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg,history:chatHistory})});
+    const data = await r.json();
+    typing.remove();
+    const tools = data.tools_used && data.tools_used.length ? `<div class="tools">${data.tools_used.map(t=>`<span class="tchip">🔧 ${t}</span>`).join('')}</div>` : '';
+    addMsg(esc(data.reply||'(sin respuesta)'), 'bot', tools);
+    chatHistory = [...chatHistory, {role:'user',content:msg}, {role:'assistant',content:data.reply||''}].slice(-20);
+    saveHist();
+    if (data.pending_confirmation && data.pending_confirmation.token) { pendingToken = data.pending_confirmation.token; showConfirm(data.pending_confirmation); }
+  } catch(e) { typing.remove(); addMsg('Error de conexión: '+e.message,'error'); }
+  $('#chatSend').disabled=false; $('#chatText').focus();
+}
+
+function showConfirm(p){
+  const box=document.createElement('div'); box.className='confirm-box';
+  box.innerHTML=`<div><b>⚠️ ${esc(p.action)}</b><br>${esc(p.message||'Esta acción requiere confirmación.')}</div><div class="btns"><button class="yes">Confirmar</button><button class="no">Cancelar</button></div>`;
+  $('#chatBody').appendChild(box); box.scrollIntoView();
+  box.querySelector('.yes').onclick=async()=>{box.innerHTML='Ejecutando…';const r=await fetch('/api/chat/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmation_token:pendingToken})});const d=await r.json();box.remove();addMsg(esc(JSON.stringify(d,null,1)),'bot');pendingToken=null;};
+  box.querySelector('.no').onclick=async()=>{await fetch('/api/chat/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmation_token:pendingToken})});box.remove();addMsg('Acción cancelada.','bot');pendingToken=null;};
+}
+
+// ── Reloj ────────────────────────────────────────────────────────────────
+function tick(){ const d=new Date(); $('#clock').textContent=d.toLocaleString('es-ES',{weekday:'short',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}); }
+
+// ── Init ─────────────────────────────────────────────────────────────────
+function init() {
+  initTheme();
+  initSidebar();
+  initChat();
+  applyChartTheme();
+  $('#themeToggle').onclick = toggleTheme;
+  tick(); setInterval(tick, 30000);
+  // refresh sync label cada minuto
+  let syncMin = 0;
+  setInterval(() => { syncMin++; $('#syncTime').textContent = syncMin===1?'hace 1 min':`hace ${syncMin} min`; }, 60000);
+
+  loadAll().catch(e => {
+    $$('.card-body, .kpis, .hero').forEach(el => { el.style.opacity=1; });
+    $('#kpis').innerHTML = `<div class="state error" style="grid-column:1/-1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><div class="title">Error cargando datos</div><div class="desc">${esc(e.message)}</div><button class="seg" onclick="location.reload()">Reintentar</button></div>`;
+  });
+}
+
+document.addEventListener('DOMContentLoaded', init);

@@ -1,0 +1,191 @@
+/* =========================================================================
+   Liados Dashboard · Design Tokens (v5 premium)
+   Tema dark (default) + light via [data-theme="light"] en <html>
+   ========================================================================= */
+
+/* ── Tipografía self-hosted (variable fonts) ───────────────────────────── */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('/static/fonts/Inter-Variable.woff2') format('woff2-variations');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url('/static/fonts/JetBrainsMono-Variable.woff2') format('woff2-variations');
+}
+
+/* ── Tokens base ( Dark = default ) ────────────────────────────────────── */
+:root,
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* Superficies (de más profundo a más elevado) */
+  --bg-0: #0a0f1d;          /* fondo de la app */
+  --bg-1: #131a2b;          /* card base */
+  --bg-2: #1b2335;          /* card elevada / hover */
+  --bg-3: #243044;          /* dropdowns, tooltips, popovers */
+  --bg-inset: #0d1322;      /* tracks de barra, inputs */
+
+  /* Bordes */
+  --border: #283449;
+  --border-strong: #3b4a63;
+  --border-subtle: #1f2a3d;
+
+  /* Texto */
+  --fg-0: #f1f5f9;          /* primario */
+  --fg-1: #cbd5e1;          /* secundario */
+  --fg-2: #94a3b8;          /* terciario / labels */
+  --fg-3: #64748b;          /* muted / sub */
+
+  /* Acentos semánticos */
+  --green: #22c55e;
+  --green-fg: #4ade80;
+  --green-bg: #22c55e1f;
+  --red: #ef4444;
+  --red-fg: #f87171;
+  --red-bg: #ef44441f;
+  --blue: #3b82f6;
+  --blue-fg: #60a5fa;
+  --blue-bg: #3b82f61f;
+  --yellow: #eab308;
+  --yellow-fg: #facc15;
+  --yellow-bg: #eab3081f;
+  --purple: #a855f7;
+  --purple-fg: #c084fc;
+  --purple-bg: #a855f71f;
+  --cyan: #06b6d4;
+  --cyan-fg: #22d3ee;
+  --cyan-bg: #06b6d41f;
+  --orange: #f97316;
+  --orange-fg: #fb923c;
+  --orange-bg: #f973161f;
+
+  /* Canales (alias semánticos) */
+  --canal-card: var(--blue);
+  --canal-cash: var(--green);
+  --canal-uber: var(--orange);
+  --canal-glovo: var(--yellow);
+  --canal-shop: var(--purple);
+  --canal-justeat: var(--red);
+
+  /* Radios */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 18px;
+  --r-pill: 999px;
+
+  /* Espaciado (escala 4px) */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-7: 32px;
+  --s-8: 40px;
+
+  /* Sombras */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, .4);
+  --shadow-2: 0 4px 12px -4px rgba(0, 0, 0, .5);
+  --shadow-3: 0 12px 32px -12px rgba(0, 0, 0, .65);
+  --shadow-card: 0 1px 0 rgba(255, 255, 255, .03) inset, 0 8px 24px -16px rgba(0, 0, 0, .7);
+  --shadow-card-hover: 0 1px 0 rgba(255, 255, 255, .05) inset, 0 18px 40px -18px rgba(0, 0, 0, .8);
+  --glow-blue: 0 0 0 1px rgba(59, 130, 246, .35), 0 8px 24px -6px rgba(59, 130, 246, .35);
+
+  /* Movimiento */
+  --ease: cubic-bezier(.16, 1, .3, 1);
+  --ease-out: cubic-bezier(.22, 1, .36, 1);
+  --dur-1: 140ms;
+  --dur-2: 220ms;
+  --dur-3: 420ms;
+
+  /* Tipografía */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --fz-xs: 11px;
+  --fz-sm: 12px;
+  --fz-md: 13px;
+  --fz-base: 14px;
+  --fz-lg: 16px;
+  --fz-xl: 20px;
+  --fz-2xl: 28px;
+  --fz-3xl: 40px;
+  --fz-4xl: 56px;
+
+  /* Layout */
+  --sidebar-w: 240px;
+  --sidebar-w-collapsed: 68px;
+  --header-h: 60px;
+  --content-max: 1480px;
+}
+
+/* ── Tema claro ────────────────────────────────────────────────────────── */
+[data-theme='light'] {
+  color-scheme: light;
+
+  --bg-0: #f4f6fb;
+  --bg-1: #ffffff;
+  --bg-2: #f8fafc;
+  --bg-3: #ffffff;
+  --bg-inset: #f1f5f9;
+
+  --border: #e6ebf3;
+  --border-strong: #cbd5e1;
+  --border-subtle: #eef2f7;
+
+  --fg-0: #0f172a;
+  --fg-1: #1e293b;
+  --fg-2: #475569;
+  --fg-3: #94a3b8;
+
+  --green-bg: #22c55e18;
+  --red-bg: #ef444418;
+  --blue-bg: #3b82f618;
+  --yellow-bg: #eab30818;
+  --purple-bg: #a855f718;
+  --cyan-bg: #06b6d418;
+  --orange-bg: #f9731618;
+
+  --shadow-1: 0 1px 2px rgba(15, 23, 42, .06);
+  --shadow-2: 0 4px 14px -4px rgba(15, 23, 42, .1);
+  --shadow-3: 0 16px 40px -16px rgba(15, 23, 42, .18);
+  --shadow-card: 0 1px 0 rgba(255, 255, 255, .6) inset, 0 2px 8px -2px rgba(15, 23, 42, .07);
+  --shadow-card-hover: 0 1px 0 rgba(255, 255, 255, .8) inset, 0 10px 28px -8px rgba(15, 23, 42, .14);
+  --glow-blue: 0 0 0 1px rgba(59, 130, 246, .3), 0 8px 24px -6px rgba(59, 130, 246, .25);
+}
+
+/* ── Reset suave ───────────────────────────────────────────────────────── */
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--fz-base);
+  color: var(--fg-0);
+  background: var(--bg-0);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: 'cv11', 'ss01', 'ss03';
+  transition: background var(--dur-2) var(--ease), color var(--dur-2) var(--ease);
+}
+
+/* Scrollbar premium */
+* { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: var(--r-pill); border: 2px solid transparent; background-clip: content-box; }
+*::-webkit-scrollbar-thumb:hover { background: var(--fg-3); background-clip: content-box; }
+
+::selection { background: var(--blue-bg); color: var(--fg-0); }
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}

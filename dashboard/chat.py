@@ -24,6 +24,8 @@ try:
 except Exception:
     _CONFIRM = None
     _CANCEL = None
+    import logging
+    logging.getLogger(__name__).warning("Last.app MCP NO cargado: confirm/cancel no disponibles. Flujo 2-paso desactivado.")
 
 MAX_ITERS = 6
 
@@ -73,9 +75,21 @@ def chat(question: str, history: list = None) -> dict:
     new_history = list(messages[1:])  # todo lo conversado (sin system)
 
     for _ in range(MAX_ITERS):
-        result = call_llm(messages)
-        choice = result["choices"][0]
-        msg = choice["message"]
+        try:
+            result = call_llm(messages)
+            if not result.get("choices"):
+                raise RuntimeError(f"LLM devolvio sin choices: {result}")
+            choice = result["choices"][0]
+            msg = choice["message"]
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Error en LLM call: {type(e).__name__}: {e}")
+            return {
+                "reply": "Lo siento, hubo un error al procesar tu pregunta (LLM). Intentalo de nuevo.",
+                "pending_confirmation": pending,
+                "tools_used": tools_used,
+                "history": messages[1:] + [{"role": "assistant", "content": "(error del LLM)"}],
+            }
 
         if msg.get("tool_calls"):
             messages.append(msg)

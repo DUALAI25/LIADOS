@@ -25,7 +25,7 @@ from psycopg2.extras import RealDictCursor
 # Chat conversacional (wrapper sobre agent.py, sin modificarlo).
 from dashboard import chat as chat_engine
 
-app = FastAPI(title="Liados Dashboard", version="5.0.0")
+app = FastAPI(title="Liados Dashboard", version="5.1.0")
 security = HTTPBasic()
 
 # Servir assets estaticos (fuentes, css, js) sin auth (son publicos, sin secretos).
@@ -265,7 +265,7 @@ def api_facturas_recientes(limit: int = Query(15, ge=1, le=100, description='Max
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "5.0.0"}
+    return {"status": "ok", "version": "5.1.0"}
 
 
 # ── API Endpoints NUEVOS (v4) ───────────────────────────────────

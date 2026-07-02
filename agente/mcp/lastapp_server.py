@@ -53,20 +53,23 @@ mcp = FastMCP("lastapp")
 _client: LastAppClient | None = None
 _client_available: bool | None = None
 
+# MAPEO DE TOOLS: nombres propios → tools reales del MCP remoto de Last.app.
+# Obtenido de tools/list (2026-07-01). El auto-fix de _check_or_init_client
+# seguirá corrigiendo si Last.app cambia nombres en el futuro.
 TOOL_MAP = {
-    "list_products": "get_catalog_items",
-    "get_product": "get_catalog_item",
-    "top_products": "get_top_selling_products",
-    "list_reservations": "list_reservations",
-    "reservation_patterns": "get_reservation_patterns",
-    "list_locations": "list_locations",
-    "list_printers": "list_printers",
-    "list_integrations": "list_integrations",
-    "search_kb": "search_knowledge_base",
-    "set_product_unavailable": "update_catalog_item",
-    "set_product_available": "update_catalog_item",
-    "bump_product_price": "update_catalog_item",
-    "open_support_ticket": "create_support_ticket",
+    "list_products": "getLocationProducts",
+    "get_product": "getLocationProducts",
+    "top_products": "queryCubeJS",
+    "list_reservations": "listReservations",
+    "reservation_patterns": "queryCubeJS",
+    "list_locations": "listMyLocations",
+    "list_printers": "getLocationPrinters",
+    "list_integrations": "getIntegrations",
+    "search_kb": "searchKnowledgeBase",
+    "set_product_unavailable": "updateLocationProductAvailability",
+    "set_product_available": "updateLocationProductAvailability",
+    "bump_product_price": "updateOrganizationProductDetails",
+    "open_support_ticket": "createSupportTicket",
 }
 
 _message_cache = {}

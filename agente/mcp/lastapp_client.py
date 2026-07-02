@@ -12,6 +12,7 @@ Si el servidor responde 401, fuerza refresh del token y reintenta UNA vez.
 """
 import time
 import logging
+import json
 import requests
 
 logger = logging.getLogger(__name__)
@@ -53,9 +54,14 @@ class LastAppClient:
             "params": params or {},
             "id": self._next_id(),
         }
-        headers = {"Content-Type": "application/json"}
+        # Last.app exige declarar que aceptamos JSON y SSE (transporte Streamable HTTP).
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        }
 
-        if method not in ("initialize",) and self._auth_token_getter:
+        # Last.app requiere Bearer token en TODAS las peticiones (incluso initialize).
+        if self._auth_token_getter:
             try:
                 token = self._auth_token_getter()
                 if token:
@@ -92,9 +98,54 @@ class LastAppClient:
 
         raise RuntimeError(f"Fallo tras {MAX_RETRIES} intentos a {method}: {last_exc}")
 
+    def _notify(self, method: str, params: dict = None) -> None:
+        """Envía una notificación JSON-RPC (sin id, sin respuesta esperada).
+
+        MCP usa notifications/initialized como fire-and-forget: el servidor NO
+        debe responder. Si la enviamos con id, Last.app devuelve -32601.
+        """
+        payload = {
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params or {},
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        }
+        if self._auth_token_getter:
+            try:
+                token = self._auth_token_getter()
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
+            except Exception as e:
+                logger.warning("No se pudo obtener token OAuth: %s", _sanitize_error(e))
+        try:
+            requests.post(MCP_URL, json=payload, headers=headers, timeout=DEFAULT_TIMEOUT)
+        except requests.exceptions.RequestException as e:
+            logger.debug("Notificación %s falló (no crítico): %s", method, _sanitize_error(e))
+
     @staticmethod
     def _parse_response(resp: requests.Response) -> dict:
-        data = resp.json()
+        """Parsea la respuesta, que puede ser JSON plano o SSE (event: ...\\ndata: {...})."""
+        body = resp.text or ""
+        text = body.strip()
+        # Caso SSE: el servidor Streamable HTTP responde con líneas "event:" / "data:".
+        if text.startswith("event:") or text.startswith("data:") or "data:" in text.split("\n", 1)[0]:
+            data_json = None
+            for line in text.splitlines():
+                line = line.strip()
+                if line.startswith("data:"):
+                    candidate = line[len("data:"):].strip()
+                    # Algunos servers separan con un espacio; descartar markers no-JSON.
+                    if candidate and candidate.startswith("{"):
+                        data_json = candidate
+                        break
+            if data_json is None:
+                raise RuntimeError(f"Respuesta SSE sin línea 'data' JSON válida: {body[:200]}")
+            data = json.loads(data_json)
+        else:
+            data = resp.json()
         if "error" in data:
             err = data["error"]
             raise RuntimeError(f"JSON-RPC error {err.get('code', '?')}: {err.get('message', str(err))}")
@@ -115,7 +166,7 @@ class LastAppClient:
                      self._server_info.get("name", "?"),
                      self._server_info.get("version", "?"),
                      ", ".join(k for k, v in self._server_capabilities.items() if v))
-        self._rpc("notifications/initialized", {}, retry_on_401=False)
+        self._notify("notifications/initialized", {})
         return result
 
     def discover_tools(self) -> list:

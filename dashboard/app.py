@@ -51,10 +51,24 @@ def get_current_user(credentials: HTTPBasicCredentials = Depends(security)):
 
 # ── Pool de conexiones ────────────────────────────────────────────────
 # ThreadedConnectionPool: evita abrir/cerrar conexion en cada query.
-# minconn=2, maxconn=10 suficiente para 1 usuario con varias tabs/requests
-# en paralelo. Si la BD cae, getconn() levanta PoolError y devolvemos 503.
+# minconn=2, maxconn=20 (margen para SSE largos + dashboard en paralelo).
+# Si la BD cae, getconn() levanta PoolError y devolvemos 503.
 _POOL = None
 _POOL_LOCK = threading.Lock()
+
+
+@app.exception_handler(psycopg2.pool.PoolError)
+def _pool_error_handler(request, exc):
+    """Devuelve 503 en lugar de 500 cuando el pool se agota."""
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=503, content={"detail": "BD sobrecargada, reintenta en unos segundos"})
+
+
+@app.exception_handler(psycopg2.OperationalError)
+def _db_error_handler(request, exc):
+    """Devuelve 503 en lugar de 500 cuando la BD no responde."""
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=503, content={"detail": f"BD no disponible: {exc}"})
 
 
 # ── Rate limiter simple (in-memory) ───────────────────────────────────
@@ -96,7 +110,7 @@ def _init_pool():
     with _POOL_LOCK:
         if _POOL is None:
             _POOL = pgpool.ThreadedConnectionPool(
-                minconn=2, maxconn=10,
+                minconn=2, maxconn=20,
                 host=os.getenv("DB_HOST", "localhost"),
                 port=int(os.getenv("DB_PORT", "5432")),
                 dbname=os.getenv("DB_NAME", "desliado"),
@@ -108,25 +122,38 @@ def _init_pool():
 
 
 def get_conn():
-    """Obtiene una conexion del pool. Se cierra (devuelve al pool) al salir del with."""
+    """Obtiene una conexion cruda del pool. Usar SIEMPRE con try/finally + put_conn.
+    NO uses 'with get_conn() as c' (cierra la conexion, rompe el pool)."""
     return _init_pool().getconn()
 
 
 def put_conn(conn):
-    """Devuelve la conexion al pool (no la cierra)."""
+    """Devuelve la conexion al pool (no la cierra). Hace rollback defensivo."""
     if _POOL is not None and conn is not None:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         _POOL.putconn(conn)
 
 
 def q(sql, params=()):
-    """Helper: ejecuta SELECT y devuelve filas. Hace commit/rollback explicito."""
-    conn = get_conn()
+    """Helper: ejecuta SELECT y devuelve filas. Garantiza release del slot del pool.
+    Si el pool esta agotado, devuelve 503 en lugar de 500."""
     try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        conn = get_conn()
+    except psycopg2.pool.PoolError:
+        raise HTTPException(status_code=503, detail="BD sobrecargada, reintenta en unos segundos")
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        try:
             cur.execute(sql, params)
             return cur.fetchall()
+        finally:
+            cur.close()
     except Exception:
-        conn.rollback()
+        try: conn.rollback()
+        except: pass
         raise
     finally:
         put_conn(conn)
@@ -332,7 +359,34 @@ def api_facturas_recientes(limit: int = Query(15, ge=1, le=100, description='Max
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "5.1.0"}
+    """Health check enriquecido: BD OK, pool stats, version."""
+    out = {"status": "ok", "version": "5.1.0", "checks": {}}
+    # Test BD (importante: usar try/finally + put_conn para no romper el pool)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+            cur.fetchone()
+        out["checks"]["database"] = "ok"
+    except Exception as e:
+        out["status"] = "degraded"
+        out["checks"]["database"] = f"error: {e}"
+    finally:
+        put_conn(conn)
+    # Pool stats
+    try:
+        if _POOL is not None:
+            # ThreadedConnectionPool no expone getters en todas las versiones;
+            # usamos getattr defensivo
+            used = getattr(_POOL, "_used", None)
+            free = getattr(_POOL, "_pool", None)
+            out["checks"]["pool"] = {
+                "used": len(used) if used is not None and hasattr(used, '__len__') else None,
+                "free": len(free) if free is not None and hasattr(free, '__len__') else None,
+            }
+    except Exception:
+        out["checks"]["pool"] = "unavailable"
+    return out
 
 
 # ── API Endpoints NUEVOS (v4) ───────────────────────────────────
@@ -497,14 +551,13 @@ def api_chat_stream(req: ChatRequest, request: Request, user: str = Depends(get_
     """
     if not _rate_limit_check(request, key="chat-stream", max_requests=15, window_s=60):
         raise HTTPException(status_code=429, detail="Demasiadas peticiones. Espera unos segundos.")
-    import json as _json
 
     def gen():
         try:
             for ev in chat_engine.chat_stream(req.message, req.history):
-                yield f"event: {ev['type']}\ndata: {_json.dumps(ev, ensure_ascii=False)}\n\n"
+                yield f"event: {ev['type']}\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
         except Exception as e:
-            yield f"event: error\ndata: {_json.dumps({'message': str(e)}, ensure_ascii=False)}\n\n"
+            yield f"event: error\ndata: {json.dumps({'message': str(e)}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         gen(),

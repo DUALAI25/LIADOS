@@ -172,20 +172,18 @@ async function renderGastos() {
   try {
     const prov = await getJSON('/api/gastos-por-proveedor?limit=50');
     const max = Math.max(...prov.map(p=>p.total_eur), 1);
+    const rowsHtml = prov.map(p => {
+      const safeName = esc(p.proveedor);
+      return `<tr class="row-drill"><td>${esc(p.proveedor)}</td><td>${p.facturas}</td><td class="num"><b>${eur(p.total_eur)}</b></td><td><div class="bar-track" style="height:8px"><div class="bar-fill" style="width:${(p.total_eur/max*100).toFixed(1)}%;background:#8b5cf6;padding:0;border-radius:4px"></div></div></td></tr>`;
+    }).join('');
     $('#gastos-tabla').innerHTML = `<div class="table-wrap"><table>
       <thead><tr><th>Proveedor</th><th>Facturas</th><th class="num">Total</th><th style="width:30%">Volumen</th></tr></thead>
-      <tbody>${prov.map(p=>`<tr class="row-drill" data-name="${esc(p.proveedor)}" style="cursor:pointer"><td>${esc(p.proveedor)}</td><td>${p.facturas}</td><td class="num"><b>${eur(p.total_eur)}</b></td><td><div class="bar-track" style="height:8px"><div class="bar-fill" style="width:${(p.total_eur/max*100).toFixed(1)}%;background:#8b5cf6;padding:0;border-radius:4px"></div></div></td></tr>`).join('')}</tbody>
+      <tbody>${rowsHtml}</tbody>
     </table></div>`;
-    // Drill-down al clickar fila
-    $$('#gastos-tabla .row-drill').forEach(tr => tr.onclick = () => openDrill('proveedor', tr.getAttribute('data-name')));
+    // Drill-down via event delegation (lo hace wireBarDrillDown)
   } catch(e) { $('#gastos-tabla').innerHTML = '<div class="state error"><div class="title">Error</div><div class="desc">'+esc(e.message)+'</div></div>'; }
   // Categorías (drill-down)
   renderBars('#gastos-categorias', DATA.categorias||[], r=>r.color||'#6b7280', r=>(r.categoria||'').slice(0,16), r=>r.total_eur, r=>`${r.facturas} fc.`);
-  $$('#gastos-categorias .bar-row').forEach(row => {
-    row.style.cursor = 'pointer';
-    const name = row.querySelector('.bar-label')?.textContent?.trim();
-    row.onclick = () => name && openDrill('categoria', name);
-  });
   // Margen
   const mmax = Math.max(...(DATA.margen||[]).map(m=>Math.max(m.ingresos,m.gastos)), 1);
   $('#gastos-margen').innerHTML = (DATA.margen||[]).map(m => `
@@ -228,8 +226,9 @@ function chartColors() {
   };
 }
 
-// Tooltip custom HTML
-function externalTooltip(handler) {
+// Tooltip custom HTML (Chart.js external tooltip).
+// Crea y posiciona un div absolute sobre el canvas con el detalle del tooltip.
+function externalTooltip() {
   return (ctx) => {
     const { chart, tooltip } = ctx;
     let el = chart.canvas.parentNode.querySelector('.chart-tip');
@@ -246,12 +245,11 @@ function externalTooltip(handler) {
       const label = p.dataset.label || p.label;
       const val = p.raw;
       const color = p.dataset.backgroundColor || p.dataset.borderColor;
-      return `<div style="display:flex;align-items:center;gap:6px;margin-top:4px"><span style="width:8px;height:8px;border-radius:2px;background:${color}"></span><span style="color:${c.fg2};flex:1">${label}</span><b style="font-family:var(--font-mono);color:${c.fg}">${eur(val)}</b></div>`;
+      return `<div style="display:flex;align-items:center;gap:6px;margin-top:4px"><span style="width:8px;height:8px;border-radius:2px;background:${color}"></span><span style="color:${c.fg2};flex:1">${esc(label)}</span><b style="font-family:var(--font-mono);color:${c.fg}">${eur(val)}</b></div>`;
     }).join('');
     const total = tooltip.dataPoints.reduce((s,p) => s + (p.raw||0), 0);
     const totalRow = tooltip.dataPoints.length > 1 ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border);display:flex;justify-content:space-between"><span style="color:${c.fg3}">Total</span><b style="font-family:var(--font-mono);color:${c.fg}">${eur(total)}</b></div>` : '';
-    el.innerHTML = `<div style="font-weight:600;color:${c.fg};font-size:13px">${title}</div>${items}${totalRow}`;
-    const pos = chart.canvas.getBoundingClientRect();
+    el.innerHTML = `<div style="font-weight:600;color:${c.fg};font-size:13px">${esc(title)}</div>${items}${totalRow}`;
     el.style.opacity = 1;
     el.style.left = tooltip.caretX + 'px';
     el.style.top = (tooltip.caretY - 8) + 'px';
@@ -679,28 +677,31 @@ async function doSearch(q) {
     let html = '';
     if (data.proveedores.length) {
       html += '<div class="search-group"><div class="sg-title">Proveedores</div>';
-      html += data.proveedores.map(p => `
-        <div class="search-item" data-drill="proveedor" data-name="${esc(p.proveedor)}">
-          <div class="si-main"><div class="si-name">${highlight(p.proveedor,q)}</div><div class="si-sub">${p.facturas} facturas</div></div>
-          <div class="si-amount">${eur(p.total_eur)}</div>
-        </div>`).join('');
+      html += data.proveedores.map(p => {
+        const safeName = esc(p.proveedor);
+        // data-name en setAttribute para evitar inyeccion de comillas
+        return `<div class="search-item" data-drill="proveedor"><div class="si-main"><div class="si-name">${highlight(p.proveedor,q)}</div><div class="si-sub">${p.facturas} facturas</div></div><div class="si-amount">${eur(p.total_eur)}</div></div>`;
+      }).join('');
       html += '</div>';
     }
     if (data.facturas.length) {
       html += '<div class="search-group"><div class="sg-title">Facturas</div>';
-      html += data.facturas.map(f => `
-        <div class="search-item" data-drill="proveedor" data-name="${esc(f.vendor_name||'')}">
-          <div class="si-main"><div class="si-name">${highlight(f.vendor_name||'Sin nombre',q)} ${f.invoice_number?'· '+esc(f.invoice_number):''}</div><div class="si-sub">${f.invoice_date||''} · ${esc(f.category_raw||'')}</div></div>
-          <div class="si-amount">${eur(f.total_amount)}</div>
-        </div>`).join('');
+      html += data.facturas.map(f => {
+        const safeName = esc(f.vendor_name||'');
+        return `<div class="search-item" data-drill="proveedor"><div class="si-main"><div class="si-name">${highlight(f.vendor_name||'Sin nombre',q)} ${f.invoice_number?'· '+esc(f.invoice_number):''}</div><div class="si-sub">${f.invoice_date||''} · ${esc(f.category_raw||'')}</div></div><div class="si-amount">${eur(f.total_amount)}</div></div>`;
+      }).join('');
       html += '</div>';
     }
     if (!html) html = '<div class="search-empty">Sin resultados para "'+esc(q)+'"</div>';
     $('#searchResults').innerHTML = html;
-    // Wire click → drill-down
-    $$('#searchResults .search-item').forEach(item => item.onclick = () => {
-      const name = item.getAttribute('data-name');
-      if (name) { closeAllModals(); openDrill('proveedor', name); }
+    // Wire click -> drill-down (data-name en setAttribute, no en atributo)
+    $$('#searchResults .search-item').forEach((item, i) => {
+      const allItems = [...data.proveedores, ...data.facturas];
+      const name = allItems[i]?.proveedor || allItems[i]?.vendor_name || '';
+      if (name) {
+        item.setAttribute('data-drill-name', name);
+        item.onclick = () => { closeAllModals(); openDrill('proveedor', name); };
+      }
     });
   } catch(e) { $('#searchResults').innerHTML = '<div class="search-empty">Error: '+esc(e.message)+'</div>'; }
 }

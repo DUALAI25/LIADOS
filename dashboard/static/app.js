@@ -265,7 +265,9 @@ function applyChartTheme() {
 }
 
 function chartsRefreshColors() {
-  // Recrear para que adopten el nuevo tema (sencillo y robusto)
+  // Recrear para que adopten el nuevo tema (sencillo y robusto).
+  // Importante: primero limpiamos tooltips huerfanos del DOM.
+  $$('.chart-tip').forEach(t => t.remove());
   Object.values(charts).forEach(ch => ch && ch.destroy());
   charts = {};
   renderCharts();
@@ -277,23 +279,60 @@ let charts = {};
 let canalFilter = 'all';
 let showMom = false;
 
-// Credenciales en sessionStorage (no localStorage)
-function _getAuthHeaders() {
+// ── Auth helpers ─────────────────────────────────────────────────────────
+// HTTP Basic Auth: el navegador abre un popup nativo (más seguro que prompt()
+// y compatible con todos los browsers). Cacheamos credenciales codificadas en
+// sessionStorage para no spammear al usuario.
+function _getAuth() {
   let auth = sessionStorage.getItem('liados_basic');
-  if (auth) return { 'Authorization': 'Basic ' + auth };
-  const u = prompt("Usuario:");
-  const p = prompt("Contrasena:");
-  if (!u || !p) throw new Error("Credenciales requeridas");
-  auth = btoa(u + ":" + p);
+  if (auth) return auth;
+  // El browser pedira usuario/contrasena via popup nativo en el primer 401.
+  return null;
+}
+
+function _setAuth(user, pass) {
+  const auth = btoa(user + ':' + pass);
   sessionStorage.setItem('liados_basic', auth);
-  return { 'Authorization': 'Basic ' + auth };
+  return auth;
+}
+
+function _clearAuth() {
+  sessionStorage.removeItem('liados_basic');
+}
+
+function _authHeader() {
+  const auth = _getAuth();
+  return auth ? { 'Authorization': 'Basic ' + auth } : {};
+}
+
+async function _fetchOnce(url, opts = {}) {
+  const headers = { ...(opts.headers || {}), ..._authHeader() };
+  if (opts.json !== undefined) {
+    headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(opts.json);
+    delete opts.json;
+  }
+  return fetch(url, { ...opts, headers, cache: 'no-store' });
+}
+
+async function _fetchAuth(url, opts = {}) {
+  let r = await _fetchOnce(url, opts);
+  if (r.status === 401) {
+    // Credenciales invalidas o expiradas -> limpiamos para forzar re-prompt.
+    _clearAuth();
+    r = await _fetchOnce(url, opts);
+  }
+  return r;
 }
 
 async function getJSON(url) {
-  const r = await fetch(url, { headers: _getAuthHeaders(), cache: "no-store" });
-  if (!r.ok) throw new Error(`${url} → ${r.status}`);
+  const r = await _fetchAuth(url);
+  if (!r.ok) throw new Error(`${url} -> ${r.status}`);
   return r.json();
 }
+
+function _getAuthHeaders() { return _authHeader(); }  // compat: usado por stream y otros
+
 
 // ── Render ───────────────────────────────────────────────────────────────
 function renderHero() {
@@ -533,7 +572,7 @@ async function sendMsg(){
   let toolsChip = null;       // contenedor de chips de tools (live)
 
   try {
-    const r = await fetch('/api/chat/stream',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_getAuthHeaders()),body:JSON.stringify({message:msg,history:chatHistory})});
+    const r = await _fetchAuth('/api/chat/stream', { method:'POST', json:{message:msg, history:chatHistory} });
     if (!r.ok) throw new Error('HTTP '+r.status);
     const reader = r.body.getReader();
     const decoder = new TextDecoder();
@@ -600,8 +639,8 @@ function showConfirm(p){
   const box=document.createElement('div'); box.className='confirm-box';
   box.innerHTML=`<div><b>⚠️ ${esc(p.action)}</b><br>${esc(p.message||'Esta acción requiere confirmación.')}</div><div class="btns"><button class="yes">Confirmar</button><button class="no">Cancelar</button></div>`;
   $('#chatBody').appendChild(box); box.scrollIntoView();
-  box.querySelector('.yes').onclick=async()=>{box.innerHTML='Ejecutando…';const r=await fetch('/api/chat/confirm',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_getAuthHeaders()),body:JSON.stringify({confirmation_token:pendingToken})});const d=await r.json();box.remove();addMsg(esc(JSON.stringify(d,null,1)),'bot');pendingToken=null;};
-  box.querySelector('.no').onclick=async()=>{await fetch('/api/chat/cancel',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_getAuthHeaders()),body:JSON.stringify({confirmation_token:pendingToken})});box.remove();addMsg('Acción cancelada.','bot');pendingToken=null;};
+  box.querySelector('.yes').onclick=async()=>{box.innerHTML='Ejecutando…';try{const r=await _fetchAuth('/api/chat/confirm',{method:'POST',json:{confirmation_token:pendingToken}});const d=await r.json().catch(()=>({error:'Respuesta no es JSON valido'}));box.remove();addMsg('```json\n'+JSON.stringify(d,null,2)+'\n```','bot');pendingToken=null;}catch(e){box.remove();addMsg('Error al confirmar: '+esc(e.message),'error');pendingToken=null;}};
+  box.querySelector('.no').onclick=async()=>{try{await _fetchAuth('/api/chat/cancel',{method:'POST',json:{confirmation_token:pendingToken}});box.remove();addMsg('Acción cancelada.','bot');}catch(e){box.remove();addMsg('No se pudo cancelar (la acción puede seguir pendiente en el servidor): '+esc(e.message),'error');}pendingToken=null;};
 }
 
 // ── Reloj ────────────────────────────────────────────────────────────────
@@ -667,8 +706,10 @@ async function doSearch(q) {
 }
 
 async function openDrill(type, name) {
+  name = (name || '').trim();
+  if (!name) return;
   openModal('drillModal');
-  $('#drillTitle').textContent = (type==='proveedor'?'🧾 ':'📦 ') + name;
+  $('#drillTitle').textContent = (type==='proveedor' ? '🧾 ' : '📦 ') + name;
   $('#drillBody').innerHTML = '<div class="search-empty">Cargando…</div>';
   try {
     const url = type==='proveedor'
@@ -681,33 +722,45 @@ async function openDrill(type, name) {
         `<div class="drill-stat"><div class="ds-label">Facturas</div><div class="ds-value">${data.stats.total_facturas}</div></div>` +
         `<div class="drill-stat"><div class="ds-label">Total</div><div class="ds-value">${eur(data.stats.total_eur)}</div></div>` +
         `<div class="drill-stat"><div class="ds-label">Ticket medio</div><div class="ds-value">${eur(data.stats.ticket_medio)}</div></div>` +
-        `<div class="drill-stat"><div class="ds-label">Periodo</div><div class="ds-value" style="font-size:var(--fz-sm)">${data.stats.primera||'—'} → ${data.stats.ultima||'—'}</div></div>` +
+        `<div class="drill-stat"><div class="ds-label">Periodo</div><div class="ds-value" style="font-size:var(--fz-sm)">${esc(data.stats.primera||'—')} → ${esc(data.stats.ultima||'—')}</div></div>` +
         '</div>';
     }
     const rows = data.facturas || [];
     html += `<div class="table-wrap"><table><thead><tr><th>Fecha</th><th>${type==='proveedor'?'Nº':'Proveedor'}</th><th>Categoría</th><th class="num">Total</th></tr></thead><tbody>` +
-      rows.map(r => `<tr><td>${r.invoice_date||'—'}</td><td>${esc(type==='proveedor'?(r.invoice_number||''):(r.proveedor||''))}</td><td>${esc(r.category_raw||'')}</td><td class="num"><b>${eur(r.total_amount)}</b></td></tr>`).join('') +
+      rows.map(r => `<tr><td>${esc(r.invoice_date||'—')}</td><td>${esc(type==='proveedor'?(r.invoice_number||''):(r.proveedor||''))}</td><td>${esc(r.category_raw||'')}</td><td class="num"><b>${eur(r.total_amount)}</b></td></tr>`).join('') +
       '</tbody></table></div>';
     $('#drillBody').innerHTML = html || '<div class="search-empty">Sin facturas.</div>';
   } catch(e) { $('#drillBody').innerHTML = '<div class="search-empty">Error: '+esc(e.message)+'</div>'; }
 }
 
 // Drill-down click en barras de proveedores/categorías
+// Usa event delegation: 1 solo listener en el contenedor padre, no por fila.
 function wireBarDrillDown() {
-  $$('#proveedores .bar-row').forEach(row => {
-    row.style.cursor = 'pointer';
-    const name = row.querySelector('.bar-label')?.textContent?.trim();
-    row.onclick = () => name && openDrill('proveedor', name);
-    row.onmouseenter = () => row.style.filter = 'brightness(1.1)';
-    row.onmouseleave = () => row.style.filter = '';
-  });
-  $$('#categorias .bar-row').forEach(row => {
-    row.style.cursor = 'pointer';
-    const name = row.querySelector('.bar-label')?.textContent?.trim();
-    row.onclick = () => name && openDrill('categoria', name);
-    row.onmouseenter = () => row.style.filter = 'brightness(1.1)';
-    row.onmouseleave = () => row.style.filter = '';
-  });
+  const wire = (selector, type) => {
+    const root = $(selector);
+    if (!root) return;
+    // Limpiamos listeners anteriores: reemplazamos el nodo (forma simple y
+    // 100% segura de evitar duplicados)
+    const clone = root.cloneNode(false);
+    root.parentNode.replaceChild(clone, root);
+    // Event delegation: 1 listener para todas las filas
+    clone.addEventListener('click', (e) => {
+      const row = e.target.closest('.bar-row');
+      if (!row) return;
+      const name = row.querySelector('.bar-label')?.textContent?.trim();
+      if (name) openDrill(type, name);
+    });
+    clone.addEventListener('mouseenter', (e) => {
+      const row = e.target.closest('.bar-row');
+      if (row) row.style.filter = 'brightness(1.1)';
+    }, true);
+    clone.addEventListener('mouseleave', (e) => {
+      const row = e.target.closest('.bar-row');
+      if (row) row.style.filter = '';
+    }, true);
+  };
+  wire('#proveedores', 'proveedor');
+  wire('#categorias', 'categoria');
 }
 
 function initShortcuts() {

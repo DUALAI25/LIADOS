@@ -132,24 +132,33 @@ if r.ok:
     data = r.json()
     check("  reply no vacio", bool(data.get("reply")), data.get("reply", "")[:60])
 
-# Streaming: solo verificamos que la conexión se establece y emite al menos
-# un evento (el LLM puede tardar más que el timeout en responder con datos
-# reales; aquí verificamos la tuberia).
+# Streaming: verificamos que la conexión abre y emite al menos un evento
+# en un tiempo razonable. Toleramos latencia del LLM con timeout generoso.
 print("  (streaming) probando /api/chat/stream...")
+t0 = time.time()
 try:
-    r = requests.post(f"{HOST}/api/chat/stream", auth=AUTH, timeout=15,
+    r = requests.post(f"{HOST}/api/chat/stream", auth=AUTH, timeout=(5, 30),
                       json={"message": "ok", "history": []}, stream=True)
     got_event = False
-    for line in r.iter_lines():
-        if line.startswith(b"event:"):
+    got_done = False
+    for raw in r.iter_lines(chunk_size=1):
+        if not raw:
+            continue
+        if raw.startswith(b"event:"):
             got_event = True
+            if b"done" in raw or b"error" in raw:
+                got_done = True
+                break
+        if time.time() - t0 > 25:
             break
-        if time.time() - t0 > 12:  # 12s suficiente para un ack inicial
-            break
-    check("  stream emite eventos", got_event, "no llego ningun evento en 12s")
+    elapsed = time.time() - t0
+    check("  stream conecta", r.status_code == 200, f"status={r.status_code}")
+    check("  stream emite eventos", got_event, f"ningun evento en {elapsed:.1f}s")
+    check("  stream completa (done o error)", got_done, f"sin terminacion tras {elapsed:.1f}s")
+except requests.exceptions.ReadTimeout:
+    check("  stream conecta", False, f"ReadTimeout tras {time.time()-t0:.1f}s (LLM lento)")
 except Exception as e:
     check("  stream conecta", False, str(e)[:100])
-t0 = time.time() if False else time.time()
 
 # ── 7. Confirm/cancel endpoints (estructura) ───────────────────
 section("Endpoints de confirmacion (estructura)")

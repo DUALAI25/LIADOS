@@ -11,6 +11,7 @@ v5 (premium):
 """
 import os
 import secrets
+import threading
 from datetime import date, datetime
 from decimal import Decimal
 from fastapi import Query, FastAPI, Depends, HTTPException, status, Request
@@ -20,6 +21,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 from typing import Optional, List
 import psycopg2
+from psycopg2 import pool as pgpool
 from psycopg2.extras import RealDictCursor
 
 # Chat conversacional (wrapper sobre agent.py, sin modificarlo).
@@ -47,22 +49,87 @@ def get_current_user(credentials: HTTPBasicCredentials = Depends(security)):
     return credentials.username
 
 
-def get_conn():
-    return psycopg2.connect(
-        host=os.getenv("DB_HOST", "localhost"),
-        port=int(os.getenv("DB_PORT", "5432")),
-        dbname=os.getenv("DB_NAME", "desliado"),
-        user=os.getenv("DB_USER", "desliado"),
-        password=os.environ["DB_PASSWORD"],
-        connect_timeout=5,
+# ── Pool de conexiones ────────────────────────────────────────────────
+# ThreadedConnectionPool: evita abrir/cerrar conexion en cada query.
+# minconn=2, maxconn=10 suficiente para 1 usuario con varias tabs/requests
+# en paralelo. Si la BD cae, getconn() levanta PoolError y devolvemos 503.
+_POOL = None
+_POOL_LOCK = threading.Lock()
+
+
+# ── Rate limiter simple (in-memory) ───────────────────────────────────
+# Protege /api/chat y /api/chat/stream de 429s del LLM upstream.
+# Por IP de cliente, X requests por ventana de Y segundos.
+# Suficiente para 1 usuario; en produccion con N usuarios, usar Redis.
+import time as _time
+from collections import deque as _deque
+_RL_LOCK = threading.Lock()
+_RL_BUCKETS = {}  # {ip_key: deque[timestamp]}
+
+
+def _client_ip(request: Request) -> str:
+    return (
+        request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        or (request.client.host if request.client else "unknown")
     )
 
 
+def _rate_limit_check(request: Request, key: str, max_requests: int, window_s: int) -> bool:
+    """Token-bucket in-memory. Devuelve True si OK, False si excedido."""
+    ip = _client_ip(request) + ":" + key
+    now = _time.time()
+    with _RL_LOCK:
+        bucket = _RL_BUCKETS.setdefault(ip, _deque())
+        # purgar timestamps fuera de ventana
+        while bucket and bucket[0] < now - window_s:
+            bucket.popleft()
+        if len(bucket) >= max_requests:
+            return False
+        bucket.append(now)
+        return True
+
+
+def _init_pool():
+    global _POOL
+    if _POOL is not None:
+        return _POOL
+    with _POOL_LOCK:
+        if _POOL is None:
+            _POOL = pgpool.ThreadedConnectionPool(
+                minconn=2, maxconn=10,
+                host=os.getenv("DB_HOST", "localhost"),
+                port=int(os.getenv("DB_PORT", "5432")),
+                dbname=os.getenv("DB_NAME", "desliado"),
+                user=os.getenv("DB_USER", "desliado"),
+                password=os.environ["DB_PASSWORD"],
+                connect_timeout=5,
+            )
+    return _POOL
+
+
+def get_conn():
+    """Obtiene una conexion del pool. Se cierra (devuelve al pool) al salir del with."""
+    return _init_pool().getconn()
+
+
+def put_conn(conn):
+    """Devuelve la conexion al pool (no la cierra)."""
+    if _POOL is not None and conn is not None:
+        _POOL.putconn(conn)
+
+
 def q(sql, params=()):
-    with get_conn() as conn:
+    """Helper: ejecuta SELECT y devuelve filas. Hace commit/rollback explicito."""
+    conn = get_conn()
+    try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(sql, params)
             return cur.fetchall()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        put_conn(conn)
 
 
 def to_dict(row):
@@ -391,8 +458,10 @@ class ConfirmRequest(BaseModel):
 
 
 @app.post("/api/chat")
-def api_chat(req: ChatRequest, user: str = Depends(get_current_user)):
+def api_chat(req: ChatRequest, request: Request, user: str = Depends(get_current_user)):
     """Chat conversacional contra el agente (OpenCode Go + MCP)."""
+    if not _rate_limit_check(request, key="chat", max_requests=20, window_s=60):
+        raise HTTPException(status_code=429, detail="Demasiadas peticiones. Espera unos segundos.")
     try:
         result = chat_engine.chat(req.message, req.history)
         return result
@@ -417,7 +486,7 @@ def api_chat_cancel(req: ConfirmRequest, user: str = Depends(get_current_user)):
 
 
 @app.post("/api/chat/stream")
-def api_chat_stream(req: ChatRequest, user: str = Depends(get_current_user)):
+def api_chat_stream(req: ChatRequest, request: Request, user: str = Depends(get_current_user)):
     """Chat conversacional STREAMING via Server-Sent Events.
 
     Emite eventos SSE:
@@ -426,6 +495,8 @@ def api_chat_stream(req: ChatRequest, user: str = Depends(get_current_user)):
       event: done   data: {"reply","pending_confirmation","tools_used","history"}
       event: error  data: {"message": "..."}
     """
+    if not _rate_limit_check(request, key="chat-stream", max_requests=15, window_s=60):
+        raise HTTPException(status_code=429, detail="Demasiadas peticiones. Espera unos segundos.")
     import json as _json
 
     def gen():
@@ -495,6 +566,9 @@ def api_search(term: str = Query("", alias="q"), user: str = Depends(get_current
 @app.get("/api/proveedor/{nombre}/facturas")
 def api_proveedor_facturas(nombre: str, limit: int = 50, user: str = Depends(get_current_user)):
     """Drill-down: todas las facturas de un proveedor."""
+    nombre = (nombre or "").strip()
+    if not nombre:
+        raise HTTPException(status_code=400, detail="nombre requerido")
     rows = q("""
         SELECT invoice_number, invoice_date, total_amount, base_amount, tax_amount,
                category_raw, status, description
@@ -520,6 +594,9 @@ def api_proveedor_facturas(nombre: str, limit: int = 50, user: str = Depends(get
 @app.get("/api/categoria/{categoria}/facturas")
 def api_categoria_facturas(categoria: str, limit: int = 50, user: str = Depends(get_current_user)):
     """Drill-down: todas las facturas de una categoria."""
+    categoria = (categoria or "").strip()
+    if not categoria:
+        raise HTTPException(status_code=400, detail="categoria requerida")
     rows = q("""
         SELECT coalesce(vendor_name, 'Sin nombre') as proveedor,
                invoice_number, invoice_date, total_amount, status

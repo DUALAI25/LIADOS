@@ -23,7 +23,13 @@ import requests
 import psycopg2
 import psycopg2.extras
 
-from db_connection import get_conn
+# Soporta tanto `python -m agente.scripts.weekly_summary` como ejecucion
+# directa. Cualquier error de import cae al psycopg2 nativo.
+try:
+    from db_connection import get_conn
+except ImportError:
+    sys.path.insert(0, os.path.dirname(__file__))
+    from db_connection import get_conn
 
 logging.basicConfig(
     level=logging.INFO,

@@ -422,11 +422,16 @@ def call_llm(messages: list) -> dict:
     return resp.json()
 
 
-def execute_tool(name: str, args: dict) -> str:
-    """Ejecuta una tool del MCP y devuelve su resultado como string."""
+def execute_tool(name: str, args) -> str:
+    """Ejecuta una tool del MCP y devuelve su resultado como string.
+
+    Acepta args=None o args={} sin fallar."""
     if name not in TOOL_MAP:
         return json.dumps({"error": f"Tool '{name}' no existe"})
     try:
+        # Normalizar args: None -> {} (algunos LLMs mandan arguments: null)
+        if not args:
+            args = {}
         return TOOL_MAP[name](**args)
     except Exception as e:
         return json.dumps({"error": str(e)})
@@ -442,8 +447,11 @@ def ask(question: str) -> str:
     max_iterations = 5
     for _ in range(max_iterations):
         result = call_llm(messages)
-        choice = result["choices"][0]
-        msg = choice["message"]
+        choices = result.get("choices") or []
+        if not choices:
+            # Sin choices: el LLM devolvio un error o respuesta vacia.
+            return "El modelo no devolvio una respuesta valida. Intentalo de nuevo."
+        msg = choices[0].get("message", {})
 
         if msg.get("tool_calls"):
             messages.append(msg)

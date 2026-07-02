@@ -157,34 +157,47 @@ def _call_llm_stream(messages: list):
     api_key = os.getenv("OPENCODE_API_KEY")
     if not api_key:
         raise RuntimeError("OPENCODE_API_KEY no esta en .env")
-    resp = requests.post(
-        OPENCODE_GO_URL,
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={
-            "model": MODEL,
-            "messages": messages,
-            "tools": TOOLS_SCHEMA,
-            "tool_choice": "auto",
-            "temperature": 0.1,
-            "stream": True,
-        },
-        timeout=90,
-        stream=True,
-    )
-    resp.raise_for_status()
-    for line in resp.iter_lines(decode_unicode=True):
-        if not line or not line.startswith("data: "):
-            continue
-        payload = line[6:]
-        if payload.strip() == "[DONE]":
-            break
+    try:
+        resp = requests.post(
+            OPENCODE_GO_URL,
+            headers={"Authorization": f"Bearer {api_key}",
+                     "Content-Type": "application/json",
+                     "Accept": "application/json, text/event-stream"},
+            json={
+                "model": MODEL,
+                "messages": messages,
+                "tools": TOOLS_SCHEMA,
+                "tool_choice": "auto",
+                "temperature": 0.1,
+                "stream": True,
+            },
+            timeout=(10, 120),
+            stream=True,
+        )
+        resp.raise_for_status()
+    except requests.exceptions.ReadTimeout:
+        raise RuntimeError("Timeout del LLM (>120s) durante streaming")
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"Error de conexion con el LLM: {e}")
+    try:
+        for line in resp.iter_lines(decode_unicode=True):
+            if not line or not line.startswith("data: "):
+                continue
+            payload = line[6:]
+            if payload.strip() == "[DONE]":
+                break
+            try:
+                chunk = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+            choices = chunk.get("choices") or []
+            if choices:
+                yield choices[0].get("delta", {}) or {}
+    finally:
         try:
-            chunk = json.loads(payload)
-        except json.JSONDecodeError:
-            continue
-        choices = chunk.get("choices") or []
-        if choices:
-            yield choices[0].get("delta", {}) or {}
+            resp.close()
+        except Exception:
+            pass
 
 
 def chat_stream(question: str, history: list = None):

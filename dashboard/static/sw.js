@@ -1,8 +1,11 @@
-/* Service worker minimo para PWA del dashboard Liados.
-   Estrategia: cache-first para assets estaticos (CSS, JS, fonts, manifest),
-   network-first para / y APIs (siempre datos en vivo).
-   Sin cache de credenciales ni de respuestas autenticadas. */
-const CACHE_NAME = 'liados-v5.1.0';
+/* Service worker del dashboard Liados.
+   - Cache-first para /static/* (assets versionados por su cache name).
+   - Network-only para APIs y /.
+   - Versionado: bump CACHE_NAME para invalidar todo el cache.
+   - Fallback explicito: si la red falla y no hay cache, devuelve un JSON
+     con error (no un HTML "Offline" que seria confuso para una API). */
+
+const CACHE_NAME = 'liados-static-v2';
 const STATIC_ASSETS = [
   '/static/tokens.css',
   '/static/app.css',
@@ -16,7 +19,9 @@ const STATIC_ASSETS = [
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(STATIC_ASSETS))
+    caches.open(CACHE_NAME)
+      .then((cache) => cache.addAll(STATIC_ASSETS))
+      .catch((e) => console.warn('[SW] install fallo:', e))
   );
   self.skipWaiting();
 });
@@ -38,23 +43,33 @@ self.addEventListener('fetch', (event) => {
 
   // Solo cachear GETs del mismo origen bajo /static/
   if (request.method !== 'GET' || url.origin !== self.location.origin) return;
-  const isStatic = url.pathname.startsWith('/static/');
-  if (!isStatic) {
-    // APIs y /: network-only, sin cache (datos en vivo)
-    return;
-  }
+  if (!url.pathname.startsWith('/static/')) return;  // /, /api/*: network-only
 
-  // Cache-first para assets estaticos
   event.respondWith(
     caches.match(request).then((cached) => {
       if (cached) return cached;
       return fetch(request).then((resp) => {
+        // Solo cachear 200 OK del mismo origen
         if (resp && resp.status === 200 && resp.type === 'basic') {
           const copy = resp.clone();
-          caches.open(CACHE_NAME).then((c) => c.put(request, copy));
+          caches.open(CACHE_NAME).then((c) => c.put(request, copy)).catch(() => {});
         }
         return resp;
-      }).catch(() => caches.match('/static/app.js'));
+      }).catch((err) => {
+        // Red caida + sin cache: devolver 504 explicito
+        console.warn('[SW] fetch failed:', request.url, err);
+        return new Response(
+          JSON.stringify({ error: 'offline', detail: 'Sin conexion y sin cache para ' + url.pathname }),
+          { status: 504, headers: { 'Content-Type': 'application/json' } }
+        );
+      });
     })
   );
+});
+
+// Mensaje desde la app para forzar update (util para QA)
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
 });

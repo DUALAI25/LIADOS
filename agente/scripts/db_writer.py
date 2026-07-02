@@ -98,6 +98,15 @@ def _get_or_create_vendor(cur, data):
     return cur.fetchone()[0]
 
 def save_payment(invoice_id, payment_date, amount, source, source_detail=None, invoice_number=None):
+    """DEPRECATED: la tabla 'payments' fue eliminada en 2026-07-02 (plan v5.1.0).
+    Si se llama, falla con UndefinedTableError. Usar lastapp_payments / invoices.
+
+    Mantenida por compatibilidad. Sera removida en v6.
+    """
+    raise RuntimeError(
+        "save_payment() esta deprecada: la tabla 'payments' fue eliminada. "
+        "Usar la tabla 'invoices' con status='paid' o la API de lastapp_payments."
+    )
     conn = get_conn()
     cur = conn.cursor()
 

@@ -36,6 +36,30 @@ if os.path.isdir(_STATIC_DIR):
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
 
+# ── Middleware de seguridad ────────────────────────────────────────────
+# Headers minimos recomendados. CSP permite los recursos necesarios
+# (Chart.js via CDN, inline scripts/styles del HTML generado).
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    resp = await call_next(request)
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    # CSP: self para todo lo nuestro, cdn.jsdelivr.net solo para Chart.js
+    csp = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "font-src 'self'; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self';"
+    )
+    resp.headers.setdefault("Content-Security-Policy", csp)
+    return resp
+
+
 def get_current_user(credentials: HTTPBasicCredentials = Depends(security)):
     expected_user = os.environ["DASHBOARD_USER"]  # fail-fast si no esta en .env
     expected_pass = os.environ["DASHBOARD_PASSWORD"]  # fail-fast si no esta en .env

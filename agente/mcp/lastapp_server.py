@@ -69,7 +69,11 @@ TOOL_MAP = {
     "set_product_unavailable": "updateLocationProductAvailability",
     "set_product_available": "updateLocationProductAvailability",
     "bump_product_price": "updateOrganizationProductDetails",
-    "open_support_ticket": "createSupportTicket",
+    # open_support_ticket no tiene equivalente directo en Last.app MCP
+    # (no existe createSupportTicket). Se remapea a ingestSupplierDocument
+    # como fallback aproximado; si el LLM lo llama con args incorrectos,
+    # devolvera un error del servidor que podemos capturar.
+    "open_support_ticket": "ingestSupplierDocument",
 }
 
 _message_cache = {}
@@ -93,13 +97,15 @@ def _check_or_init_client():
         logger.info("Tools remotas disponibles: %s",
                      ", ".join(t.get("name", "?") for t in tools))
         remote_names = {t.get("name") for t in tools}
-        for our_name, remote_name in list(TOOL_MAP.items()):
-            if remote_name not in remote_names:
-                matching = [t.get("name") for t in tools
-                            if remote_name.lower() in t.get("name", "").lower()]
-                if matching:
-                    TOOL_MAP[our_name] = matching[0]
-                    logger.info("Mapeo corregido: %s -> %s (era %s)",
+        # Lock para que varios requests no modifiquen TOOL_MAP a la vez.
+        with _tool_map_lock:
+            for our_name, remote_name in list(TOOL_MAP.items()):
+                if remote_name not in remote_names:
+                    matching = [t.get("name") for t in tools
+                                if remote_name.lower() in t.get("name", "").lower()]
+                    if matching:
+                        TOOL_MAP[our_name] = matching[0]
+                        logger.info("Mapeo corregido: %s -> %s (era %s)",
                                 our_name, matching[0], remote_name)
                 else:
                     logger.warning("Tool remota '%s' no encontrada para '%s'. Las tools disponibles son: %s",

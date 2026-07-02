@@ -103,6 +103,99 @@ function initSidebar() {
   if (localStorage.getItem('liados_sidebar') === '1') app.classList.add('collapsed');
 }
 
+// ── Navegación entre vistas (pestañas de la sidebar) ─────────────────────
+const VIEWS_RENDERED = new Set();
+function initNav() {
+  $$('.nav-item').forEach(item => {
+    item.onclick = (e) => {
+      e.preventDefault();
+      const v = item.getAttribute('data-view');
+      if (!v) return;
+      $$('.nav-item').forEach(n => n.classList.remove('active'));
+      item.classList.add('active');
+      $$('.view').forEach(s => s.classList.toggle('active', s.getAttribute('data-view') === v));
+      const label = item.querySelector('.nav-label');
+      if (label) $('#crumbView').textContent = label.textContent;
+      // Render lazy de la vista si no se ha hecho aún
+      if (!VIEWS_RENDERED.has(v)) {
+        if (v === 'ventas') renderVentas();
+        if (v === 'gastos') renderGastos();
+        VIEWS_RENDERED.add(v);
+      }
+      // Resize charts al volver a mostrar una vista (corrige tamaños tras display:none)
+      setTimeout(() => Object.values(charts).forEach(c => c && c.resize()), 80);
+      // Cerrar drawer en mobile
+      if (matchMedia('(max-width: 900px)').matches) {
+        $('#sidebar').classList.remove('open');
+        $('#backdrop').classList.remove('show');
+      }
+    };
+  });
+}
+
+async function renderVentas() {
+  const c = chartColors();
+  const tip = { enabled:false, external: externalTooltip() };
+  // Chart 90 días (lazy load)
+  try {
+    const dia90 = await getJSON('/api/ventas-por-dia?days=90');
+    charts.ventas90 && charts.ventas90.destroy();
+    charts.ventas90 = new Chart($('#ventas-chart-90'), {
+      type:'line',
+      data:{ labels: dia90.map(r=>r.dia.slice(5)), datasets:[{
+        label:'Ingresos/día', data: dia90.map(r=>r.total_eur),
+        borderColor: css('--green'), backgroundColor:'rgba(34,197,94,.14)', fill:true,
+        tension:.35, pointRadius:0, pointHoverRadius:5, borderWidth:2.5
+      }]},
+      options:{ responsive:true, maintainAspectRatio:false,
+        plugins:{ legend:{display:false}, tooltip: tip },
+        interaction:{ mode:'index', intersect:false },
+        scales:{ x:{ grid:{display:false}, ticks:{color:c.ticks, maxTicksLimit:12} }, y:{ grid:{color:c.grid}, border:{display:false}, ticks:{color:c.ticks, callback:v=>fmt(v)} } } }
+    });
+  } catch(e) {}
+  // Canales histórico (agregado 6m por canal)
+  const agg = {};
+  (DATA.canalMeses||[]).forEach(r => { agg[r.canal] = (agg[r.canal]||0) + r.total_eur; });
+  const rows = Object.entries(agg).sort((a,b)=>b[1]-a[1]).map(([canal,total])=>({canal,total}));
+  renderBars('#ventas-canales-hist', rows, r=>COLORS[r.canal]||css('--cyan'), r=>ICONS[r.canal]+' '+LABELS[r.canal], r=>r.total, r=>{
+    const p = (DATA.canalMes||[]).find(x=>x.canal===r.canal); return p ? p.pagos+' pagos mes' : '';
+  });
+  // Resumen mensual (tabla)
+  $('#ventas-resumen').innerHTML = `<div class="table-wrap"><table>
+    <thead><tr><th>Mes</th><th class="num">Fact.</th><th class="num">Total</th><th class="num">Base</th><th class="num">IVA</th><th class="num">Delivery</th></tr></thead>
+    <tbody>${(DATA.ingresos||[]).map(r=>`<tr><td>${r.mes}</td><td class="num">${r.facturas}</td><td class="num"><b>${eur(r.total_eur)}</b></td><td class="num">${eur(r.base_eur)}</td><td class="num">${eur(r.iva_eur)}</td><td class="num">${eur(r.delivery_eur)}</td></tr>`).join('')}</tbody>
+  </table></div>`;
+}
+
+async function renderGastos() {
+  // Tabla de proveedores (más amplia: 50)
+  try {
+    const prov = await getJSON('/api/gastos-por-proveedor?limit=50');
+    const max = Math.max(...prov.map(p=>p.total_eur), 1);
+    $('#gastos-tabla').innerHTML = `<div class="table-wrap"><table>
+      <thead><tr><th>Proveedor</th><th>Facturas</th><th class="num">Total</th><th style="width:30%">Volumen</th></tr></thead>
+      <tbody>${prov.map(p=>`<tr class="row-drill" data-name="${esc(p.proveedor)}" style="cursor:pointer"><td>${esc(p.proveedor)}</td><td>${p.facturas}</td><td class="num"><b>${eur(p.total_eur)}</b></td><td><div class="bar-track" style="height:8px"><div class="bar-fill" style="width:${(p.total_eur/max*100).toFixed(1)}%;background:#8b5cf6;padding:0;border-radius:4px"></div></div></td></tr>`).join('')}</tbody>
+    </table></div>`;
+    // Drill-down al clickar fila
+    $$('#gastos-tabla .row-drill').forEach(tr => tr.onclick = () => openDrill('proveedor', tr.getAttribute('data-name')));
+  } catch(e) { $('#gastos-tabla').innerHTML = '<div class="state error"><div class="title">Error</div><div class="desc">'+esc(e.message)+'</div></div>'; }
+  // Categorías (drill-down)
+  renderBars('#gastos-categorias', DATA.categorias||[], r=>r.color||'#6b7280', r=>(r.categoria||'').slice(0,16), r=>r.total_eur, r=>`${r.facturas} fc.`);
+  $$('#gastos-categorias .bar-row').forEach(row => {
+    row.style.cursor = 'pointer';
+    const name = row.querySelector('.bar-label')?.textContent?.trim();
+    row.onclick = () => name && openDrill('categoria', name);
+  });
+  // Margen
+  const mmax = Math.max(...(DATA.margen||[]).map(m=>Math.max(m.ingresos,m.gastos)), 1);
+  $('#gastos-margen').innerHTML = (DATA.margen||[]).map(m => `
+    <div style="margin-bottom:var(--s-3)">
+      <div style="font-size:var(--fz-sm);color:var(--fg-3);margin-bottom:4px;display:flex;justify-content:space-between"><span>${m.mes}</span><span class="${m.margen>=0?'delta good':'delta bad'}" style="padding:1px 7px">Margen ${eur(m.margen)}</span></div>
+      <div class="bar-row"><div class="bar-label" style="min-width:64px;font-size:var(--fz-sm)">Ingresos</div><div class="bar-track"><div class="bar-fill" style="width:${(m.ingresos/mmax*100).toFixed(1)}%;background:var(--green)">${eur(m.ingresos)}</div></div></div>
+      <div class="bar-row" style="margin-top:4px"><div class="bar-label" style="min-width:64px;font-size:var(--fz-sm)">Gastos</div><div class="bar-track"><div class="bar-fill" style="width:${(m.gastos/mmax*100).toFixed(1)}%;background:var(--red)">${eur(m.gastos)}</div></div></div>
+    </div>`).join('');
+}
+
 // ── Counter animation ────────────────────────────────────────────────────
 function animateCount(el, to, opts={}) {
   const { dur=900, decimals=2, suffix='€', prefix='' } = opts;
@@ -641,6 +734,7 @@ function initShortcuts() {
 function init() {
   initTheme();
   initSidebar();
+  initNav();
   initChat();
   initSearch();
   initShortcuts();

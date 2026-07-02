@@ -391,6 +391,25 @@ select.seg:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3
 /* Utility */
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 
+/* ── Sistema de vistas / pestañas ──────────────────────────────────────── */
+.view { display: none; }
+.view.active { display: block; animation: viewin var(--dur-3) var(--ease); }
+@keyframes viewin { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* Placeholder "próximamente" */
+.coming-soon {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  min-height: 56vh; gap: var(--s-4); text-align: center; padding: var(--s-7);
+}
+.coming-soon .ico { width: 64px; height: 64px; color: var(--fg-3); opacity: .4; }
+.coming-soon h2 { font-size: var(--fz-2xl); color: var(--fg-1); font-weight: 700; letter-spacing: -.02em; }
+.coming-soon p { max-width: 440px; color: var(--fg-3); line-height: 1.6; font-size: var(--fz-base); }
+.coming-soon b { color: var(--fg-1); font-weight: 600; }
+
+/* Hint dentro de vistas */
+.view-hint { margin-top: var(--s-5); padding: var(--s-4) var(--s-5); background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--r-md); color: var(--fg-2); font-size: var(--fz-md); }
+.view-hint b { color: var(--fg-0); }
+
 /* icon-btn variant pequeña (export, etc.) */
 .icon-btn.sm { width: 28px; height: 28px; }
 .icon-btn.sm svg { width: 15px; height: 15px; }

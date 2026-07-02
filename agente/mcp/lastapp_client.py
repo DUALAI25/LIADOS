@@ -188,7 +188,9 @@ class LastAppClient:
     def call_tool(self, tool_name: str, arguments: dict = None) -> dict:
         """tools/call: invoca una tool del MCP remoto."""
         params = {"name": tool_name}
-        if arguments:
+        # IMPORTANTE: usar 'is not None' en lugar de truthy check, para que {} se envie.
+        # El servidor valida el schema y rechaza 'arguments: undefined' con -32602.
+        if arguments is not None:
             params["arguments"] = arguments
         return self._rpc("tools/call", params)
 

@@ -55,7 +55,7 @@ def _q(d):
 
 
 # Whitelist de tablas permitidas para el wipe (anti SQL-injection en f-string)
-WIPE_TABLES = ("agent_logs", "user_overrides", "orphan_payments", "payments",
+WIPE_TABLES = ("agent_logs", "user_overrides", "orphan_payments",
                "invoices", "vendors", "categories", "sync_control")
 
 
@@ -181,16 +181,8 @@ def insert_expense_invoices(cur, days_back=90):
                 if row:
                     inserted += 1
                     inv_id = row[0]
-                    if status == "paid":
-                        pay_date = inv_date + timedelta(days=random.randint(5, 28))
-                        cur.execute("""
-                            INSERT INTO payments (
-                                invoice_id, payment_date, amount,
-                                source, source_detail, reference
-                            ) VALUES (%s, %s, %s, 'manual',
-                                     'Transferencia bancaria', %s)
-                            ON CONFLICT DO NOTHING;
-                        """, (inv_id, pay_date, total_d, f"TRF-{seq}"))
+                    # NOTE: la tabla legacy 'payments' fue eliminada (Bloque C plan v5.1.0).
+                    # Si se necesita tracking de pagos, usar lastapp_payments en su lugar.
             except Exception as e:
                 print(f"  Skip {name}#{seq}: {e}")
     return inserted
@@ -280,7 +272,7 @@ def main():
                 if args.wipe:
                     print("\n" + "!" * 60)
                     print("\u26a0\ufe0f  ATENCI\u00d3N: --wipe va a BORRAR TODOS LOS DATOS de las tablas:")
-                    print("   invoices, payments, vendors, categories, agent_logs, etc.")
+                    print("   invoices, vendors, categories, agent_logs, etc.")
                     print("!" * 60)
                     confirm = input("   Escribe 'BORRAR' para confirmar: ").strip()
                     if confirm != 'BORRAR':

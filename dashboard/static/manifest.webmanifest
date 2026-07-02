@@ -1,0 +1,28 @@
+{
+  "name": "Liados Dashboard",
+  "short_name": "Liados",
+  "description": "Dashboard analitico de ventas, gastos y margen del restaurante Liados",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0a0f1d",
+  "theme_color": "#3b82f6",
+  "lang": "es",
+  "scope": "/",
+  "icons": [
+    {
+      "src": "/static/icons/icon-192.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/static/icons/icon-512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["business", "productivity", "finance"],
+  "screenshots": []
+}

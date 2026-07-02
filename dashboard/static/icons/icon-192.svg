@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3b82f6"/>
+      <stop offset="1" stop-color="#a855f7"/>
+    </linearGradient>
+  </defs>
+  <rect width="192" height="192" rx="36" fill="url(#g)"/>
+  <g transform="translate(96 110)" fill="none" stroke="#fff" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M-44 -56 h24 l-12 18 a14 14 0 0 0 14 22 M-44 -56 a14 14 0 0 0 14 22 M-20 -56 a14 14 0 0 0 14 22 M-20 -56 h24 l-12 18 a14 14 0 0 0 14 22"/>
+  </g>
+  <text x="96" y="172" text-anchor="middle" font-family="Inter, sans-serif" font-weight="800" font-size="22" fill="#fff">Liados</text>
+</svg>

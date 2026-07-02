@@ -605,7 +605,10 @@ INDEX_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍻</text></svg>">
+<meta name="theme-color" content="#0a0f1d">
+<link rel="icon" href="/static/icons/icon-192.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/icons/icon-192.svg">
+<link rel="manifest" href="/static/manifest.webmanifest">
 <title>Liados · Dashboard</title>
 <link rel="stylesheet" href="/static/tokens.css">
 <link rel="stylesheet" href="/static/app.css">
@@ -844,6 +847,13 @@ INDEX_HTML = """<!DOCTYPE html>
 </div>
 
 <script src="/static/app.js"></script>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/static/sw.js').catch(() => {});
+  });
+}
+</script>
 </body>
 </html>"""
 

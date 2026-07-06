@@ -37,3 +37,8 @@ backups/
 
 # Tests ad-hoc (no parte de la suite oficial)
 agente/scripts/test_*.py
+
+.env.*
+!.env.example
+.pytest_cache/
+node_modules/

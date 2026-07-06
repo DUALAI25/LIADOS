@@ -1,13 +1,16 @@
 # Loop State — Liados / Desliado
 
-Last run: 2026-07-06 (initial triage, L1 report-only)
+Last run: 2026-07-06 07:42 (P0-1 + P0-3 resueltos)
+
+## Resolved (P0 fixed this session)
+
+- **[P0] `docs/safety.md` vacío** → ✅ Commit `3d60cc8` con denylist específico del proyecto (12 paths críticos + 10 ops, allow-list, protocolo verificación, escalación).
+- **[P0] `STATE.md` working tree sin commit** → ✅ Commit `3d60cc8` incluye STATE.md triage.
 
 ## High Priority (loop is acting or waiting on human)
 
-- **[P0] `docs/safety.md` está vacío.** El denylist referenciado por `AGENTS.md` y `LOOP.md` ("high-risk paths require human review") no tiene reglas. Acción humana: poblar el denylist con paths sensibles (credenciales, infra, deploy) antes de habilitar L2.
 - **[P0] Gmail collector en `MISSING_TOKEN` (ambas cuentas).** `principal` y `secundaria` requieren reautorización OAuth. No bloquea el dashboard (Last.app lo alimenta), pero rompe el pipeline Gmail→invoices. Acción humana: `python3 -m agente.scripts.gmail_auth --account <cuenta> --force`.
-- **[P0] `main` está 1 commit adelante de `origin/main` sin push.** El bootstrap `17ba733 loop-engineering: bootstrap daily-triage L3 (100/100)` es local-only. Por regla de AGENTS no se hace push sin aprobación humana. Acción humana: revisar y `git push` cuando proceda.
-- **[P0] `STATE.md` tiene cambios no commiteados en el working tree.** El HEAD commiteado dice "# Loop State — My Project / Last run: never" — el contenido real de triage nunca llegó a un commit. Riesgo: el próximo `git checkout` o `git pull` podría sobrescribir el estado. Acción humana: revisar `git diff STATE.md` y commitear (sin push, según regla).
+- **[P0] `main` está 2 commits adelante de `origin/main` sin push.** Commits nuevos: `17ba733 loop-engineering: bootstrap daily-triage L3 (100/100)` + `3d60cc8 fix(safety+state): poblar denylist Liados + STATE.md triage`. Por regla de safety.md, push requiere aprobación humana explícita.
 
 ## Watch List
 
@@ -31,27 +34,19 @@ Last run: 2026-07-06 (initial triage, L1 report-only)
 
 ---
 
-## Estado del repo (snapshot 2026-07-06)
+## Estado del repo (snapshot 2026-07-06 07:42)
 
-- **Branch:** `main`, working tree tiene STATE.md modificado sin commit
-- **HEAD local:** `17ba733 loop-engineering: bootstrap daily-triage L3 (100/100)` (no pusheado)
-- **HEAD remoto:** `origin/main` 1 commit detrás
+- **Branch:** `main`, working tree limpio tras commit `3d60cc8`
+- **HEAD local:** `3d60cc8 fix(safety+state): poblar denylist Liados + STATE.md triage 2026-07-06`
+- **HEAD remoto:** `origin/main` 2 commits detrás
 - **Tests E2E:** **62/62 PASS** (`tests/run_e2e.sh` → "Tests: 62 | PASS: 62 | FAIL: 0")
 - **Dashboard:** v5.1.0, `systemctl is-active liados-dashboard` → `active`, `/api/health` → `{status:ok, db:ok, pool:{used:0, free:2}}`
 - **Stack:** Python 3 + FastAPI 5.1.0 + Postgres 16 (nativo) + MinIO + OpenCode Go (LLM) + 2× MCP server (invoices + lastapp)
 - **Deploy:** systemd `liados-dashboard.service` `:9121` + cron 03:00 (backup + E2E)
-- **Loop runs históricos en `loop-run-log.md`:** 0 (este es el primero, no se ha añadido entrada al log todavía — acción humana o de un futuro run L2)
-
-## Próximo run
-
-Cuando el humano lo dispare, el loop debe:
-1. Verificar si `docs/safety.md` ya tiene denylist poblado.
-2. Comprobar si Gmail tokens se reautorizaron (¿`MISSING_TOKEN` persiste?).
-3. Re-verificar que el commit `17ba733` ya está en `origin/main` (push humano).
-4. Confirmar que el working tree de `STATE.md` quedó commiteado.
-5. Re-correr E2E para confirmar 62/62 (puede subir si se mergean ramas stale).
-6. Considerar merge o cierre de las 2 ramas remotas `feat/lastapp-*` (stale).
+- **Loop Engineering:** L3 (100/100), tool=opencode, pattern=daily-triage, opencode CLI v1.17.13 disponible en VPS
+- **Safety:** denylist poblado (12 paths + 10 ops), allow-list definido, protocolo verificación L2 documentado
+- **Loop runs históricos en `loop-run-log.md`:** 1 (este). Pendiente: añadir entrada al run log en próximo run.
 
 ---
 
-Run log: 2026-07-06 — L1 report-only, sin acciones de código, 0 sub-agent spawns, 0 tokens de sub-agent. Cambios a STATE.md pendientes de commit humano.
+Run log: L1 report-only (2026-07-06 07:42). Sin auto-fix L2 (pendiente habilitar tras resolver P0 Gmail tokens + decisión push).

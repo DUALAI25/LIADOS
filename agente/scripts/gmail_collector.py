@@ -166,11 +166,14 @@ def save_non_invoice(account, source_id, attachment, reason, subject):
     conn.close()
 
 
-def process_account(account, search_query=None):
+def process_account(account, search_query=None, dry_run=False):
     """Procesa todas las facturas de una cuenta.
     B1: since_date y search_query se calculan aqui, no en main(). Cada cuenta
     tiene su propia fila en sync_control (gmail:<account>) y por tanto su
-    propio cursor incremental."""
+    propio cursor incremental.
+
+    B2: dry_run=True lista mensajes sin parsear/guardar/escribir DB.
+        Devuelve dict con sample de attachments para auditoria."""
     if search_query is None:
         # Calcular since_date propio para esta cuenta
         last_sync = get_last_sync(f'gmail:{account}')
@@ -234,6 +237,9 @@ def process_account(account, search_query=None):
 
     processed = 0
     errors = 0
+    dry_report = None
+    if dry_run:
+        dry_report = {'msg_count': 0, 'attachments_total': 0, 'sample': []}
 
     for msg in all_messages:
         try:
@@ -242,6 +248,23 @@ def process_account(account, search_query=None):
             ).execute()
 
             attachments = _extract_attachments(service, message)
+            if dry_run:
+                # Solo acumular metadata. NO descargar, NO parsear, NO escribir.
+                hdr = {h.get('name', '').lower(): h.get('value', '')
+                       for h in message.get('payload', {}).get('headers', [])}
+                dry_report['msg_count'] += 1
+                dry_report['attachments_total'] += len(attachments)
+                if len(dry_report['sample']) < 3 and attachments:
+                    dry_report['sample'].append({
+                        'msg_id': msg['id'],
+                        'subject': hdr.get('subject', ''),
+                        'from': hdr.get('from', ''),
+                        'date': hdr.get('date', ''),
+                        'attachment_count': len(attachments),
+                        'first_attachment': attachments[0].get('filename', ''),
+                    })
+                continue  # NO procesar mas
+
             # FIX 2026-06-22: source_id se calcula una sola vez por mensaje y se
             # reutiliza para que is_duplicate_by_hash ignore nuestro propio
             # re-proceso (bug que marcaba 323 facturas como duplicate).
@@ -311,7 +334,7 @@ def process_account(account, search_query=None):
 
     log_agent('gmail_collector', 'info' if errors == 0 else 'warning',
               f"[{account}] Procesados {processed}, errores {errors}")
-    return processed, errors
+    return processed, errors, dry_report
 
 
 def _extract_attachments(service, message):
@@ -382,6 +405,10 @@ def main(argv=None):
     parser.add_argument('--account', '-a', action='append', default=None,
                         help='Procesar solo estas cuentas (puede repetirse). '
                              'Default: todas las de .env (GMAIL_ACCOUNTS).')
+    parser.add_argument('--dry-run', action='store_true',
+                        help='Solo listar correos candidatos. NO parsea con IA, '
+                             'NO escribe en DB, NO guarda archivos. Devuelve '
+                             'JSON con sample por cuenta.')
     args = parser.parse_args(argv)
 
     if args.account:
@@ -403,15 +430,19 @@ def main(argv=None):
     total_processed = 0
     total_errors = 0
 
-    per_account_results = []
+    per_account_results = []  # tuplas (account, processed, errors, dry_report)
+    dry_reports = {}          # account -> dict
     for account in accounts:
         try:
-            processed, errors = process_account(account)
+            processed, errors, dry_report = process_account(account, dry_run=args.dry_run)
+            if dry_report is not None:
+                dry_reports[account] = dry_report
         except Exception as e:
             # B1-3: nunca abortar el run global por un fallo dentro de una cuenta.
             logger.error(f"[{account}] Excepcion no controlada: {_sanitize_error(e)}")
             processed, errors = 0, 1
-        per_account_results.append((account, processed, errors))
+            dry_report = None
+        per_account_results.append((account, processed, errors, dry_report))
         total_processed += processed
         total_errors += errors
 
@@ -420,7 +451,7 @@ def main(argv=None):
     logger.info("")
     logger.info("=" * 60)
     logger.info("📋 Resumen por cuenta:")
-    for acc, p, e in per_account_results:
+    for acc, p, e, _dry in per_account_results:
         logger.info(f"   - {acc:15s} procesadas={p} errores={e}")
     logger.info("=" * 60)
     logger.info(f"📊 RESUMEN TOTAL: {total_processed} procesadas, {total_errors} errores")
@@ -429,6 +460,21 @@ def main(argv=None):
     # Codigo de salida: 0 si todo OK, 1 si hubo cualquier error en CUALQUIER cuenta.
     # Pero el sync_control especifico (gmail:<account>) ya se actualizo dentro
     # de process_account, asi que no contaminamos el sync global.
+    if args.dry_run:
+        import json
+        out = {
+            'dry_run': True,
+            'accounts': dry_reports,
+            'summary': {
+                'total_msgs': sum(d.get('msg_count', 0) for d in dry_reports.values()),
+                'total_attachments': sum(d.get('attachments_total', 0) for d in dry_reports.values()),
+                'errors': total_errors,
+            }
+        }
+        sys.stderr.write('--- DRY-RUN JSON ---\n')
+        sys.stderr.write(json.dumps(out, indent=2, default=str))
+        sys.stderr.write('\n')
+        sys.stderr.flush()
     return 0 if total_errors == 0 else 1
 
 

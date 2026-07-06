@@ -1067,22 +1067,25 @@ def last_invoice(account: str = "", user: str = Depends(get_current_user)):
 
 @app.get("/api/invoices/by-date-range")
 def invoices_by_date_range(
-    from_: str,
-    to: str,
+    from_: str = Query("", alias="from"),   # URL usa ?from= pero Python keyword = from_
+    to: str = "",
     source: str = "",
     user: str = Depends(get_current_user),
 ):
     """Facturas agrupadas por fecha en un rango. ?source=gmail|lastapp filtra.
-    Devuelve 422 si from_ > to o formato invalido."""
+    Parametros: ?from=YYYY-MM-DD, &to=YYYY-MM-DD, &source=gmail|lastapp.
+    422 si invalido, from>to, o rango fuera de [hoy-1y, hoy]."""
     # Validacion
     from datetime import datetime
+    if not from_:
+        raise HTTPException(status_code=422, detail="from es obligatorio (YYYY-MM-DD)")
     try:
         dt_from = datetime.strptime(from_, "%Y-%m-%d")
         dt_to = datetime.strptime(to, "%Y-%m-%d")
     except ValueError:
         raise HTTPException(status_code=422, detail="from/to deben ser YYYY-MM-DD")
     if dt_from > dt_to:
-        raise HTTPException(status_code=422, detail="from_ no puede ser mayor que to")
+        raise HTTPException(status_code=422, detail="from no puede ser mayor que to")
     today = datetime.utcnow().date()
     if dt_from.date() < (today.replace(year=today.year - 1)) or dt_to.date() > today:
         raise HTTPException(status_code=422, detail="rango fuera de [today-1y, today]")

@@ -218,6 +218,7 @@ def save_token(token_data, token_path, client_id, client_secret, scopes=None):
         'scope': token_data.get('scope', ' '.join(scopes or SCOPES)),
         'client_id': client_id,
         'client_secret': client_secret,
+        'issued_at': __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat(),
     }
     with open(token_path, 'w') as f:
         json.dump(token_info, f, indent=2)

@@ -1,0 +1,8 @@
+# Gmail token age monitor — diario a las 08:00
+# Detecta tokens Gmail cerca de expirar (Testing mode expira a 7d) y avisa
+# con margen de 2 días para reautorizar manualmente.
+SHELL=/bin/bash
+PATH=/root/liados/.venv/bin:/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+PYTHONPATH=/root/liados
+
+0 8 * * * root /root/liados/.venv/bin/python -m agente.scripts.check_gmail_token_age --quiet >> /var/log/liados-gmail-age.log 2>&1

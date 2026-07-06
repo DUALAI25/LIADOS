@@ -167,9 +167,34 @@ def save_non_invoice(account, source_id, attachment, reason, subject):
 
 
 def process_account(account, search_query=None):
-    """Procesa todas las facturas de una cuenta"""
+    """Procesa todas las facturas de una cuenta.
+    B1: since_date y search_query se calculan aqui, no en main(). Cada cuenta
+    tiene su propia fila en sync_control (gmail:<account>) y por tanto su
+    propio cursor incremental."""
     if search_query is None:
-        search_query = SEARCH_QUERY
+        # Calcular since_date propio para esta cuenta
+        last_sync = get_last_sync(f'gmail:{account}')
+        if last_sync is not None and last_sync.tzinfo is None:
+            last_sync = last_sync.replace(tzinfo=timezone.utc)
+            logger.warning("[%s] last_sync de BD era naive, asumido UTC", account)
+        if last_sync and last_sync.year > 2000:
+            since_date = last_sync
+            logger.info("[%s] incremental desde %s", account, since_date.isoformat())
+        else:
+            since_date = datetime.now(timezone.utc) - timedelta(days=INITIAL_DAYS)
+            logger.info("[%s] primera ejecucion, procesando ultimos %d dias desde %s",
+                        account, INITIAL_DAYS, since_date.isoformat())
+        date_filter = since_date.strftime('%Y/%m/%d')
+        search_query = f"{SEARCH_QUERY} after:{date_filter}"
+        logger.info("[%s] Gmail query: %s", account, search_query)
+
+        # Marcar sync como en curso para esta cuenta
+        try:
+            update_last_sync(f'gmail:{account}', status='warning')
+            logger.info("[%s] sync marcado como en curso en sync_control", account)
+        except Exception as e:
+            logger.warning("[%s] No se pudo marcar sync como en curso: %s",
+                           account, str(e))
     logger.info(f"{'='*60}")
     logger.info(f"📧 Procesando cuenta: {account}")
     logger.info(f"{'='*60}")
@@ -275,6 +300,15 @@ def process_account(account, search_query=None):
             logger.error(f"  ❌ Error msg {msg['id']}: {_sanitize_error(e)}")
             errors += 1
 
+    # B1-1 (2026-07-06): sync_control por cuenta, no global. Un fallo de
+    # secundaria no marca principal como error.
+    sync_source = f"gmail:{account}"
+    final_status = 'ok' if errors == 0 else 'error'
+    try:
+        update_last_sync(sync_source, status=final_status)
+    except Exception as e:
+        logger.warning(f"[{account}] No se pudo actualizar sync_control: {e}")
+
     log_agent('gmail_collector', 'info' if errors == 0 else 'warning',
               f"[{account}] Procesados {processed}, errores {errors}")
     return processed, errors
@@ -337,57 +371,66 @@ def _walk_parts(service, msg_id, parts, attachments):
         })
 
 
-def main():
-    accounts = get_gmail_accounts()
+def main(argv=None):
+    """CLI opcional:
+        gmail_collector.py                  -> procesa todas las cuentas
+        gmail_collector.py --account X      -> procesa solo X (comodin)
+        gmail_collector.py --account X Y Z  -> procesa X, Y y Z
+    """
+    import argparse
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument('--account', '-a', action='append', default=None,
+                        help='Procesar solo estas cuentas (puede repetirse). '
+                             'Default: todas las de .env (GMAIL_ACCOUNTS).')
+    args = parser.parse_args(argv)
+
+    if args.account:
+        accounts = [a.strip() for a in args.account if a and a.strip()]
+        # Validar contra las configuradas en .env (typo safe)
+        configured = set(get_gmail_accounts())
+        unknown = [a for a in accounts if a not in configured]
+        if unknown:
+            logger.error(f"Cuentas no configuradas en .env: {unknown}. "
+                         f"Configuradas: {sorted(configured)}")
+            sys.exit(2)
+    else:
+        accounts = get_gmail_accounts()
     if not accounts:
         logger.error("GMAIL_ACCOUNTS no configurado en .env")
         logger.error("Añade: GMAIL_ACCOUNTS=cuenta1,cuenta2")
         sys.exit(1)
 
-    last_sync = get_last_sync('gmail')
-    # Defensivo: si la BD devuelve datetime naive (sin tz), lo marcamos como UTC
-    if last_sync is not None and last_sync.tzinfo is None:
-        last_sync = last_sync.replace(tzinfo=timezone.utc)
-        logger.warning("last_sync de BD era naive, asumido UTC")
-    if last_sync and last_sync.year > 2000:
-        since_date = last_sync
-        logger.info("Gmail: incremental desde %s", since_date.isoformat())
-    else:
-        since_date = datetime.now(timezone.utc) - timedelta(days=INITIAL_DAYS)
-        logger.info("Gmail: primera ejecucion, procesando ultimos %d dias desde %s",
-                     INITIAL_DAYS, since_date.isoformat())
-
-    date_filter = since_date.strftime('%Y/%m/%d')
-    search_query = f"{SEARCH_QUERY} after:{date_filter}"
-    logger.info("Gmail query: %s", search_query)
-
-    # Marcar sync como en curso ANTES de procesar. Asi, si el proceso muere
-    # por timeout/exception, al menos sabemos que llego a empezar.
-    try:
-        update_last_sync('gmail', status='warning')
-        logger.info("Gmail: sync marcado como en curso en sync_control")
-    except Exception as e:
-        logger.warning("No se pudo marcar sync como en curso: %s", str(e))
-
     total_processed = 0
     total_errors = 0
 
+    per_account_results = []
     for account in accounts:
-        processed, errors = process_account(account, search_query=search_query)
+        try:
+            processed, errors = process_account(account)
+        except Exception as e:
+            # B1-3: nunca abortar el run global por un fallo dentro de una cuenta.
+            logger.error(f"[{account}] Excepcion no controlada: {_sanitize_error(e)}")
+            processed, errors = 0, 1
+        per_account_results.append((account, processed, errors))
         total_processed += processed
         total_errors += errors
 
-    try:
-        update_last_sync('gmail', status='error' if total_errors > 0 else 'ok')
-    except Exception as e:
-        logger.error("No se pudo actualizar sync_control al final: %s", str(e))
+    # Resumen por cuenta: claridad operativa (revisar el log y saber
+    # exactamente quien fallo sin parsear el log completo).
     logger.info("")
+    logger.info("=" * 60)
+    logger.info("📋 Resumen por cuenta:")
+    for acc, p, e in per_account_results:
+        logger.info(f"   - {acc:15s} procesadas={p} errores={e}")
     logger.info("=" * 60)
     logger.info(f"📊 RESUMEN TOTAL: {total_processed} procesadas, {total_errors} errores")
     logger.info("=" * 60)
 
+    # Codigo de salida: 0 si todo OK, 1 si hubo cualquier error en CUALQUIER cuenta.
+    # Pero el sync_control especifico (gmail:<account>) ya se actualizo dentro
+    # de process_account, asi que no contaminamos el sync global.
     return 0 if total_errors == 0 else 1
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

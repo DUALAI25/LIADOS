@@ -225,7 +225,7 @@ def save_token(token_data, token_path, client_id, client_secret, scopes=None):
     return token_info
 
 
-def authorize_account(account, force=False):
+def authorize_account(account, force=False, callback_url=None):
     """Hace OAuth completo para una cuenta"""
     print("=" * 60)
     print(f"🔐 Autorización OAuth Gmail — cuenta: {account}")
@@ -260,8 +260,18 @@ def authorize_account(account, force=False):
     # Generar PKCE
     code_verifier, code_challenge = generate_pkce()
 
-    # Generar state (anti-CSRF)
+    # Generar state (anti-CSRF) — o usar el del callback si viene por CLI
     oauth_state = secrets.token_urlsafe(32)
+    if callback_url:
+        # Extraer state del callback para que coincida
+        from urllib.parse import urlparse, parse_qs
+        try:
+            parsed = urlparse(callback_url)
+            qs = parse_qs(parsed.query)
+            if 'state' in qs and qs['state'][0]:
+                oauth_state = qs['state'][0]
+        except Exception:
+            pass
 
     # Generar URL
     auth_url = generate_auth_url(client_id, redirect_uri, code_challenge, state=oauth_state)
@@ -276,13 +286,13 @@ def authorize_account(account, force=False):
     print(f"      (puede dar error de 'sitio no alcanza' — IGNORALO, es normal)")
     print(f"   4. Copia la URL COMPLETA de la barra de direcciones.")
     print(f"   5. Pégala aquí cuando te la pida.")
-    print()
-
-    # Leer URL pegada
-    callback_url = input("🔗 Pega aquí la URL de callback: ").strip()
+    print()    # Leer URL pegada (de CLI o de input interactivo)
+    if not callback_url:
+        callback_url = input("🔗 Pega aquí la URL de callback: ").strip()
     if not callback_url:
         print("❌ No pegaste ninguna URL. Cancelando.")
         sys.exit(1)
+    print(f"✅ URL recibida (longitud: {len(callback_url)} chars)")
 
     # Extraer code y validar state
     code = extract_code_from_url(callback_url)
@@ -336,12 +346,13 @@ def main():
     parser.add_argument('--account', help='Nombre de la cuenta a autorizar (ej: principal, secundaria)')
     parser.add_argument('--list', action='store_true', help='Lista las cuentas configuradas y su estado')
     parser.add_argument('--force', action='store_true', help='Re-autorizar aunque ya exista token')
+    parser.add_argument('--callback-url', help='URL de callback (alternativa a pegarla interactivamente)')
     args = parser.parse_args()
 
     if args.list:
         list_accounts()
     elif args.account:
-        authorize_account(args.account, force=args.force)
+        authorize_account(args.account, force=args.force, callback_url=args.callback_url)
     else:
         parser.print_help()
 

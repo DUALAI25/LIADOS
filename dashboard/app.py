@@ -807,6 +807,14 @@ INDEX_HTML = """<!DOCTYPE html>
 
   <!-- ── Main ── -->
   <main class="main">
+  <div id="last-invoice-card" data-loading="1">Cargando ultima factura extraida...</div>
+  <script>
+    // B3: Cargar la card server-rendered. Fallback silencioso si falla.
+    fetch("/api/invoices/last-invoice-card", {credentials:"include"})
+      .then(r => r.text())
+      .then(html => { const el = document.getElementById("last-invoice-card"); if (el) el.innerHTML = html; })
+      .catch(() => { const el = document.getElementById("last-invoice-card"); if (el) el.innerHTML = ""; });
+  </script>
 
     <!-- ═══ Vista: Dashboard ═══ -->
     <section class="view active" data-view="dashboard">
@@ -1010,6 +1018,128 @@ if ('serviceWorker' in navigator) {
 </script>
 </body>
 </html>"""
+
+
+
+@app.get("/api/invoices/last-invoice")
+def last_invoice(account: str = "", user: str = Depends(get_current_user)):
+    """Ultima factura extraida. ?account=principal filtra por cuenta.
+    200 con {last_invoice: null} si no hay facturas.
+    B3: usa created_at (timestamp with time zone) como received_at fallback.
+    Campos reales del esquema: invoice_number, vendor_name, raw_file_url, total_amount."""
+    where = ""
+    params = []
+    if account:
+        where = "WHERE source_account = %s"
+        params.append(account)
+    rows = q(f"""
+        SELECT id, invoice_number, source, source_account,
+               to_char(invoice_date, 'YYYY-MM-DD') as date,
+               to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as received_at,
+               raw_file_url as filename,
+               vendor_name as vendor,
+               total_amount,
+               currency
+        FROM invoices
+        {where}
+        ORDER BY created_at DESC
+        LIMIT 1
+    """, tuple(params))
+    if not rows:
+        return {"last_invoice": None, "as_of": q("SELECT NOW() as now")[0]["now"].isoformat()}
+    r = rows[0]
+    return {
+        "last_invoice": {
+            "id": str(r["id"]),
+            "invoice_number": r["invoice_number"],
+            "source": r["source"],
+            "source_account": r["source_account"],
+            "date": r["date"],
+            "received_at": r["received_at"],
+            "filename": r["filename"],
+            "vendor": r["vendor"],
+            "total_amount": float(r["total_amount"]) if r["total_amount"] is not None else None,
+            "currency": r["currency"],
+        },
+        "as_of": q("SELECT NOW() as now")[0]["now"].isoformat(),
+    }
+
+
+@app.get("/api/invoices/by-date-range")
+def invoices_by_date_range(
+    from_: str,
+    to: str,
+    source: str = "",
+    user: str = Depends(get_current_user),
+):
+    """Facturas agrupadas por fecha en un rango. ?source=gmail|lastapp filtra.
+    Devuelve 422 si from_ > to o formato invalido."""
+    # Validacion
+    from datetime import datetime
+    try:
+        dt_from = datetime.strptime(from_, "%Y-%m-%d")
+        dt_to = datetime.strptime(to, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=422, detail="from/to deben ser YYYY-MM-DD")
+    if dt_from > dt_to:
+        raise HTTPException(status_code=422, detail="from_ no puede ser mayor que to")
+    today = datetime.utcnow().date()
+    if dt_from.date() < (today.replace(year=today.year - 1)) or dt_to.date() > today:
+        raise HTTPException(status_code=422, detail="rango fuera de [today-1y, today]")
+
+    where = "WHERE invoice_date BETWEEN %s AND %s"
+    params = [from_, to]
+    if source:
+        where += " AND source = %s"
+        params.append(source)
+    rows = q(f"""
+        SELECT to_char(invoice_date, 'YYYY-MM-DD') as d,
+               count(*) as count,
+               coalesce(sum(total_amount), 0) as total
+        FROM invoices
+        {where}
+        GROUP BY 1
+        ORDER BY 1
+    """, tuple(params))
+    return [{"date": r["d"], "count": int(r["count"]),
+             "total_amount": float(r["total"])} for r in rows]
+
+@app.get("/api/invoices/last-invoice-card", response_class=HTMLResponse)
+def last_invoice_card(account: str = "", user: str = Depends(get_current_user)):
+    """Fragmento HTML server-rendered con la ultima factura extraida.
+    Usado por la card UI del dashboard (B3). Patron: server-side render
+    para que funcione aunque app.js este deshabilitado."""
+    payload = last_invoice(account=account, user=user)
+    li = payload.get("last_invoice")
+    if not li:
+        html = (
+            '<div class="card last-invoice empty">'
+            '<h3>Ultima factura extraida</h3>'
+            '<p>Aun no hay facturas extraidas.</p>'
+            '</div>'
+        )
+        return HTMLResponse(html)
+    currency = li.get("currency") or ""
+    amount = li.get("total_amount")
+    amount_str = f"{amount:.2f} {currency}" if amount is not None else "-"
+    html = (
+        '<div class="card last-invoice">'
+        '<h3>Ultima factura extraida</h3>'
+        f'<div class="li-row"><span class="li-label">Numero</span><b>{li["invoice_number"]}</b></div>'
+        f'<div class="li-row"><span class="li-label">Vendor</span><b>{li["vendor"] or "-"}</b></div>'
+        f'<div class="li-row"><span class="li-label">Importe</span><b>{amount_str}</b></div>'
+        f'<div class="li-row"><span class="li-label">Fecha factura</span><b>{li["date"]}</b></div>'
+        f'<div class="li-row"><span class="li-label">Cuenta</span><b>{li["source_account"] or "-"} ({li["source"]})</b></div>'
+        f'<div class="li-meta">Extraida: {li["received_at"]} · Endpoint: /api/invoices/last-invoice</div>'
+        '</div>'
+        '<style>.card.last-invoice{padding:1rem;background:var(--bg-1,#0e1426);border-radius:12px;margin:1rem 0}'
+        '.card.last-invoice h3{margin:0 0 .5rem 0;font-size:1rem}'
+        '.card.last-invoice .li-row{display:flex;justify-content:space-between;padding:.25rem 0;font-size:.9rem}'
+        '.card.last-invoice .li-label{color:#7a8aa3}'
+        '.card.last-invoice .li-meta{margin-top:.5rem;font-size:.75rem;color:#5a6378}'
+        '.card.last-invoice.empty p{color:#7a8aa3;font-style:italic}</style>'
+    )
+    return HTMLResponse(html)
 
 
 @app.get("/", response_class=HTMLResponse)

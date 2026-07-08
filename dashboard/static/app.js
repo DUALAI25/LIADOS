@@ -616,8 +616,16 @@ function animateCount(el, to, opts={}) {
 }
 
 // ── Chart.js theme ───────────────────────────────────────────────────────
-Chart.defaults.font.family = "'Inter', sans-serif";
-Chart.defaults.font.size = 12;
+// v6: tolerante a Chart.js no cargado (red/CDN falla). El dashboard sigue
+// funcionando sin gráficos si Chart no está disponible.
+function applyChartDefaults() {
+  if (typeof Chart === 'undefined') return;
+  try {
+    Chart.defaults.font.family = "'Inter', sans-serif";
+    Chart.defaults.font.size = 12;
+  } catch(e) { /* noop */ }
+}
+applyChartDefaults();
 
 function chartColors() {
   const dark = document.documentElement.getAttribute('data-theme') !== 'light';
@@ -663,9 +671,12 @@ function externalTooltip() {
 }
 
 function applyChartTheme() {
-  const c = chartColors();
-  Chart.defaults.color = c.ticks;
-  Chart.defaults.borderColor = c.grid;
+  if (typeof Chart === 'undefined') return;
+  try {
+    const c = chartColors();
+    Chart.defaults.color = c.ticks;
+    Chart.defaults.borderColor = c.grid;
+  } catch(e) { /* noop */ }
 }
 
 function chartsRefreshColors() {
@@ -756,18 +767,20 @@ function renderHero() {
     <div class="meta">Margen s/ventas <b>${margenPct.toFixed(1)}%</b></div>`;
   // sparkline hero
   const ctx = $('#heroSpark');
-  if (charts.hero) charts.hero.destroy();
-  charts.hero = new Chart(ctx, {
-    type:'line',
-    data:{ labels: sp.map(r=>r.mes.slice(5)), datasets:[{
-      data: sp.map(r=>r.total_eur), borderColor: css('--blue'),
-      backgroundColor: 'rgba(59,130,246,.12)', fill:true, tension:.4,
-      pointRadius:0, borderWidth:2.5
-    }]},
-    options:{ responsive:true, maintainAspectRatio:false,
-      plugins:{ legend:{display:false}, tooltip:{ enabled:false } },
-      scales:{ x:{display:false}, y:{display:false} } }
-  });
+  if (typeof Chart !== 'undefined' && ctx) {
+    if (charts.hero) charts.hero.destroy();
+    charts.hero = new Chart(ctx, {
+      type:'line',
+      data:{ labels: sp.map(r=>r.mes.slice(5)), datasets:[{
+        data: sp.map(r=>r.total_eur), borderColor: css('--blue'),
+        backgroundColor: 'rgba(59,130,246,.12)', fill:true, tension:.4,
+        pointRadius:0, borderWidth:2.5
+      }]},
+      options:{ responsive:true, maintainAspectRatio:false,
+        plugins:{ legend:{display:false}, tooltip:{ enabled:false } },
+        scales:{ x:{display:false}, y:{display:false} } }
+    });
+  }
 }
 
 function deltaInner(d) {
@@ -1229,4 +1242,11 @@ function init() {
   });
 }
 
-document.addEventListener('DOMContentLoaded', init);
+// Inicializacion robusta: si el DOM ya esta listo (script cargado tarde,
+// async, cache HIT antes del parse), ejecutar init directamente.
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  // DOM ya listo, ejecutar inmediatamente
+  init();
+}

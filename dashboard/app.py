@@ -10,6 +10,7 @@ v5 (premium):
 - Chat AI end-to-end (agent.py + MCP Last.app) con confirmacion de acciones.
 """
 import os
+import json
 import secrets
 import threading
 from datetime import date, datetime
@@ -57,6 +58,13 @@ async def _security_headers(request: Request, call_next):
         "base-uri 'self';"
     )
     resp.headers.setdefault("Content-Security-Policy", csp)
+    # v6.0.1: Anti-cache para el HTML principal y assets que cambian a menudo.
+    # Esto evita que el navegador sirva versiones cacheadas después de un deploy.
+    no_cache_paths = (
+        '/', '/static/app.js', '/static/app.css', '/static/sw.js',
+    )
+    if request.url.path in no_cache_paths:
+        resp.headers['Cache-Control'] = 'no-cache, must-revalidate'
     return resp
 
 

@@ -120,7 +120,13 @@ function initNav() {
       if (!VIEWS_RENDERED.has(v)) {
         if (v === 'ventas') renderVentas();
         if (v === 'gastos') renderGastos();
+        if (v === 'gastos-detalle') renderGastosDetalle();
+        if (v === 'alertas') renderAlertas();
+        if (v === 'config') renderConfig();
         VIEWS_RENDERED.add(v);
+      } else {
+        // Re-render al volver a la vista si necesita refresh (alertas se autorrefrescan)
+        if (v === 'gastos-detalle') refreshGastosDetalle();
       }
       // Resize charts al volver a mostrar una vista (corrige tamaños tras display:none)
       setTimeout(() => Object.values(charts).forEach(c => c && c.resize()), 80);
@@ -192,6 +198,406 @@ async function renderGastos() {
       <div class="bar-row"><div class="bar-label" style="min-width:64px;font-size:var(--fz-sm)">Ingresos</div><div class="bar-track"><div class="bar-fill" style="width:${(m.ingresos/mmax*100).toFixed(1)}%;background:var(--green)">${eur(m.ingresos)}</div></div></div>
       <div class="bar-row" style="margin-top:4px"><div class="bar-label" style="min-width:64px;font-size:var(--fz-sm)">Gastos</div><div class="bar-track"><div class="bar-fill" style="width:${(m.gastos/mmax*100).toFixed(1)}%;background:var(--red)">${eur(m.gastos)}</div></div></div>
     </div>`).join('');
+}
+
+// ── v6: Gastos Detalle (tabla paginada + filtros) ──────────────────────
+const GD = { page: 1, pageSize: 25, sort: 'invoice_date', order: 'desc', filters: {} };
+
+async function renderGastosDetalle() {
+  // Cargar vendors para el datalist (top 30)
+  try {
+    const prov = await getJSON('/api/gastos-por-proveedor?limit=30');
+    const dl = $('#gd-vendors-list');
+    if (dl) dl.innerHTML = prov.map(p => `<option value="${esc(p.proveedor)}">`).join('');
+  } catch(e) {}
+  // Cargar stats globales
+  try {
+    const stats = await getJSON('/api/gastos/stats');
+    $('#gd-stat-n').textContent = stats.total_facturas;
+    $('#gd-stat-total').textContent = eur(stats.total_eur);
+    $('#gd-stat-ticket').textContent = eur(stats.ticket_medio);
+    $('#gd-stat-vendors').textContent = stats.vendors_unicos;
+    const pdfPct = Math.round(stats.ratio_pdf_disponible * 100);
+    $('#gd-stat-pdf').textContent = `${stats.facturas_con_pdf} (${pdfPct}%)`;
+  } catch(e) { /* noop */ }
+  // Wire filtros
+  $('#gd-apply').onclick = () => { GD.page = 1; loadGastos(); };
+  $('#gd-clear').onclick = () => {
+    ['gd-q','gd-from','gd-to','gd-vendor','gd-cat','gd-min','gd-max'].forEach(id => $('#'+id).value = '');
+    $('#gd-cuenta').value = ''; $('#gd-status').value = '';
+    GD.page = 1; GD.filters = {}; loadGastos();
+    toast('Filtros limpiados', 'info');
+  };
+  $('#gd-prev').onclick = () => { if (GD.page > 1) { GD.page--; loadGastos(); } };
+  $('#gd-next').onclick = () => { GD.page++; loadGastos(); };
+  // Submit on Enter en cualquier input de filtro
+  ['gd-q','gd-from','gd-to','gd-vendor','gd-cat','gd-min','gd-max'].forEach(id => {
+    const el = $('#'+id);
+    if (el) el.onkeydown = (e) => { if (e.key === 'Enter') { GD.page = 1; loadGastos(); } };
+  });
+  loadGastos();
+}
+
+async function refreshGastosDetalle() {
+  // Re-carga sin resetear paginación (para refresh manual)
+  loadGastos();
+}
+
+function buildGastosParams() {
+  const p = new URLSearchParams();
+  p.set('page', GD.page);
+  p.set('page_size', GD.pageSize);
+  p.set('sort', GD.sort);
+  p.set('order', GD.order);
+  const q = $('#gd-q')?.value?.trim();
+  if (q) p.set('q', q);
+  const from = $('#gd-from')?.value;
+  if (from) p.set('from', from);
+  const to = $('#gd-to')?.value;
+  if (to) p.set('to', to);
+  const vendor = $('#gd-vendor')?.value?.trim();
+  if (vendor) p.set('vendor', vendor);
+  const cat = $('#gd-cat')?.value?.trim();
+  if (cat) p.set('categoria', cat);
+  const cuenta = $('#gd-cuenta')?.value;
+  if (cuenta) p.set('cuenta', cuenta);
+  const status = $('#gd-status')?.value;
+  if (status) p.set('status', status);
+  const min = $('#gd-min')?.value;
+  if (min) p.set('min_eur', min);
+  const max = $('#gd-max')?.value;
+  if (max) p.set('max_eur', max);
+  return p;
+}
+
+async function loadGastos() {
+  const wrap = $('#gd-table-wrap');
+  if (wrap) wrap.innerHTML = '<div class="skeleton-table" aria-hidden="true"><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div></div>';
+  try {
+    const qs = buildGastosParams();
+    const data = await getJSON('/api/gastos?' + qs.toString());
+    if (!data.rows || data.rows.length === 0) {
+      wrap.innerHTML = emptyState('Sin resultados', 'No hay facturas que coincidan con los filtros aplicados. Prueba a limpiar o ampliar el rango de fechas.');
+      $('#gd-result-count').textContent = '0 resultados';
+      $('#gd-page-info').textContent = '—';
+      $('#gd-prev').disabled = true; $('#gd-next').disabled = true;
+      return;
+    }
+    const sortArrow = (col) => GD.sort === col ? (GD.order === 'desc' ? ' ↓' : ' ↑') : '';
+    wrap.innerHTML = `<div class="table-wrap gd-table"><table>
+      <thead><tr>
+        <th class="sortable" data-sort="invoice_date">Fecha${sortArrow('invoice_date')}</th>
+        <th>Nº Factura</th>
+        <th class="sortable" data-sort="vendor_name">Vendor${sortArrow('vendor_name')}</th>
+        <th>Categoría</th>
+        <th>Cuenta</th>
+        <th>Status</th>
+        <th class="num sortable" data-sort="total_amount">Importe${sortArrow('total_amount')}</th>
+        <th>PDF</th>
+      </tr></thead>
+      <tbody>${data.rows.map(r => `
+        <tr class="row-drill" data-id="${r.id}" tabindex="0" role="button" aria-label="Ver detalle de ${esc(r.vendor_name||'')}">
+          <td>${esc(r.invoice_date||'-')}</td>
+          <td><code>${esc(r.invoice_number||'-')}</code></td>
+          <td><b>${esc(r.vendor_name||'Sin nombre')}</b></td>
+          <td>${r.category_raw ? `<span class="pill">${esc(r.category_raw)}</span>` : '<span class="muted">—</span>'}</td>
+          <td>${r.source_account ? esc(r.source_account) : '<span class="muted">—</span>'}</td>
+          <td><span class="status status-${esc(r.status||'pending')}">${esc(r.status||'pending')}</span></td>
+          <td class="num"><b>${eur(r.total_amount||0)}</b></td>
+          <td>${r.raw_file_url ? '<span class="pdf-yes" title="PDF disponible">📎</span>' : '<span class="muted" title="Sin PDF">—</span>'}</td>
+        </tr>
+      `).join('')}</tbody>
+    </table></div>`;
+    // Click handler: abre modal de detalle
+    $$('#gd-table-wrap tr.row-drill').forEach(tr => {
+      tr.onclick = () => openFacturaModal(tr.getAttribute('data-id'));
+      tr.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openFacturaModal(tr.getAttribute('data-id')); } };
+    });
+    // Sort headers
+    $$('#gd-table-wrap th.sortable').forEach(th => {
+      th.onclick = () => {
+        const col = th.getAttribute('data-sort');
+        if (GD.sort === col) GD.order = GD.order === 'desc' ? 'asc' : 'desc';
+        else { GD.sort = col; GD.order = 'desc'; }
+        loadGastos();
+      };
+    });
+    // Paginación
+    $('#gd-result-count').textContent = `${data.total.toLocaleString('es-ES')} resultados`;
+    $('#gd-page-info').textContent = `Página ${data.page} de ${data.pages}`;
+    $('#gd-prev').disabled = data.page <= 1;
+    $('#gd-next').disabled = data.page >= data.pages;
+  } catch(e) {
+    wrap.innerHTML = '<div class="state error"><div class="title">Error cargando gastos</div><div class="desc">' + esc(e.message) + '</div></div>';
+    toast('Error al cargar gastos: ' + e.message, 'error');
+  }
+}
+
+async function openFacturaModal(id) {
+  openModal('facturaModal');
+  $('#factura-body').innerHTML = '<div class="skeleton-card"></div>';
+  $('#factura-title').textContent = 'Cargando factura…';
+  try {
+    const f = await getJSON('/api/gastos/' + id);
+    $('#factura-title').textContent = f.vendor_name || 'Factura';
+    const cat = f.category_name
+      ? `<span class="pill" style="background:${esc(f.category_color||'#6b7280')};color:#fff">${esc(f.category_name)}</span>`
+      : (f.category_raw ? `<span class="pill">${esc(f.category_raw)}</span>` : '<span class="muted">sin categoría</span>');
+    const pdfBlock = f.raw_file_url
+      ? (f.pdf_exists
+          ? `<a class="btn primary" href="/api/gastos/${id}/pdf" target="_blank" rel="noopener" download>📄 Ver/Descargar PDF (${(f.pdf_size_bytes/1024).toFixed(1)} KB)</a>`
+          : `<span class="muted">PDF no disponible en disco (${esc(f.raw_file_url)})</span>`)
+      : '<span class="muted">Esta factura no tiene PDF adjunto</span>';
+    const pagosBlock = f.pagos && f.pagos.length > 0
+      ? `<h4>Pagos (${f.pagos.length})</h4><div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Importe</th><th>Source</th><th>Ref</th></tr></thead><tbody>${f.pagos.map(p => `<tr><td>${esc(p.payment_date||'-')}</td><td class="num">${eur(p.amount||0)}</td><td>${esc(p.source||'-')}</td><td><code>${esc(p.reference||'-')}</code></td></tr>`).join('')}</tbody></table></div>`
+      : '';
+    $('#factura-body').innerHTML = `
+      <div class="factura-grid">
+        <div><span class="factura-label">Nº factura</span><b><code>${esc(f.invoice_number||'-')}</code></b></div>
+        <div><span class="factura-label">Fecha factura</span><b>${esc(f.invoice_date||'-')}</b></div>
+        <div><span class="factura-label">Vencimiento</span><b>${esc(f.due_date||'-')}</b></div>
+        <div><span class="factura-label">Status</span><span class="status status-${esc(f.status||'pending')}">${esc(f.status||'pending')}</span></div>
+        <div><span class="factura-label">Categoría</span>${cat}</div>
+        <div><span class="factura-label">Cuenta</span><b>${esc(f.source_account||'-')}</b> <span class="muted">(${esc(f.source||'-')})</span></div>
+        <div><span class="factura-label">Vendor tax ID</span><b>${esc(f.vendor_tax_id||'-')}</b></div>
+        <div><span class="factura-label">Confianza parser</span><b>${f.confidence_score != null ? (Number(f.confidence_score)*100).toFixed(0)+'%' : '-'}</b></div>
+      </div>
+      <h4>Importes</h4>
+      <div class="factura-importes">
+        <div><span>Base</span><b>${eur(f.base_amount||0)}</b></div>
+        <div><span>IVA</span><b>${eur(f.tax_amount||0)}</b></div>
+        <div class="total"><span>Total</span><b>${eur(f.total_amount||0)} ${esc(f.currency||'EUR')}</b></div>
+      </div>
+      ${f.description ? `<h4>Descripción</h4><p class="factura-desc">${esc(f.description)}</p>` : ''}
+      <h4>Documento</h4>
+      <div class="factura-pdf">${pdfBlock}</div>
+      ${pagosBlock}
+      <div class="factura-meta">
+        <small>ID: <code>${esc(f.id)}</code></small>
+        ${f.verified_at ? `<small>Verificada: ${esc(f.verified_at)}</small>` : ''}
+        ${f.created_at ? `<small>Creada: ${esc(f.created_at)}</small>` : ''}
+      </div>
+      <div class="factura-actions">
+        <button class="btn ghost" onclick="chatPrefill('Analiza la factura ${esc(f.invoice_number||id)} de ${esc((f.vendor_name||'').replace(/'/g, ''))}')">💬 Abrir en chat AI</button>
+      </div>
+    `;
+  } catch(e) {
+    $('#factura-body').innerHTML = '<div class="state error"><div class="title">Error</div><div class="desc">' + esc(e.message) + '</div></div>';
+  }
+}
+
+function chatPrefill(text) {
+  if ($('#chatPanel').classList.contains('open') === false) {
+    $('#chatFab').click();
+  }
+  setTimeout(() => {
+    $('#chatText').value = text;
+    $('#chatText').focus();
+  }, 200);
+}
+
+// ── v6: Alertas (detector de anomalías) ─────────────────────────────────
+let _alertasTimer = null;
+async function renderAlertas() {
+  if (_alertasTimer) return; // ya refrescándose
+  await loadAlertas();
+  // Auto-refresh cada 60s
+  _alertasTimer = setInterval(loadAlertas, 60_000);
+}
+
+async function loadAlertas() {
+  const list = $('#al-list');
+  if (!list) return;
+  try {
+    const data = await getJSON('/api/alertas');
+    $('#al-generated').textContent = data.generated_at.replace('T', ' ').replace('Z', ' UTC');
+    // Resumen
+    const r = data.resumen || {};
+    const resumenParts = [];
+    if (r.high) resumenParts.push(`<span class="al-pill al-pill-high">${r.high} alta${r.high>1?'s':''}</span>`);
+    if (r.medium) resumenParts.push(`<span class="al-pill al-pill-medium">${r.medium} media${r.medium>1?'s':''}</span>`);
+    if (r.low) resumenParts.push(`<span class="al-pill al-pill-low">${r.low} baja${r.low>1?'s':''}</span>`);
+    if (r.info) resumenParts.push(`<span class="al-pill al-pill-info">${r.info} info</span>`);
+    if (resumenParts.length === 0) resumenParts.push('<span class="al-pill al-pill-ok">✓ Todo OK</span>');
+    $('#al-resumen').innerHTML = resumenParts.join('');
+    // Badge en nav
+    const badge = $('#nav-alert-badge');
+    if (badge) {
+      const total = r.high + r.medium;
+      badge.textContent = total > 0 ? total : '';
+      badge.style.display = total > 0 ? 'inline-block' : 'none';
+    }
+    if (data.items.length === 0) {
+      list.innerHTML = `<div class="al-empty"><div class="al-empty-icon">✅</div><h3>Sin alertas activas</h3><p>Todos los indicadores están dentro de los rangos esperados.</p></div>`;
+      return;
+    }
+    const dismissed = JSON.parse(localStorage.getItem('liados_alerts_dismissed') || '{}');
+    const now = Date.now();
+    list.innerHTML = data.items.map(a => {
+      const isDismissed = dismissed[a.id] && (now - dismissed[a.id] < 24*3600*1000);
+      const dismissBtn = isDismissed ? '' : `<button class="al-dismiss" data-id="${esc(a.id)}" aria-label="Descartar alerta">✕</button>`;
+      const cta = a.cta
+        ? (a.cta.prefill
+            ? `<button class="al-cta" data-prefill="${esc(a.cta.prefill)}">${esc(a.cta.label||'Abrir en chat')} →</button>`
+            : `<button class="al-cta" data-prefill="${esc(a.titulo)}">${esc(a.cta.label||'Abrir en chat')} →</button>`)
+        : '';
+      return `<article class="al-card al-${esc(a.severity)} ${isDismissed?'al-dismissed':''}" role="alert" aria-label="Alerta ${a.severity}: ${esc(a.titulo)}">
+        <div class="al-stripe"></div>
+        <div class="al-body">
+          <div class="al-head">
+            <span class="al-sev al-sev-${esc(a.severity)}">${sevLabel(a.severity)}</span>
+            <span class="al-tipo">${esc(a.tipo)}</span>
+            <h3>${esc(a.titulo)}</h3>
+            ${dismissBtn}
+          </div>
+          <p class="al-desc">${esc(a.descripcion)}</p>
+          ${a.accion_sugerida ? `<p class="al-accion">💡 <b>Acción:</b> ${esc(a.accion_sugerida)}</p>` : ''}
+          <div class="al-foot">
+            ${cta}
+            <span class="al-ts">Detectada: ${esc(data.generated_at.replace('T',' ').replace('Z',' UTC'))}</span>
+          </div>
+        </div>
+      </article>`;
+    }).join('');
+    // Wire dismiss
+    $$('.al-dismiss').forEach(b => b.onclick = () => {
+      const id = b.getAttribute('data-id');
+      const d = JSON.parse(localStorage.getItem('liados_alerts_dismissed') || '{}');
+      d[id] = Date.now();
+      localStorage.setItem('liados_alerts_dismissed', JSON.stringify(d));
+      const card = b.closest('.al-card');
+      if (card) { card.style.transition = 'opacity .3s, transform .3s'; card.style.opacity = '0'; card.style.transform = 'translateX(20px)'; setTimeout(() => card.remove(), 300); }
+      toast('Alerta descartada (24h)', 'info');
+    });
+    // Wire CTA
+    $$('.al-cta').forEach(b => b.onclick = () => chatPrefill(b.getAttribute('data-prefill')));
+  } catch(e) {
+    list.innerHTML = '<div class="state error"><div class="title">Error</div><div class="desc">' + esc(e.message) + '</div></div>';
+  }
+}
+
+function sevLabel(s) {
+  return { high: '🔴 ALTA', medium: '🟡 MEDIA', low: '🔵 BAJA', info: '⚪ INFO' }[s] || s;
+}
+
+// ── v6: Configuración (vista real) ──────────────────────────────────────
+async function renderConfig() {
+  // Cargar info del sistema
+  try {
+    const h = await getJSON('/api/health');
+    $('#cfg-version').textContent = h.version;
+    $('#cfg-db').innerHTML = h.checks?.database === 'ok' ? '<span class="status status-verified">OK</span>' : `<span class="status status-rejected">${esc(h.checks?.database||'?')}</span>`;
+    const pool = h.checks?.pool || {};
+    $('#cfg-pool').textContent = pool.used != null ? `${pool.used} usadas / ${pool.free} libres` : '—';
+  } catch(e) {}
+  // Cargar fuentes
+  try {
+    const data = await getJSON('/api/admin/gmail-status');
+    const html = (data.accounts || []).map(a => {
+      const statusBadge = {
+        'OK': '<span class="status status-verified">OK</span>',
+        'STALE': '<span class="status status-pending">Stale</span>',
+        'MISSING_TOKEN': '<span class="status status-rejected">MISSING_TOKEN</span>',
+        'PARSE_ERROR': '<span class="status status-rejected">Parse error</span>',
+      }[a.status] || `<span class="status status-pending">${esc(a.status)}</span>`;
+      const ageStr = a.age_days != null ? `${a.age_days}d` : '—';
+      const clientStr = a.client_id || '—';
+      return `<div class="cfg-fuente">
+        <div class="cfg-fuente-head">
+          <b>📧 ${esc(a.account)}</b>
+          ${statusBadge}
+        </div>
+        <div class="cfg-fuente-grid">
+          <div><span>Credentials</span><b>${a.credentials_file_exists ? '✓' : '✗'}</b></div>
+          <div><span>Token</span><b>${a.token_file_exists ? '✓' : '✗'}</b></div>
+          <div><span>Refresh</span><b>${a.has_refresh_token ? '✓' : '✗'}</b></div>
+          <div><span>Edad token</span><b>${ageStr}</b></div>
+          <div><span>Client ID</span><b><code>${esc(clientStr)}</code></b></div>
+          <div><span>Scope</span><b><code>${esc(a.scope||'—')}</code></b></div>
+        </div>
+        ${a.status === 'MISSING_TOKEN' || a.status === 'STALE' ? `<details class="cfg-reauth"><summary>🔄 Reautorizar esta cuenta</summary>
+          <ol>
+            <li>En tu máquina local, ejecuta:<br><code>python3 -m agente.scripts.gmail_auth --account ${esc(a.account)} --force</code></li>
+            <li>Sube el nuevo token al VPS:<br><code>scp agente/credentials/gmail_token_${esc(a.account)}.json vps:/root/liados/agente/credentials/</code></li>
+            <li>Prueba el collector:<br><code>python3 -m agente.scripts.gmail_collector --account ${esc(a.account)} --dry-run</code></li>
+          </ol>
+          <p class="muted">⚠️ El re-OAuth requiere navegador interactivo. No se puede automatizar desde el dashboard.</p>
+        </details>` : ''}
+      </div>`;
+    }).join('');
+    $('#cfg-fuentes').innerHTML = html || '<div class="state empty"><div class="title">Sin cuentas configuradas</div><div class="desc">Añade <code>GMAIL_ACCOUNTS=cuenta1,cuenta2</code> en tu <code>.env</code></div></div>';
+  } catch(e) {
+    $('#cfg-fuentes').innerHTML = '<div class="state error"><div class="title">Error</div><div class="desc>' + esc(e.message) + '</div></div>';
+  }
+}
+
+// ── v6: Toast notifications ─────────────────────────────────────────────
+const _toastQueue = [];
+function toast(msg, type='info', ms=3500) {
+  const c = $('#toastContainer');
+  if (!c) return;
+  const t = document.createElement('div');
+  t.className = `toast toast-${type}`;
+  t.setAttribute('role', 'status');
+  t.innerHTML = `<span class="toast-ico">${type==='error'?'⛔':type==='success'?'✓':type==='warn'?'⚠':'ℹ'}</span><span>${esc(msg)}</span><button class="toast-x" aria-label="Cerrar">✕</button>`;
+  c.appendChild(t);
+  // Animate in
+  requestAnimationFrame(() => t.classList.add('toast-in'));
+  // Auto dismiss
+  const close = () => {
+    t.classList.remove('toast-in');
+    t.classList.add('toast-out');
+    setTimeout(() => t.remove(), 300);
+  };
+  t.querySelector('.toast-x').onclick = close;
+  if (ms > 0) setTimeout(close, ms);
+}
+
+// ── v6: Command palette (⌘K) ────────────────────────────────────────────
+const COMMANDS = [
+  { id: 'nav:dashboard', label: 'Ir a Dashboard', icon: '📊', action: () => switchView('dashboard') },
+  { id: 'nav:ventas', label: 'Ir a Ventas', icon: '📈', action: () => switchView('ventas') },
+  { id: 'nav:gastos', label: 'Ir a Gastos (resumen)', icon: '📄', action: () => switchView('gastos') },
+  { id: 'nav:gastos-detalle', label: 'Ir a Detalle gastos', icon: '🧾', action: () => switchView('gastos-detalle') },
+  { id: 'nav:alertas', label: 'Ir a Alertas', icon: '🔔', action: () => switchView('alertas') },
+  { id: 'nav:config', label: 'Ir a Configuración', icon: '⚙️', action: () => switchView('config') },
+  { id: 'act:chat', label: 'Abrir asistente AI', icon: '💬', action: () => { if (!$('#chatPanel').classList.contains('open')) $('#chatFab').click(); $('#chatText').focus(); } },
+  { id: 'act:refresh', label: 'Refrescar datos', icon: '🔄', action: () => { loadAll(); toast('Datos refrescados', 'success'); } },
+  { id: 'act:export-facturas', label: 'Exportar facturas a CSV', icon: '⬇️', action: () => window.location = '/api/export/facturas' },
+  { id: 'act:export-proveedores', label: 'Exportar gastos por proveedor a CSV', icon: '⬇️', action: () => window.location = '/api/export/proveedores' },
+  { id: 'act:export-categorias', label: 'Exportar gastos por categoría a CSV', icon: '⬇️', action: () => window.location = '/api/export/categorias' },
+  { id: 'act:export-ingresos', label: 'Exportar ingresos a CSV', icon: '⬇️', action: () => window.location = '/api/export/ingresos' },
+  { id: 'act:theme', label: 'Cambiar tema claro/oscuro', icon: '🌗', action: () => toggleTheme() },
+  { id: 'act:help', label: 'Ver atajos de teclado', icon: '❓', action: () => openModal('helpModal') },
+];
+function switchView(v) {
+  const nav = $(`.nav-item[data-view="${v}"]`);
+  if (nav) nav.click();
+}
+function openPalette() {
+  openModal('paletteModal');
+  $('#paletteInput').value = '';
+  renderPalette('');
+  setTimeout(() => $('#paletteInput').focus(), 50);
+}
+function renderPalette(filter) {
+  const f = (filter || '').toLowerCase().trim();
+  const items = COMMANDS.filter(c => !f || c.label.toLowerCase().includes(f) || c.id.includes(f));
+  $('#paletteResults').innerHTML = items.length === 0
+    ? '<div class="palette-empty">Sin resultados</div>'
+    : items.map(c => `<button class="palette-item" data-id="${c.id}"><span class="palette-ico">${c.icon}</span><span>${esc(c.label)}</span><kbd>↵</kbd></button>`).join('');
+  $$('#paletteResults .palette-item').forEach(b => b.onclick = () => {
+    const cmd = COMMANDS.find(c => c.id === b.getAttribute('data-id'));
+    if (cmd) { closeModal('paletteModal'); cmd.action(); }
+  });
+  if (items[0]) $('.palette-item')?.focus();
+}
+function initPalette() {
+  $('#paletteInput').oninput = (e) => renderPalette(e.target.value);
+  $('#paletteInput').onkeydown = (e) => {
+    if (e.key === 'Enter') { const first = $('#paletteResults .palette-item'); if (first) first.click(); }
+    if (e.key === 'Escape') closeModal('paletteModal');
+  };
 }
 
 // ── Counter animation ────────────────────────────────────────────────────
@@ -765,13 +1171,30 @@ function wireBarDrillDown() {
 }
 
 function initShortcuts() {
+  let pendingG = false;
+  let pendingGTimer = null;
   document.addEventListener('keydown', (e) => {
     const tag = (e.target.tagName || '').toLowerCase();
     const typing = tag === 'input' || tag === 'textarea';
+    // ⌘K / Ctrl+K: command palette (funciona siempre, incluso en inputs)
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openPalette(); return; }
     // Esc cierra todo
     if (e.key === 'Escape') { closeAllModals(); $('#chatPanel').classList.remove('open'); return; }
-    // En inputs: solo Esc (ya gestionado)
+    // En inputs: solo Esc y ⌘K (ya gestionados arriba)
     if (typing) return;
+    // G + <letra>: navegación estilo Gmail
+    if (pendingG) {
+      pendingG = false;
+      clearTimeout(pendingGTimer);
+      const k = e.key.toLowerCase();
+      const map = { d:'dashboard', v:'ventas', g:'gastos', a:'alertas', c:'config' };
+      if (map[k]) { e.preventDefault(); switchView(map[k]); return; }
+    }
+    if (e.key.toLowerCase() === 'g') {
+      pendingG = true;
+      pendingGTimer = setTimeout(() => { pendingG = false; }, 1200);
+      return;
+    }
     if (e.key === '/') { e.preventDefault(); openModal('searchModal'); $('#searchInput').focus(); }
     else if (e.key.toLowerCase() === 'c') { $('#chatFab').click(); }
     else if (e.key.toLowerCase() === 'r') { location.reload(); }
@@ -782,6 +1205,7 @@ function initShortcuts() {
   $$('[data-close]').forEach(b => b.onclick = () => closeModal(b.getAttribute('data-close')));
   // Click fuera del modal cierra
   $$('.modal-overlay').forEach(m => m.onclick = (e) => { if (e.target === m) m.classList.remove('open'); });
+  initPalette();
 }
 
 // ── Init ─────────────────────────────────────────────────────────────────

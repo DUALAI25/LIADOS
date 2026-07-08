@@ -27,7 +27,7 @@ from psycopg2.extras import RealDictCursor
 # Chat conversacional (wrapper sobre agent.py, sin modificarlo).
 from dashboard import chat as chat_engine
 
-app = FastAPI(title="Liados Dashboard", version="5.1.0")
+app = FastAPI(title="Liados Dashboard", version="6.0.0")
 security = HTTPBasic()
 
 # Servir assets estaticos (fuentes, css, js) sin auth (son publicos, sin secretos).
@@ -384,7 +384,7 @@ def api_facturas_recientes(limit: int = Query(15, ge=1, le=100, description='Max
 @app.get("/api/health")
 def health():
     """Health check enriquecido: BD OK, pool stats, version."""
-    out = {"status": "ok", "version": "5.1.0", "checks": {}}
+    out = {"status": "ok", "version": "6.0.0", "checks": {}}
     # Test BD (importante: usar try/finally + put_conn para no romper el pool)
     conn = get_conn()
     try:
@@ -752,6 +752,573 @@ def api_export(view: str, user: str = Depends(get_current_user)):
     raise HTTPException(status_code=404, detail="Vista no soportada")
 
 
+# ── API: Gmail status (read-only, Entregable B) ─────────────────
+
+@app.get("/api/admin/gmail-status")
+def api_gmail_status(user: str = Depends(get_current_user)):
+    """Estado de las cuentas Gmail configuradas. SOLO LECTURA de metadatos.
+    Nunca expone tokens (access/refresh/client_secret). Lee los JSON de
+    agente/credentials/ sin modificarlos (denylist respetado)."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    accounts_env = os.getenv("GMAIL_ACCOUNTS", "").strip()
+    configured = [a.strip() for a in accounts_env.split(",") if a.strip()] if accounts_env else []
+    # Resolver credentials dir en orden de prioridad:
+    # 1. ENV GMAIL_CREDENTIALS_DIR (sobrescribe para tests/CI)
+    # 2. CWD/agente/credentials (producción con WorkingDirectory=/root/liados)
+    # 3. Path relativo al paquete dashboard (worktree/dev local)
+    creds_override = os.getenv("GMAIL_CREDENTIALS_DIR", "").strip()
+    if creds_override:
+        creds_dir = _Path(creds_override)
+    else:
+        creds_dir = _Path(os.getcwd()) / "agente" / "credentials"
+        if not creds_dir.is_dir():
+            creds_dir = _Path(__file__).resolve().parent.parent / "agente" / "credentials"
+        if not creds_dir.is_dir():
+            # Fallback final: /root/liados/agente/credentials (path absoluto producción)
+            prod_path = _Path("/root/liados/agente/credentials")
+            if prod_path.is_dir():
+                creds_dir = prod_path
+
+    result = []
+    for acc in configured:
+        token_file = creds_dir / f"gmail_token_{acc}.json"
+        cred_file = creds_dir / f"gmail_credentials_{acc}.json"
+
+        entry = {
+            "account": acc,
+            "credentials_file_exists": cred_file.exists(),
+            "token_file_exists": token_file.exists(),
+            "has_refresh_token": False,
+            "has_access_token": False,
+            "client_id": None,
+            "scope": None,
+            "issued_at": None,
+            "last_check": None,
+            "age_days": None,
+            "status": "unknown",
+        }
+
+        if token_file.exists():
+            try:
+                with open(token_file) as f:
+                    tok = _json.load(f)
+                entry["has_refresh_token"] = bool(tok.get("refresh_token"))
+                entry["has_access_token"] = bool(tok.get("access_token"))
+                cid = tok.get("client_id") or ""
+                entry["client_id"] = (cid[:24] + "...") if len(cid) > 24 else cid
+                entry["scope"] = tok.get("scope")
+                entry["issued_at"] = tok.get("issued_at")
+                entry["last_check"] = tok.get("last_check")
+
+                issued = tok.get("issued_at")
+                if issued:
+                    try:
+                        from datetime import datetime as _dt
+                        if isinstance(issued, str):
+                            ts = _dt.fromisoformat(issued.replace("Z", "+00:00"))
+                        elif isinstance(issued, (int, float)):
+                            ts = _dt.fromtimestamp(issued, tz=_dt.now().astimezone().tzinfo)
+                        else:
+                            ts = None
+                        if ts:
+                            entry["age_days"] = (datetime.utcnow().replace(tzinfo=ts.tzinfo) - ts).days
+                    except Exception:
+                        pass
+
+                if not entry["has_refresh_token"]:
+                    entry["status"] = "MISSING_TOKEN"
+                elif entry["age_days"] is not None and entry["age_days"] > 180:
+                    entry["status"] = "STALE"
+                else:
+                    entry["status"] = "OK"
+            except Exception as e:
+                entry["status"] = f"PARSE_ERROR: {e}"
+
+        result.append(entry)
+
+    # Última sincronización desde sync_control
+    sync_rows = q("SELECT source, last_sync, items_processed, errors, status FROM sync_control WHERE source = 'gmail'")
+    sync_info = to_dict(sync_rows[0]) if sync_rows else None
+
+    return {"accounts": result, "sync_control": sync_info}
+
+
+# ── API: Gastos desglosados (Entregable D1) ──────────────────────
+# Lista paginada con filtros + detalle + descarga PDF + facets + timeline + stats.
+
+@app.get("/api/gastos")
+def api_gastos(
+    page: int = Query(1, ge=1, le=10000, description='Número de página'),
+    page_size: int = Query(25, ge=1, le=200, description='Resultados por página'),
+    from_: str = Query("", alias="from", description='Fecha desde YYYY-MM-DD'),
+    to: str = Query("", alias="to", description='Fecha hasta YYYY-MM-DD'),
+    vendor: str = Query("", description='Filtro por vendor (ILIKE)'),
+    categoria: str = Query("", description='Filtro por categoría (ILIKE)'),
+    cuenta: str = Query("", description='Filtro por source_account'),
+    status: str = Query("", description='Filtro por status'),
+    query: str = Query("", alias="q", description='Búsqueda full-text'),
+    min_eur: float = Query(None, description='Importe mínimo'),
+    max_eur: float = Query(None, description='Importe máximo'),
+    sort: str = Query("invoice_date", description='Campo de orden: invoice_date|total_amount|vendor_name|created_at'),
+    order: str = Query("desc", description='asc|desc'),
+    user: str = Depends(get_current_user),
+):
+    """Lista paginada de facturas de gasto con filtros combinados (AND).
+    Devuelve rows + total + page + facets para popular los filtros dinámicos."""
+    where = [expense_filter()]
+    params = []
+
+    if from_:
+        where.append("invoice_date >= %s")
+        params.append(from_)
+    if to:
+        where.append("invoice_date <= %s")
+        params.append(to)
+    if vendor:
+        where.append("vendor_name ILIKE %s")
+        params.append(f"%{vendor}%")
+    if categoria:
+        where.append("COALESCE(category_raw, '') ILIKE %s")
+        params.append(f"%{categoria}%")
+    if cuenta:
+        where.append("source_account = %s")
+        params.append(cuenta)
+    if status:
+        where.append("status = %s")
+        params.append(status)
+    if query:
+        where.append("(to_tsvector('spanish', coalesce(vendor_name,'')||' '||coalesce(description,'')||' '||coalesce(invoice_number,'')) @@ plainto_tsquery('spanish', %s) OR vendor_name ILIKE %s)")
+        params.append(query)
+        params.append(f"%{query}%")
+    if min_eur is not None:
+        where.append("total_amount >= %s")
+        params.append(min_eur)
+    if max_eur is not None:
+        where.append("total_amount <= %s")
+        params.append(max_eur)
+
+    where_sql = " AND ".join(where)
+
+    valid_sorts = {"invoice_date": "invoice_date", "total_amount": "total_amount",
+                   "vendor_name": "vendor_name", "created_at": "created_at"}
+    sort_col = valid_sorts.get(sort, "invoice_date")
+    order_sql = "DESC" if order.lower() == "desc" else "ASC"
+
+    # Total count (sin LIMIT)
+    total_row = q(f"SELECT count(*) as c FROM invoices WHERE {where_sql}", tuple(params))[0]
+    total = int(total_row["c"])
+
+    # Página
+    offset = (page - 1) * page_size
+    rows = q(f"""
+        SELECT id, invoice_number, invoice_date, vendor_name, total_amount,
+               base_amount, tax_amount, category_raw, status, source, source_account,
+               description, raw_file_url, confidence_score, created_at
+        FROM invoices
+        WHERE {where_sql}
+        ORDER BY {sort_col} {order_sql} NULLS LAST
+        LIMIT %s OFFSET %s
+    """, tuple(params) + (page_size, offset))
+
+    # Facets (solo si estamos en página 1, para no recalcular en navegación)
+    facets = {}
+    if page == 1:
+        facets_row = q(f"""
+            SELECT
+              count(DISTINCT source_account) as n_cuentas,
+              count(DISTINCT vendor_name) as n_vendors,
+              count(*) FILTER (WHERE category_raw IS NULL) as n_sin_cat,
+              count(*) FILTER (WHERE raw_file_url IS NOT NULL) as n_con_pdf,
+              coalesce(sum(total_amount), 0) as total_eur,
+              coalesce(avg(total_amount), 0) as ticket_medio
+            FROM invoices WHERE {where_sql}
+        """, tuple(params))[0]
+        facets = {
+            "cuentas": [to_dict(r) for r in q(f"""
+                SELECT source_account, count(*) as n, coalesce(sum(total_amount),0) as total
+                FROM invoices WHERE {where_sql} AND source_account IS NOT NULL
+                GROUP BY source_account ORDER BY n DESC
+            """, tuple(params))],
+            "statuses": [to_dict(r) for r in q(f"""
+                SELECT status, count(*) as n FROM invoices WHERE {where_sql}
+                GROUP BY status ORDER BY n DESC
+            """, tuple(params))],
+            "summary": {
+                "total_facturas": total,
+                "total_eur": float(facets_row["total_eur"]),
+                "ticket_medio": float(facets_row["ticket_medio"]),
+                "vendors_unicos": int(facets_row["n_vendors"]),
+                "facturas_sin_categoria": int(facets_row["n_sin_cat"]),
+                "facturas_con_pdf": int(facets_row["n_con_pdf"]),
+            },
+        }
+
+    return {
+        "rows": [to_dict(r) for r in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "pages": (total + page_size - 1) // page_size,
+        "facets": facets,
+    }
+
+
+@app.get("/api/gastos/stats")
+def api_gastos_stats(user: str = Depends(get_current_user)):
+    """Estadísticas globales de gastos (para header de la vista)."""
+    r = q(f"""
+        SELECT count(*) as total_facturas,
+               coalesce(sum(total_amount), 0) as total_eur,
+               coalesce(avg(total_amount), 0) as ticket_medio,
+               count(distinct vendor_name) as vendors_unicos,
+               count(*) FILTER (WHERE category_id IS NULL) as sin_categoria,
+               count(*) FILTER (WHERE raw_file_url IS NOT NULL) as con_pdf,
+               count(*) FILTER (WHERE raw_file_url IS NULL) as sin_pdf,
+               min(invoice_date) as primera,
+               max(invoice_date) as ultima
+        FROM invoices WHERE {expense_filter()}
+    """)[0]
+    total = int(r["total_facturas"]) or 1
+    return {
+        "total_facturas": total,
+        "total_eur": float(r["total_eur"]),
+        "ticket_medio": float(r["ticket_medio"]),
+        "vendors_unicos": int(r["vendors_unicos"]),
+        "facturas_sin_categoria": int(r["sin_categoria"]),
+        "facturas_con_pdf": int(r["con_pdf"]),
+        "facturas_sin_pdf": int(r["sin_pdf"]),
+        "ratio_pdf_disponible": int(r["con_pdf"]) / total,
+        "primera": r["primera"].isoformat() if r["primera"] else None,
+        "ultima": r["ultima"].isoformat() if r["ultima"] else None,
+    }
+
+
+@app.get("/api/gastos/{factura_id}")
+def api_gastos_detalle(factura_id: str, user: str = Depends(get_current_user)):
+    """Detalle completo de una factura de gasto por id (UUID)."""
+    rows = q("""
+        SELECT i.id, i.invoice_number, i.invoice_date, i.due_date, i.vendor_name,
+               i.vendor_tax_id, i.base_amount, i.tax_amount, i.total_amount, i.currency,
+               i.category_raw, c.name as category_name, c.color as category_color,
+               i.status, i.source, i.source_account, i.description, i.raw_file_url,
+               i.confidence_score, i.created_at, i.updated_at, i.verified_by, i.verified_at,
+               i.tags, i.parsed_json
+        FROM invoices i
+        LEFT JOIN categories c ON c.id = i.category_id
+        WHERE i.id = %s AND i.type = 'expense'
+    """, (factura_id,))
+    if not rows:
+        raise HTTPException(status_code=404, detail="Factura no encontrada")
+    fac = to_dict(rows[0])
+
+    # Pagos asociados (tabla opcional: payments puede no existir en todos los entornos).
+    fac["pagos"] = []
+    try:
+        pagos = q("SELECT payment_date, amount, source, source_detail, reference FROM payments WHERE invoice_id = %s ORDER BY payment_date DESC", (factura_id,))
+        fac["pagos"] = [to_dict(r) for r in pagos]
+    except Exception:
+        pass
+
+    # ¿Existe el PDF en disco?
+    pdf_exists = False
+    pdf_size = None
+    if fac.get("raw_file_url"):
+        try:
+            import os as _os
+            p = fac["raw_file_url"]
+            pdf_exists = _os.path.isfile(p)
+            if pdf_exists:
+                pdf_size = _os.path.getsize(p)
+        except Exception:
+            pass
+
+    fac["pagos"] = fac.get("pagos", [])
+    fac["pdf_exists"] = pdf_exists
+    fac["pdf_size_bytes"] = pdf_size
+    return fac
+
+
+@app.get("/api/gastos/{factura_id}/pdf")
+def api_gastos_pdf(factura_id: str, user: str = Depends(get_current_user)):
+    """Descarga el PDF de una factura (raw_file_url). Solo lectura del archivo."""
+    from fastapi.responses import FileResponse
+    rows = q("SELECT raw_file_url, invoice_number, vendor_name FROM invoices WHERE id = %s AND type = 'expense'", (factura_id,))
+    if not rows:
+        raise HTTPException(status_code=404, detail="Factura no encontrada")
+    r = rows[0]
+    pdf_path = r["raw_file_url"]
+    if not pdf_path:
+        raise HTTPException(status_code=404, detail="Esta factura no tiene PDF asociado")
+    import os as _os
+    if not _os.path.isfile(pdf_path):
+        raise HTTPException(status_code=404, detail=f"PDF no encontrado en disco: {pdf_path}")
+    vendor = (r["vendor_name"] or "vendor").replace(" ", "_").replace("/", "-")[:40]
+    num = (r["invoice_number"] or "sinn").replace("/", "-")[:30]
+    filename = f"{vendor}_{num}.pdf"
+    return FileResponse(pdf_path, media_type="application/pdf", filename=filename)
+
+
+@app.get("/api/gastos/timeline/groups")
+def api_gastos_timeline_groups(user: str = Depends(get_current_user)):
+    """Distribución temporal de gastos por día para heatmap calendario.
+    Grupo por día con total + nº facturas."""
+    return [to_dict(r) for r in q(f"""
+        SELECT to_char(invoice_date, 'YYYY-MM-DD') as dia,
+               count(*) as n,
+               coalesce(sum(total_amount), 0) as total
+        FROM invoices
+        WHERE {expense_filter()}
+          AND invoice_date >= now() - interval '12 months'
+        GROUP BY dia ORDER BY dia
+    """)]
+
+
+@app.get("/api/alertas")
+def api_alertas(user: str = Depends(get_current_user)):
+    """Detector de anomalías y alertas operativas. Todo on-the-fly (SQL), sin LLM.
+    Severidades: high | medium | low | info. Ordenado por severidad."""
+    from datetime import timedelta
+    items = []
+
+    def sev_rank(s):
+        return {"high": 0, "medium": 1, "low": 2, "info": 3}.get(s, 9)
+
+    now = datetime.utcnow()
+
+    # 1. venta_caida: Δ% MoM < -30% (solo si mes actual tiene datos)
+    try:
+        comp = q("""
+            SELECT to_char(date_trunc('month', creation_time), 'YYYY-MM') as mes,
+                   coalesce(sum(total_cents), 0)/100.0 as total
+            FROM lastapp_bills
+            WHERE deleted = false AND creation_time >= date_trunc('month', now()) - interval '1 month'
+            GROUP BY 1
+        """)
+        v = {r["mes"]: float(r["total"]) for r in comp}
+        cur_key = now.strftime("%Y-%m")
+        prev_dt = now.replace(day=1) - timedelta(days=1)
+        prev_key = prev_dt.strftime("%Y-%m")
+        v_cur, v_prev = v.get(cur_key, 0), v.get(prev_key, 0)
+        if v_prev > 0 and v_cur > 0:
+            delta = (v_cur - v_prev) / v_prev * 100
+            if delta < -30:
+                items.append({
+                    "id": "venta_caida_mom",
+                    "severity": "high" if delta < -50 else "medium",
+                    "tipo": "venta_caida",
+                    "titulo": f"Caída del {abs(delta):.0f}% en ventas vs mes anterior",
+                    "descripcion": f"Las ventas de {cur_key} ({v_cur:,.0f}€) son un {abs(delta):.0f}% inferiores a {prev_key} ({v_prev:,.0f}€).".replace(",", "."),
+                    "contexto": {"actual": v_cur, "anterior": v_prev, "delta_pct": round(delta, 1), "periodo": "MoM"},
+                    "accion_sugerida": "Revisar si el sync de Last.app está al día o si hay días sin actividad registrada.",
+                    "cta": {"label": "Analizar en chat", "prefill": f"¿Por qué cayeron las ventas un {abs(delta):.0f}% este mes?"},
+                })
+    except Exception:
+        pass
+
+    # 2. canal_ausente: canal con ventas hace 7d pero 0 en últimos 3d
+    try:
+        canales = q("""
+            WITH reciente AS (
+                SELECT p.type as canal, count(*) as n
+                FROM lastapp_payments p JOIN lastapp_bills b ON b.id = p.bill_id
+                WHERE b.deleted = false AND p.deleted = false
+                  AND b.creation_time >= now() - interval '3 days'
+                GROUP BY p.type
+            ), previo AS (
+                SELECT p.type as canal, count(*) as n
+                FROM lastapp_payments p JOIN lastapp_bills b ON b.id = p.bill_id
+                WHERE b.deleted = false AND p.deleted = false
+                  AND b.creation_time >= now() - interval '7 days'
+                  AND b.creation_time < now() - interval '3 days'
+                GROUP BY p.type
+            )
+            SELECT previo.canal, previo.n as n_prev, coalesce(reciente.n, 0) as n_reciente
+            FROM previo LEFT JOIN reciente ON reciente.canal = previo.canal
+            WHERE previo.n >= 3 AND coalesce(reciente.n, 0) = 0
+        """)
+        for r in canales:
+            items.append({
+                "id": f"canal_ausente_{r['canal']}",
+                "severity": "medium",
+                "tipo": "canal_ausente",
+                "titulo": f"Canal '{r['canal']}' sin ventas en 3 días",
+                "descripcion": f"El canal {r['canal']} tuvo {r['n_prev']} ventas hace 4-7 días pero 0 en los últimos 3 días.",
+                "contexto": {"canal": r["canal"], "n_prev": int(r["n_prev"]), "n_reciente": int(r["n_reciente"])},
+                "accion_sugerida": "Verificar si hay incidencia con el proveedor de delivery o si es estacionalidad.",
+                "cta": {"label": "Ver ventas por canal", "prefill": f"¿Cómo van las ventas del canal {r['canal']} esta semana?"},
+            })
+    except Exception:
+        pass
+
+    # 3. gasto_pico: gasto diario > 2.5× media últimos 30d
+    try:
+        pico = q("""
+            WITH base AS (
+                SELECT coalesce(avg(daily), 0) as media
+                FROM (
+                    SELECT date(invoice_date) as d, sum(total_amount) as daily
+                    FROM invoices
+                    WHERE type = 'expense' AND status != 'rejected' AND is_invoice = true
+                      AND invoice_date >= now() - interval '30 days'
+                    GROUP BY d
+                ) s
+            )
+            SELECT to_char(i.invoice_date, 'YYYY-MM-DD') as dia,
+                   sum(i.total_amount) as total,
+                   b.media
+            FROM invoices i CROSS JOIN base b
+            WHERE i.type = 'expense' AND i.status != 'rejected' AND i.is_invoice = true
+              AND i.invoice_date >= now() - interval '3 days'
+              AND b.media > 0
+            GROUP BY i.invoice_date, b.media
+            HAVING sum(i.total_amount) > b.media * 2.5
+            ORDER BY i.invoice_date DESC LIMIT 3
+        """)
+        for r in pico:
+            ratio = float(r["total"]) / float(r["media"]) if r["media"] else 0
+            items.append({
+                "id": f"gasto_pico_{r['dia']}",
+                "severity": "medium",
+                "tipo": "gasto_pico",
+                "titulo": f"Pico de gasto el {r['dia']} ({ratio:.1f}× la media)",
+                "descripcion": f"El gasto del {r['dia']} ({float(r['total']):.2f}€) es {ratio:.1f} veces la media diaria de los últimos 30 días ({float(r['media']):.2f}€).",
+                "contexto": {"dia": r["dia"], "total": float(r["total"]), "media": float(r["media"]), "ratio": round(ratio, 1)},
+                "accion_sugerida": "Revisar si es un gasto puntual esperado (compra mensual) o un error de categorización.",
+                "cta": {"label": "Ver facturas del día", "prefill": f"Muéstrame las facturas de gasto del {r['dia']}"},
+            })
+    except Exception:
+        pass
+
+    # 4. factura_sin_categoria: facturas nuevas (7d) sin categorizar
+    try:
+        sc = q("""
+            SELECT count(*) as n, coalesce(sum(total_amount), 0) as total
+            FROM invoices
+            WHERE category_id IS NULL AND is_invoice = true AND type = 'expense'
+              AND created_at >= now() - interval '7 days'
+        """)[0]
+        if int(sc["n"]) > 0:
+            items.append({
+                "id": "facturas_sin_categoria",
+                "severity": "low" if int(sc["n"]) < 5 else "medium",
+                "tipo": "factura_sin_categoria",
+                "titulo": f"{sc['n']} facturas nuevas sin categorizar ({float(sc['total']):.0f}€)",
+                "descripcion": f"En los últimos 7 días entraron {sc['n']} facturas sin categoría asignada, sumando {float(sc['total']):.2f}€.",
+                "contexto": {"n": int(sc["n"]), "total": float(sc["total"])},
+                "accion_sugerida": "Revisar y asignar categoría desde la vista de Gastos.",
+                "cta": {"label": "Ver facturas sin categoría", "prefill": "Muéstrame las facturas sin categoría de los últimos 7 días"},
+            })
+    except Exception:
+        pass
+
+    # 5. sync_stale: sync_control con status != ok o muy antiguo
+    try:
+        sync = q("""
+            SELECT source, last_sync, items_processed, errors, status,
+                   extract(epoch from now() - last_sync)/3600 as horas
+            FROM sync_control WHERE status != 'ok' OR last_sync < now() - interval '6 hours'
+        """)
+        for r in sync:
+            horas = float(r["horas"]) if r["horas"] is not None else 0
+            items.append({
+                "id": f"sync_stale_{r['source']}",
+                "severity": "high" if r["status"] == "error" else ("medium" if horas > 12 else "low"),
+                "tipo": "sync_stale",
+                "titulo": f"Sync '{r['source']}' en estado {r['status']}",
+                "descripcion": f"La sincronización de {r['source']} está en estado '{r['status']}' hace {horas:.1f} horas.",
+                "contexto": {"source": r["source"], "horas": round(horas, 1), "status": r["status"], "errors": int(r["errors"] or 0)},
+                "accion_sugerida": "Ejecutar manualmente el collector correspondiente y revisar los logs.",
+                "cta": {"label": "Ver logs", "prefill": f"¿Qué errores hay en el sync de {r['source']}?"},
+            })
+    except Exception:
+        pass
+
+    # 6. facturas_sin_pdf: ratio de facturas sin PDF
+    try:
+        pdf_stats = q(f"""
+            SELECT count(*) as total,
+                   count(*) FILTER (WHERE raw_file_url IS NULL) as sin_pdf
+            FROM invoices WHERE {expense_filter()}
+        """)[0]
+        total_f = int(pdf_stats["total"])
+        sin_pdf = int(pdf_stats["sin_pdf"])
+        if total_f > 0 and sin_pdf / total_f > 0.2:
+            items.append({
+                "id": "facturas_sin_pdf",
+                "severity": "info",
+                "tipo": "facturas_sin_pdf",
+                "titulo": f"{sin_pdf} facturas ({sin_pdf/total_f*100:.0f}%) sin PDF adjunto",
+                "descripcion": f"De {total_f} facturas de gasto, {sin_pdf} no tienen el archivo PDF disponible para descarga.",
+                "contexto": {"total": total_f, "sin_pdf": sin_pdf, "ratio": round(sin_pdf / total_f, 2)},
+                "accion_sugerida": "Informativo. No bloquea la operativa.",
+                "cta": None,
+            })
+    except Exception:
+        pass
+
+    # 7. locales_huerfanos: bills sin location_id (post-migración debería ser 0)
+    try:
+        orphans = q("SELECT count(*) as n FROM lastapp_bills WHERE location_id IS NULL AND deleted = false")[0]
+        n = int(orphans["n"])
+        if n > 0:
+            items.append({
+                "id": "locales_huerfanos",
+                "severity": "low",
+                "tipo": "locales_huerfanos",
+                "titulo": f"{n} facturas sin local asignado",
+                "descripcion": f"Hay {n} facturas de Last.app con location_id NULL. Considerar re-ejecutar la migración 005.",
+                "contexto": {"n": n},
+                "accion_sugerida": "Revisar y ejecutar db/migrations/005_fix_sin_local.sql si procede.",
+                "cta": None,
+            })
+    except Exception:
+        pass
+
+    # 8. duplicado_potencial: facturas con mismo vendor+total±3d
+    try:
+        dups = q("""
+            SELECT count(*) as n FROM (
+                SELECT a.id
+                FROM invoices a JOIN invoices b ON a.id < b.id
+                WHERE a.type = 'expense' AND b.type = 'expense'
+                  AND a.status != 'rejected' AND b.status != 'rejected'
+                  AND a.is_invoice = true AND b.is_invoice = true
+                  AND a.vendor_name = b.vendor_name
+                  AND a.total_amount = b.total_amount
+                  AND abs(a.invoice_date - b.invoice_date) <= 3
+                  AND a.status != 'duplicate' AND b.status != 'duplicate'
+            ) s
+        """)[0]
+        n_dup = int(dups["n"])
+        if n_dup > 0:
+            items.append({
+                "id": "duplicados_potenciales",
+                "severity": "medium",
+                "tipo": "duplicado_potencial",
+                "titulo": f"{n_dup} posibles facturas duplicadas",
+                "descripcion": f"Se detectaron {n_dup} pares de facturas con mismo proveedor, mismo importe y fechas a ±3 días que no están marcadas como duplicadas.",
+                "contexto": {"n": n_dup},
+                "accion_sugerida": "Revisar y marcar como 'duplicate' las que correspondan.",
+                "cta": {"label": "Ver posibles duplicados", "prefill": "Muéstrame las facturas que podrían estar duplicadas"},
+            })
+    except Exception:
+        pass
+
+    items.sort(key=lambda x: sev_rank(x["severity"]))
+    resumen = {"high": 0, "medium": 0, "low": 0, "info": 0}
+    for it in items:
+        resumen[it["severity"]] += 1
+
+    return {
+        "generated_at": now.isoformat() + "Z",
+        "items": items,
+        "resumen": resumen,
+        "total": len(items),
+    }
+
+
 # ── HTML Dashboard ─────────────────────────────────────────────
 
 INDEX_HTML = """<!DOCTYPE html>
@@ -783,6 +1350,8 @@ INDEX_HTML = """<!DOCTYPE html>
       <a class="nav-item active" data-view="dashboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg><span class="nav-label">Dashboard</span></a>
       <a class="nav-item" data-view="ventas"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg><span class="nav-label">Ventas</span></a>
       <a class="nav-item" data-view="gastos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg><span class="nav-label">Gastos</span></a>
+      <a class="nav-item" data-view="gastos-detalle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg><span class="nav-label">Detalle gastos</span></a>
+      <a class="nav-item" data-view="alertas"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg><span class="nav-label">Alertas</span><span class="nav-badge" id="nav-alert-badge"></span></a>
       <div class="nav-section-label">Restaurante</div>
       <a class="nav-item" data-view="productos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18M16 10a4 4 0 0 1-8 0"/></svg><span class="nav-label">Productos</span></a>
       <a class="nav-item" data-view="reservas"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg><span class="nav-label">Reservas</span></a>
@@ -922,6 +1491,74 @@ INDEX_HTML = """<!DOCTYPE html>
       </div>
     </section>
 
+    <!-- ═══ Vista: Gastos Detalle (nueva v6) ═══ -->
+    <section class="view" data-view="gastos-detalle">
+      <!-- Header con stats -->
+      <div class="gd-stats" id="gd-stats">
+        <div class="gd-stat"><span class="gd-stat-label">Facturas</span><b id="gd-stat-n">—</b></div>
+        <div class="gd-stat"><span class="gd-stat-label">Total</span><b id="gd-stat-total">—</b></div>
+        <div class="gd-stat"><span class="gd-stat-label">Ticket medio</span><b id="gd-stat-ticket">—</b></div>
+        <div class="gd-stat"><span class="gd-stat-label">Vendors únicos</span><b id="gd-stat-vendors">—</b></div>
+        <div class="gd-stat"><span class="gd-stat-label">Con PDF</span><b id="gd-stat-pdf">—</b></div>
+      </div>
+
+      <!-- Filtros -->
+      <div class="gd-filters card">
+        <div class="gd-filter-row">
+          <label class="gd-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><input type="text" id="gd-q" placeholder="Buscar factura, vendor, descripción…" autocomplete="off"></label>
+          <label class="gd-field"><span>Desde</span><input type="date" id="gd-from"></label>
+          <label class="gd-field"><span>Hasta</span><input type="date" id="gd-to"></label>
+          <button class="btn primary" id="gd-apply">Aplicar</button>
+          <button class="btn ghost" id="gd-clear">Limpiar</button>
+          <div class="gd-spacer"></div>
+          <a class="btn ghost" href="/api/export/facturas" download title="Exportar CSV">Exportar CSV</a>
+        </div>
+        <div class="gd-filter-row">
+          <label class="gd-field"><span>Vendor</span><input type="text" id="gd-vendor" placeholder="ej. Makro" list="gd-vendors-list" autocomplete="off"></label>
+          <datalist id="gd-vendors-list"></datalist>
+          <label class="gd-field"><span>Categoría</span><input type="text" id="gd-cat" placeholder="ej. Suministros"></label>
+          <label class="gd-field"><span>Cuenta</span><select id="gd-cuenta"><option value="">Todas</option><option value="principal">principal</option><option value="secundaria">secundaria</option></select></label>
+          <label class="gd-field"><span>Status</span><select id="gd-status"><option value="">Todos</option><option value="verified">verified</option><option value="classified">classified</option><option value="pending">pending</option><option value="paid">paid</option></select></label>
+          <label class="gd-field"><span>Importe ≥</span><input type="number" id="gd-min" min="0" step="0.01" placeholder="0"></label>
+          <label class="gd-field"><span>Importe ≤</span><input type="number" id="gd-max" min="0" step="0.01" placeholder="∞"></label>
+        </div>
+      </div>
+
+      <!-- Tabla -->
+      <div class="card">
+        <div class="card-head">
+          <h2>Facturas de gasto</h2>
+          <span class="subtitle" id="gd-result-count">—</span>
+        </div>
+        <div class="card-body" id="gd-table-wrap">
+          <div class="skeleton-table" aria-hidden="true">
+            <div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div>
+            <div class="skeleton-row"></div><div class="skeleton-row"></div>
+          </div>
+        </div>
+        <div class="card-foot">
+          <button class="btn ghost" id="gd-prev" disabled>← Anterior</button>
+          <span id="gd-page-info">—</span>
+          <button class="btn ghost" id="gd-next" disabled>Siguiente →</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ Vista: Alertas (nueva v6) ═══ -->
+    <section class="view" data-view="alertas">
+      <div class="al-header">
+        <div>
+          <h2>🔔 Alertas y anomalías</h2>
+          <span class="subtitle">Detector automático · Última actualización: <span id="al-generated">—</span></span>
+        </div>
+        <div class="al-resumen" id="al-resumen"></div>
+      </div>
+      <div id="al-list" class="al-list">
+        <div class="skeleton-card" aria-hidden="true"></div>
+        <div class="skeleton-card" aria-hidden="true"></div>
+      </div>
+    </section>
+
     <!-- ═══ Vista: Productos (próximamente) ═══ -->
     <section class="view" data-view="productos">
       <div class="coming-soon">
@@ -940,12 +1577,24 @@ INDEX_HTML = """<!DOCTYPE html>
       </div>
     </section>
 
-    <!-- ═══ Vista: Configuración (próximamente) ═══ -->
+    <!-- ═══ Vista: Configuración (nueva v6) ═══ -->
     <section class="view" data-view="config">
-      <div class="coming-soon">
-        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-        <h2>Configuración</h2>
-        <p>Próximamente: objetivos mensuales, fuentes de datos, sincronizaciones y gestión de usuarios.</p>
+      <div class="card">
+        <div class="card-head"><h2>🔌 Fuentes de datos</h2><span class="subtitle">Estado de los conectores</span></div>
+        <div class="card-body" id="cfg-fuentes">
+          <div class="skeleton-card" aria-hidden="true"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>🛠️ Sistema</h2></div>
+        <div class="card-body">
+          <dl class="cfg-list">
+            <dt>Versión dashboard</dt><dd id="cfg-version">—</dd>
+            <dt>Base de datos</dt><dd id="cfg-db">—</dd>
+            <dt>Pool conexiones</dt><dd id="cfg-pool">—</dd>
+            <dt>Documentación</dt><dd><a href="/api/health" target="_blank">/api/health</a> · <a href="/static/app.js" target="_blank">app.js</a> · <a href="https://github.com/anomalyco/opencode" target="_blank" rel="noopener">OpenCode</a></dd>
+          </dl>
+        </div>
       </div>
     </section>
 
@@ -997,14 +1646,42 @@ INDEX_HTML = """<!DOCTYPE html>
     <div class="modal-head"><h3>⌨️ Atajos de teclado</h3><button class="icon-btn" data-close="helpModal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
     <div class="modal-body">
       <table class="kbd-table">
+        <tr><td><kbd>⌘K</kbd> / <kbd>Ctrl+K</kbd></td><td>Command palette</td></tr>
         <tr><td><kbd>/</kbd></td><td>Buscar</td></tr>
         <tr><td><kbd>C</kbd></td><td>Abrir/cerrar asistente AI</td></tr>
         <tr><td><kbd>R</kbd></td><td>Refrescar datos</td></tr>
         <tr><td><kbd>T</kbd></td><td>Cambiar tema claro/oscuro</td></tr>
+        <tr><td><kbd>G</kbd> + <kbd>D/V/G/A/C</kbd></td><td>Ir a Dashboard/Ventas/Gastos/Alertas/Config</td></tr>
         <tr><td><kbd>?</kbd></td><td>Esta ayuda</td></tr>
         <tr><td><kbd>Esc</kbd></td><td>Cerrar ventana activa</td></tr>
       </table>
     </div>
+  </div>
+</div>
+
+<!-- ── Modal: detalle de factura (gastos) ── -->
+<div class="modal-overlay" id="facturaModal">
+  <div class="modal modal-factura" role="dialog" aria-label="Detalle de factura">
+    <div class="modal-head">
+      <h3 id="factura-title">Factura</h3>
+      <button class="icon-btn" data-close="facturaModal" aria-label="Cerrar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+    </div>
+    <div class="modal-body" id="factura-body">Cargando…</div>
+  </div>
+</div>
+
+<!-- ── Toast notifications ── -->
+<div class="toast-container" id="toastContainer" aria-live="polite" aria-atomic="true"></div>
+
+<!-- ── Modal: command palette (⌘K) ── -->
+<div class="modal-overlay" id="paletteModal">
+  <div class="modal modal-palette" role="dialog" aria-label="Command palette">
+    <div class="palette-bar">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+      <input id="paletteInput" type="text" placeholder="Buscar vista, acción o comando…" autocomplete="off">
+      <kbd class="esc-hint">Esc</kbd>
+    </div>
+    <div class="palette-results" id="paletteResults"></div>
   </div>
 </div>
 

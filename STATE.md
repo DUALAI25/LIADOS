@@ -1,29 +1,24 @@
 # Loop State — Liados / Desliado
 
-Last run: 2026-07-06 07:42 (P0-1 + P0-3 resueltos)
+Last run: 2026-07-08 (Entregable A cleanup aplicado en feat/dashboard-v6-premium)
 
-## Resolved (P0 fixed this session)
+## Resolved (P0/P1 fixed this session — feat/dashboard-v6-premium)
 
-- **[P0] `docs/safety.md` vacío** → ✅ Commit `3d60cc8` con denylist específico del proyecto (12 paths críticos + 10 ops, allow-list, protocolo verificación, escalación).
-- **[P0] `STATE.md` working tree sin commit** → ✅ Commit `3d60cc8` incluye STATE.md triage.
+- **[P1] 786 facturas huérfanas `sin-local` en `/api/locales`.** → ✅ Migración `db/migrations/005_fix_sin_local.sql` aplicada: las 786 facturas de `Vamos al lío S.L.` (2026-06-17 → 2026-07-07) ahora tienen `location_id = a8f15efa-...` asignado. Auditoría guardada en `_migration_005_audit`. Post-migración: 0 huérfanos. `/api/locales` ahora devuelve 1 local consolidado con 8757 facturas.
+- **[P1] `loop-ledger.json` inexistente.** → ✅ Creado con schema `{attempts: {<item_id>: [{ts,action,result,hash}]}}`. `scripts/loop_guard.py` implementa check/log/reset/status. Enforcement mecánico del límite de 3 intentos operativo (test verificado).
+- **[P1] 6 scripts legacy en `scripts/` sin documentar.** → ✅ Movidos a `scripts/_legacy/` con `README.md` explicando qué eran y su reemplazo. Ninguno estaba referenciado desde cron/systemd/imports (verificado con grep).
+- **[P1] Confusión `lastapp_sync.py` vs `lastapp_server.py`.** → ✅ **NO son el mismo concepto, NO se deprecó.** `lastapp_sync.py` = sincronización de datos (bills/payments → Postgres), lo usa `run_all.py` y alimenta el dashboard. `lastapp_server.py` = MCP server para el chat agent (productos, reservas, acciones). Sirven funciones distintas y ambos están vivos. STATE.md previo estaba equivocado.
+- **[P2] `agente/mcp/lastapp_server.py.bak.c16`.** → ✅ Confirmado cubierto por `.gitignore:33` (`*.bak.*`), `git check-ignore -v` positivo. No aparece en worktree. Acción opcional de borrado manual sigue abierta para el checkout principal.
 
 ## High Priority (loop is acting or waiting on human)
 
-- **[P0] Gmail collector en `MISSING_TOKEN` (ambas cuentas).** `principal` y `secundaria` requieren reautorización OAuth. No bloquea el dashboard (Last.app lo alimenta), pero rompe el pipeline Gmail→invoices. Acción humana: `python3 -m agente.scripts.gmail_auth --account <cuenta> --force`.
-- **[P0] `main` está 2 commits adelante de `origin/main` sin push.** Commits nuevos: `17ba733 loop-engineering: bootstrap daily-triage L3 (100/100)` + `3d60cc8 fix(safety+state): poblar denylist Liados + STATE.md triage`. Por regla de safety.md, push requiere aprobación humana explícita.
+- **[P0] Gmail collector en `MISSING_TOKEN` (ambas cuentas).** `principal` y `secundaria` requieren reautorización OAuth. No bloquea el dashboard (Last.app lo alimenta), pero rompe el pipeline Gmail→invoices. **Acción en feat/dashboard-v6-premium:** endpoint read-only `/api/admin/gmail-status` + comandos de reauth documentados en la vista Configuración. La reautorización real requiere navegador humano (denylist).
 
 ## Watch List
 
-- **[P1] `lastapp_sync.py` (DEPRECATED) coexiste con `lastapp_server.py` (MCP oficial).** Riesgo de confusión. Confirmar cuál invoca el cron / `run_all`. La rama `feat/lastapp-integration` aún modifica `lastapp_sync.py` (commit `27ac26b`) — puede ser merge conflictivo con main si se mergea.
 - **[P1] 2 ramas remotas `feat/lastapp-*` están stale (detrás de main).** `git log main..origin/feat/lastapp-integration` está vacío; idem `feat/lastapp-official-mcp`. Decisión humana: rebase o cerrar.
-- **[P1] `loop-ledger.json` referenciado en `loop-constraints.md:21` no existe.** Sin enforcement mecánico del límite de 3 intentos. Crear antes de habilitar L2.
 - **[P1] Sin CI formal** (`.github/workflows/` ausente). E2E corre solo vía cron 03:00 (`/etc/cron.d/liados-e2e`). No hay status badge ni PR checks.
-- **[P1] 6 scripts en `scripts/` sin documentar.** `analytics_pull.py`, `analytics_pull_v2.py`, `derive_analytics.py`, `analytics_final.py`, `lastapp_full_pull.py`, `ingest_lastapp.py`. Verificar si están en uso o son legacy (probablemente superseded por `agente/scripts/`).
 - **[P1] Deuda técnica ya conocida** (`CONTRIBUTING.md:57-61`): `open_support_ticket` sin tool remota, `top_products` con args vacíos, `weekly_summary.py` con prints, HTTPS no configurado (depende de reverse proxy externo).
-
-## Cleanup (no rush)
-
-- **[P2] `agente/mcp/lastapp_server.py.bak.c16` (15 KB, 1 jul).** Backup obsoleto. **Ya está cubierto por `.gitignore:33` (`*.bak.*`)** — NO es riesgo de commit accidental (verificado con `git check-ignore -v`). Acción opcional: borrar manualmente.
 
 ## Recent Noise (ignored this run)
 

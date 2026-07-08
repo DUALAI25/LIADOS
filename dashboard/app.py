@@ -1314,6 +1314,46 @@ def api_alertas(user: str = Depends(get_current_user)):
     except Exception:
         pass
 
+    # 9. ticket_anomalo: facturas con importe > 5× la mediana histórica (últimos 6m).
+    #    Detecta outliers como LS1-8242 (13.913€ vs mediana ~22€).
+    try:
+        outliers = q("""
+            WITH stats AS (
+                SELECT
+                    percentile_cont(0.5) WITHIN GROUP (ORDER BY total_cents) as mediana,
+                    count(*) as n
+                FROM lastapp_bills
+                WHERE deleted = false
+                  AND creation_time >= now() - interval '6 months'
+            )
+            SELECT b.id::text, b.number, b.creation_time,
+                   b.total_cents/100.0 as eur,
+                   (b.total_cents::float / NULLIF(s.mediana, 0)) as ratio_mediana,
+                   s.mediana/100.0 as mediana_eur
+            FROM lastapp_bills b, stats s
+            WHERE b.deleted = false
+              AND b.creation_time >= now() - interval '60 days'
+              AND s.n >= 30
+              AND b.total_cents > GREATEST(s.mediana * 5, 50000)
+            ORDER BY ratio_mediana DESC
+            LIMIT 3
+        """)
+        for r in outliers:
+            ratio = float(r["ratio_mediana"]) if r["ratio_mediana"] else 0
+            sev = "high" if ratio >= 50 else ("medium" if ratio >= 10 else "low")
+            items.append({
+                "id": f"ticket_anomalo_{r['id']}",
+                "severity": sev,
+                "tipo": "ticket_anomalo",
+                "titulo": f"Factura outlier {r['number']} ({float(r['eur']):.0f}€, {ratio:.1f}× mediana)",
+                "descripcion": f"La factura {r['number']} del {r['creation_time'].strftime('%Y-%m-%d %H:%M')} tiene un importe de {float(r['eur']):.2f}€, que es {ratio:.1f}× la mediana del último medio año ({float(r['mediana_eur']):.2f}€). Verificar si es legítima (evento grande, backfill) o error de captura.",
+                "contexto": {"id": r["id"], "number": r["number"], "eur": float(r["eur"]), "ratio_mediana": round(ratio, 1), "mediana_eur": float(r["mediana_eur"])},
+                "accion_sugerida": "Comprobar en Last.app que la factura es real. Si es backfill de datos históricos, marcar como verificada. Si es error, corregir el importe.",
+                "cta": {"label": "Ver factura", "prefill": f"Analiza la factura {r['number']} de {float(r['eur']):.0f}€ del {r['creation_time'].strftime('%d/%m/%Y')}"},
+            })
+    except Exception:
+        pass
+
     items.sort(key=lambda x: sev_rank(x["severity"]))
     resumen = {"high": 0, "medium": 0, "low": 0, "info": 0}
     for it in items:

@@ -191,6 +191,34 @@ def q(sql, params=()):
         put_conn(conn)
 
 
+def q_exec(sql, params=()):
+    """Helper: ejecuta INSERT/UPDATE/DELETE y hace commit. Garantiza release del slot.
+    Devuelve las filas devueltas por RETURNING (si lo hay), sino []."""
+    try:
+        conn = get_conn()
+    except psycopg2.pool.PoolError:
+        raise HTTPException(status_code=503, detail="BD sobrecargada, reintenta en unos segundos")
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        try:
+            cur.execute(sql, params)
+            try:
+                result = cur.fetchall()
+            except psycopg2.ProgrammingError:
+                # No hay resultados (no es SELECT ni RETURNING)
+                result = []
+            conn.commit()
+            return result
+        finally:
+            cur.close()
+    except Exception:
+        try: conn.rollback()
+        except: pass
+        raise
+    finally:
+        put_conn(conn)
+
+
 def to_dict(row):
     if row is None:
         return None
@@ -1365,6 +1393,74 @@ def api_alertas(user: str = Depends(get_current_user)):
         "resumen": resumen,
         "total": len(items),
     }
+
+
+# ── API: Gestión de alertas (dismiss / acknowledge) ──────────────
+
+class _AlertAckRequest(BaseModel):
+    alert_id: str
+    note: Optional[str] = None
+
+
+@app.post("/api/alertas/ack")
+def api_alertas_ack(req: _AlertAckRequest, user: str = Depends(get_current_user)):
+    """Marca una alerta como revisada. Persiste en agent_logs (no crea tabla nueva).
+
+    Body: {"alert_id": "ticket_anomalo_xxx", "note": "verificado en Last.app"}
+
+    Devuelve: {"ack_id": "uuid", "alert_id": "...", "acked_at": "...", "acked_by": "jefe"}
+    """
+    try:
+        details = {
+            "alert_id": req.alert_id,
+            "note": req.note or "",
+            "acked_by": user,
+        }
+        # Insertar como log de tipo 'info' (no es warning/error, es ack)
+        rows = q_exec("""
+            INSERT INTO agent_logs (source, level, message, details)
+            VALUES ('alertas', 'info', %s, %s::jsonb)
+            RETURNING id, timestamp
+        """, (f"ack: {req.alert_id}", json.dumps(details, ensure_ascii=False)))
+        new_id = str(rows[0]["id"])
+        ts = rows[0]["timestamp"].isoformat() if rows[0]["timestamp"] else datetime.utcnow().isoformat()
+        return {"ack_id": new_id, "alert_id": req.alert_id, "acked_at": ts, "acked_by": user}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error guardando ack: {e}")
+
+
+@app.get("/api/alertas/ack")
+def api_alertas_ack_list(user: str = Depends(get_current_user)):
+    """Lista los acks de alertas (últimos 100). Útil para sincronizar entre dispositivos."""
+    try:
+        rows = q("""
+            SELECT id, timestamp,
+                   details->>'alert_id' as alert_id_extracted,
+                   details->>'note' as note_extracted,
+                   details->>'acked_by' as acked_by_extracted
+            FROM agent_logs
+            WHERE source = 'alertas' AND level = 'info' AND message LIKE 'ack: %%'
+            ORDER BY timestamp DESC
+            LIMIT 100
+        """)
+        return {
+            "acks": [
+                {
+                    "ack_id": str(r["id"]),
+                    "alert_id": r["alert_id_extracted"],
+                    "note": r["note_extracted"],
+                    "acked_by": r["acked_by_extracted"],
+                    "acked_at": r["timestamp"].isoformat() if r["timestamp"] else None,
+                }
+                for r in rows
+            ],
+            "total": len(rows),
+        }
+    except Exception as e:
+        import traceback as _tb
+        print('[api_alertas_ack_list] ERROR:', repr(e))
+        _tb.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error listando acks: {e}")
 
 
 # ── HTML Dashboard ─────────────────────────────────────────────

@@ -823,3 +823,38 @@ button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
   .view { display: block !important; page-break-after: always; }
   body { background: #fff; color: #000; }
 }
+
+/* v6.0.2: Alertas - estilos para revisión/dismiss */
+.al-ack {
+  background: rgba(34,197,94,.18);
+  color: #22c55e;
+  border: 1px solid rgba(34,197,94,.3);
+  padding: 5px 12px;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  font-size: var(--fz-xs);
+  font-weight: 600;
+}
+.al-ack:hover { background: rgba(34,197,94,.3); }
+.al-acked {
+  display: inline-flex;
+  align-items: center;
+  background: rgba(34,197,94,.15);
+  color: #22c55e;
+  padding: 5px 12px;
+  border-radius: var(--r-md);
+  font-size: var(--fz-xs);
+  font-weight: 600;
+  cursor: default;
+}
+.al-card.al-acked { opacity: .6; border-color: rgba(34,197,94,.3); }
+.al-card.al-acked .al-stripe { background: #22c55e !important; }
+.al-note {
+  color: var(--fg-2);
+  font-size: var(--fz-sm);
+  margin: var(--s-2) 0;
+  padding: 6px 10px;
+  background: rgba(34,197,94,.08);
+  border-left: 3px solid #22c55e;
+  border-radius: var(--r-sm);
+}

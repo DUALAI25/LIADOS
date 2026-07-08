@@ -420,10 +420,14 @@ async function loadAlertas() {
     if (r.info) resumenParts.push(`<span class="al-pill al-pill-info">${r.info} info</span>`);
     if (resumenParts.length === 0) resumenParts.push('<span class="al-pill al-pill-ok">✓ Todo OK</span>');
     $('#al-resumen').innerHTML = resumenParts.join('');
-    // Badge en nav
+    // Badge en nav (solo cuenta las no-revisadas)
+    const acks = await _loadAcks();
+    const ackedIds = new Set(acks.map(a => a.alert_id));
+    const pendingHigh = data.items.filter(a => a.severity === 'high' && !ackedIds.has(a.id)).length;
+    const pendingMed = data.items.filter(a => a.severity === 'medium' && !ackedIds.has(a.id)).length;
     const badge = $('#nav-alert-badge');
     if (badge) {
-      const total = r.high + r.medium;
+      const total = pendingHigh + pendingMed;
       badge.textContent = total > 0 ? total : '';
       badge.style.display = total > 0 ? 'inline-block' : 'none';
     }
@@ -434,14 +438,20 @@ async function loadAlertas() {
     const dismissed = JSON.parse(localStorage.getItem('liados_alerts_dismissed') || '{}');
     const now = Date.now();
     list.innerHTML = data.items.map(a => {
+      const isAcked = ackedIds.has(a.id);
+      const ackInfo = acks.find(x => x.alert_id === a.id);
       const isDismissed = dismissed[a.id] && (now - dismissed[a.id] < 24*3600*1000);
-      const dismissBtn = isDismissed ? '' : `<button class="al-dismiss" data-id="${esc(a.id)}" aria-label="Descartar alerta">✕</button>`;
+      const dismissBtn = (isAcked || isDismissed) ? '' : `<button class="al-dismiss" data-id="${esc(a.id)}" aria-label="Descartar alerta">✕</button>`;
+      const ackBtn = isAcked
+        ? `<span class="al-acked" title="Revisada por ${esc(ackInfo?.acked_by || '')} el ${esc((ackInfo?.acked_at || '').replace('T',' ').slice(0,16))}">✓ Revisada</span>`
+        : `<button class="al-ack" data-id="${esc(a.id)}">✓ Marcar revisada</button>`;
       const cta = a.cta
         ? (a.cta.prefill
             ? `<button class="al-cta" data-prefill="${esc(a.cta.prefill)}">${esc(a.cta.label||'Abrir en chat')} →</button>`
             : `<button class="al-cta" data-prefill="${esc(a.titulo)}">${esc(a.cta.label||'Abrir en chat')} →</button>`)
         : '';
-      return `<article class="al-card al-${esc(a.severity)} ${isDismissed?'al-dismissed':''}" role="alert" aria-label="Alerta ${a.severity}: ${esc(a.titulo)}">
+      const cardClass = isAcked ? 'al-card al-acked al-' + esc(a.severity) : `al-card al-${esc(a.severity)} ${isDismissed?'al-dismissed':''}`;
+      return `<article class="${cardClass}" role="alert" aria-label="Alerta ${a.severity}: ${esc(a.titulo)}">
         <div class="al-stripe"></div>
         <div class="al-body">
           <div class="al-head">
@@ -452,14 +462,16 @@ async function loadAlertas() {
           </div>
           <p class="al-desc">${esc(a.descripcion)}</p>
           ${a.accion_sugerida ? `<p class="al-accion">💡 <b>Acción:</b> ${esc(a.accion_sugerida)}</p>` : ''}
+          ${isAcked && ackInfo?.note ? `<p class="al-note"><b>📝 Nota:</b> ${esc(ackInfo.note)}</p>` : ''}
           <div class="al-foot">
             ${cta}
+            ${ackBtn}
             <span class="al-ts">Detectada: ${esc(data.generated_at.replace('T',' ').replace('Z',' UTC'))}</span>
           </div>
         </div>
       </article>`;
     }).join('');
-    // Wire dismiss
+    // Wire dismiss (ocultar 24h local)
     $$('.al-dismiss').forEach(b => b.onclick = () => {
       const id = b.getAttribute('data-id');
       const d = JSON.parse(localStorage.getItem('liados_alerts_dismissed') || '{}');
@@ -469,11 +481,50 @@ async function loadAlertas() {
       if (card) { card.style.transition = 'opacity .3s, transform .3s'; card.style.opacity = '0'; card.style.transform = 'translateX(20px)'; setTimeout(() => card.remove(), 300); }
       toast('Alerta descartada (24h)', 'info');
     });
+    // Wire "Marcar revisada" -> POST /api/alertas/ack
+    $$('.al-ack').forEach(b => b.onclick = async () => {
+      const id = b.getAttribute('data-id');
+      const note = prompt('Nota opcional sobre esta alerta (ej: "verificado en Last.app"):', '');
+      // prompt cancelado = null, no guardamos
+      try {
+        b.disabled = true;
+        b.textContent = 'Guardando...';
+        await _postJSON('/api/alertas/ack', {alert_id: id, note: note || ''});
+        toast('✓ Alerta marcada como revisada (persiste en servidor)', 'success');
+        await loadAlertas();  // re-render para mostrar el cambio
+      } catch(e) {
+        toast('Error al marcar: ' + e.message, 'error');
+        b.disabled = false;
+        b.textContent = '✓ Marcar revisada';
+      }
+    });
     // Wire CTA
     $$('.al-cta').forEach(b => b.onclick = () => chatPrefill(b.getAttribute('data-prefill')));
   } catch(e) {
     list.innerHTML = '<div class="state error"><div class="title">Error</div><div class="desc">' + esc(e.message) + '</div></div>';
   }
+}
+
+// Carga la lista de acks desde el backend (cache simple para evitar golpear en cada render)
+let _acksCache = null;
+let _acksCacheTime = 0;
+async function _loadAcks() {
+  const now = Date.now();
+  if (_acksCache && (now - _acksCacheTime) < 30_000) return _acksCache;
+  try {
+    const data = await getJSON('/api/alertas/ack');
+    _acksCache = data.acks || [];
+    _acksCacheTime = now;
+    return _acksCache;
+  } catch(e) {
+    return _acksCache || [];
+  }
+}
+
+async function _postJSON(url, body) {
+  const r = await _fetchAuth(url, {method: 'POST', json: body});
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
 }
 
 function sevLabel(s) {
@@ -987,10 +1038,34 @@ async function sendMsg(){
   let toolsUsed = [];
   let pending = null;
   let toolsChip = null;       // contenedor de chips de tools (live)
+  let streamOk = false;       // true si el stream emitio al menos un evento util
+
+  // v6.0.2: timeout duro. Si el stream no emite nada en 90s, fallback a /api/chat.
+  const STREAM_TIMEOUT_MS = 90_000;
+  let streamTimer = setTimeout(() => {
+    if (!streamOk) {
+      console.warn('[chat] stream timeout, fallback a /api/chat');
+      if (typing.parentNode) typing.remove();
+      // Fallback no-stream
+      _fallbackNonStream(msg);
+    }
+  }, STREAM_TIMEOUT_MS);
 
   try {
     const r = await _fetchAuth('/api/chat/stream', { method:'POST', json:{message:msg, history:chatHistory} });
-    if (!r.ok) throw new Error('HTTP '+r.status);
+    if (!r.ok) {
+      clearTimeout(streamTimer);
+      // Si el stream rechaza con 429 (rate limit) o 5xx, fallback al no-stream
+      console.warn('[chat] stream fallo HTTP', r.status, '- fallback');
+      if (typing.parentNode) typing.remove();
+      return _fallbackNonStream(msg);
+    }
+    if (!r.body || !r.body.getReader) {
+      clearTimeout(streamTimer);
+      console.warn('[chat] body sin getReader, fallback');
+      if (typing.parentNode) typing.remove();
+      return _fallbackNonStream(msg);
+    }
     const reader = r.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -1006,7 +1081,14 @@ async function sendMsg(){
         let type='', data='';
         for (const l of lines) { if (l.startsWith('event: ')) type=l.slice(7); else if (l.startsWith('data: ')) data=l.slice(6); }
         if (!type) continue;
-        const payload = data ? JSON.parse(data) : {};
+        let payload = {};
+        try { payload = data ? JSON.parse(data) : {}; } catch(e) {
+          // JSON parcial por corte de buffer: ignorar y seguir (evento siguiente lo traera completo)
+          console.warn('[chat] JSON.parse fallo:', data?.substring(0, 80));
+          continue;
+        }
+        streamOk = true;
+        clearTimeout(streamTimer);  // ya tenemos datos, desactivamos timeout
 
         if (type === 'tool') {
           if (typing.parentNode) typing.remove();
@@ -1037,19 +1119,60 @@ async function sendMsg(){
         } else if (type === 'error') {
           if (typing.parentNode) typing.remove();
           if (toolsChip) toolsChip.remove();
-          addMsg('⚠️ '+(payload.message||'Error desconocido'),'error');
+          addMsg('⚠️ '+(payload.message||'Error del agente'),'error');
           return;
         }
       }
     }
-    // Si no llegó evento done (caída de conexión)
-    if (!botMsg && fullReply === '') { if (typing.parentNode) typing.remove(); addMsg('Sin respuesta del servidor.','error'); }
+    // Si no llegó evento done (caída de conexión tras tokens)
+    if (!streamOk) {
+      if (typing.parentNode) typing.remove();
+      addMsg('Sin respuesta del stream.','error');
+    } else if (!botMsg && fullReply === '') {
+      if (typing.parentNode) typing.remove();
+      addMsg('Stream cerrado sin respuesta.','error');
+    }
   } catch(e) {
+    clearTimeout(streamTimer);
+    console.error('[chat] sendMsg error:', e);
     if (typing.parentNode) typing.remove();
     if (toolsChip) toolsChip.remove();
-    addMsg('Error de conexión: '+e.message,'error');
+    addMsg('Error de conexión: '+e.message+'. Probando fallback...','error');
+    // Fallback silencioso al endpoint no-stream
+    _fallbackNonStream(msg);
+  } finally {
+    clearTimeout(streamTimer);
+    $('#chatSend').disabled=false; $('#chatText').focus();
   }
-  $('#chatSend').disabled=false; $('#chatText').focus();
+}
+
+// v6.0.2: Fallback al endpoint no-stream cuando el stream falla o se agota el timeout.
+async function _fallbackNonStream(originalMsg) {
+  try {
+    addMsg('🔄 Conectando con modo alternativo...', 'bot');
+    const r = await _fetchAuth('/api/chat', { method:'POST', json:{message: originalMsg, history: chatHistory} });
+    if (!r.ok) {
+      addMsg('❌ Error HTTP '+r.status+' (rate limit o servidor caído). Espera unos segundos.', 'error');
+      return;
+    }
+    const d = await r.json();
+    if (d.reply) {
+      addMsg(mdToHtml(d.reply), 'bot');
+      chatHistory = [...chatHistory, {role:'user',content:originalMsg}, {role:'assistant',content:d.reply}].slice(-20);
+      saveHist();
+      if (d.pending_confirmation && d.pending_confirmation.token) {
+        pendingToken = d.pending_confirmation.token;
+        showConfirm(d.pending_confirmation);
+      }
+    } else {
+      addMsg('❌ Respuesta vacía del servidor.', 'error');
+    }
+  } catch(e) {
+    console.error('[chat] fallback error:', e);
+    addMsg('❌ Error en fallback: '+e.message, 'error');
+  } finally {
+    $('#chatSend').disabled=false; $('#chatText').focus();
+  }
 }
 
 function showConfirm(p){

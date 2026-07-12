@@ -180,30 +180,73 @@ def get_drive_status(account="principal"):
     }
 
 
-def get_drive_oauth_url(account="principal", redirect_port=8085):
-    """Genera URL para OAuth flow Drive-only."""
+def get_drive_oauth_url(account="principal", redirect_port=None):
+    """Genera URL para OAuth flow Drive-only. Persiste PKCE para reuse en exchange."""
+    import pickle
     from google_auth_oauthlib.flow import InstalledAppFlow
 
     cred_file, _ = _get_credentials_paths(account)
     flow = InstalledAppFlow.from_client_secrets_file(cred_file, scopes=DRIVE_SCOPES)
-    flow.redirect_uri = f"http://localhost:{redirect_port}/"
+    flow.redirect_uri = (
+        f"http://localhost:{redirect_port}/" if redirect_port
+        else "http://localhost/"
+    )
     auth_url, _ = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",  # forzar refresh_token
     )
+    # Persistir PKCE state para que exchange_code_for_token pueda reuse el verifier
+    pkce_file = f"/tmp/drive_pkce_{account}.pkl"
+    try:
+        with open(pkce_file, "wb") as f:
+            pickle.dump({
+                "code_verifier": flow.code_verifier,
+                "client_config": flow.client_config,
+                "redirect_uri": flow.redirect_uri,
+                "scopes": DRIVE_SCOPES,
+            }, f)
+        os.chmod(pkce_file, 0o600)
+    except Exception as e:
+        logger.warning(f"No se pudo persistir PKCE state: {e}")
     return auth_url
 
 
-def exchange_code_for_token(account, code, redirect_port=8085):
-    """Intercambia code OAuth por token Drive."""
+def exchange_code_for_token(account, code, redirect_port=None):
+    """Intercambia code OAuth por token Drive. Reusa PKCE del auth-url previo."""
+    import pickle
     from google_auth_oauthlib.flow import InstalledAppFlow
 
     cred_file, tok_file = _get_credentials_paths(account)
     flow = InstalledAppFlow.from_client_secrets_file(cred_file, scopes=DRIVE_SCOPES)
-    flow.redirect_uri = f"http://localhost:{redirect_port}/"
+    flow.redirect_uri = (
+        f"http://localhost:{redirect_port}/" if redirect_port
+        else "http://localhost/"
+    )
+    # Reusar PKCE del auth-url si existe (CRITICO para que fetch_token funcione)
+    pkce_file = f"/tmp/drive_pkce_{account}.pkl"
+    pkce_state = None
+    if os.path.exists(pkce_file):
+        with open(pkce_file, "rb") as f:
+            pkce_state = pickle.load(f)
+        # Aplicar PKCE al flow
+        flow.code_verifier = pkce_state["code_verifier"]
+        flow.redirect_uri = pkce_state["redirect_uri"]
+
+    # Google agrega scopes ya autorizados (gmail.readonly) al token Drive,
+    # y oauthlib levanta Warning por scope-change. Variable de entorno
+    # oficial OAUTHLIB_RELAX_TOKEN_SCOPE=1 lo desactiva.
+    # Debe estar ANTES de que oauthlib cargue, por eso va al inicio del script.
+    import os as _os
+    _os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
     flow.fetch_token(code=code)
     creds = flow.credentials
+    # Limpiar PKCE temp tras uso exitoso
+    if os.path.exists(pkce_file):
+        try:
+            os.remove(pkce_file)
+        except Exception:
+            pass
     _persist_token(
         tok_file,
         creds,
@@ -224,7 +267,7 @@ def main(argv=None):
     parser.add_argument("action", choices=["status", "auth-url", "exchange"])
     parser.add_argument("arg", nargs="?", default=None)
     parser.add_argument("--account", default="principal")
-    parser.add_argument("--redirect-port", type=int, default=8085)
+    parser.add_argument("--redirect-port", type=int, default=None)
     args = parser.parse_args(argv)
 
     if args.action == "status":

@@ -5,7 +5,7 @@
    - Fallback explicito: si la red falla y no hay cache, devuelve un JSON
      con error (no un HTML "Offline" que seria confuso para una API). */
 
-const CACHE_NAME = 'liados-static-v2';
+const CACHE_NAME = 'liados-static-v3';
 const STATIC_ASSETS = [
   '/static/tokens.css',
   '/static/app.css',

@@ -42,9 +42,9 @@ def section(title):
 # ── 1. Salud ────────────────────────────────────────────────────
 section("Salud")
 r = requests.get(f"{HOST}/api/health", timeout=TIMEOUT)
-check("GET /api/health", r.ok and r.json().get("version", "").startswith("5"),
+check("GET /api/health", r.ok and r.json().get("version", "").startswith("6"),
       f"status={r.status_code} body={r.text[:100]}")
-check("version 5.x", "5." in r.json().get("version", ""), r.json().get("version"))
+check("version 6.x", "6." in r.json().get("version", ""), r.json().get("version"))
 
 # ── 2. KPIs y charts ───────────────────────────────────────────
 section("KPIs y charts")
@@ -290,6 +290,105 @@ check("cancel token invalido -> ok o 4xx", r.status_code < 500, f"{r.status_code
 # Body sin confirmation_token -> 422 (validacion pydantic)
 r = requests.post(f"{HOST}/api/chat/confirm", auth=AUTH, json={})
 check("confirm body vacio -> 422", r.status_code == 422, f"{r.status_code}")
+
+
+# ── 10. v6: Gastos desglosados (nuevo Entregable D1) ─────────────
+section("v6: Gastos desglosados (Entregable D1)")
+r = requests.get(f"{HOST}/api/gastos?page=1&page_size=10", auth=AUTH, timeout=TIMEOUT)
+check("GET /api/gastos", r.ok, f"{r.status_code}")
+if r.ok:
+    d = r.json()
+    check("gastos.total es int", isinstance(d.get("total"), int), str(d)[:80])
+    check("gastos.rows es lista", isinstance(d.get("rows"), list), "")
+    check("gastos.page es 1", d.get("page") == 1, f"page={d.get('page')}")
+    check("gastos.facets.summary existe", "summary" in d.get("facets", {}), "")
+
+# Filtros combinados
+r = requests.get(f"{HOST}/api/gastos?vendor=Makro&min_eur=100", auth=AUTH, timeout=TIMEOUT)
+check("GET /api/gastos con filtros", r.ok, f"{r.status_code}")
+if r.ok:
+    d = r.json()
+    check("filtro Makro+min100 reduce resultados", d["total"] < 500, f"total={d['total']}")
+
+# Stats
+r = requests.get(f"{HOST}/api/gastos/stats", auth=AUTH, timeout=TIMEOUT)
+check("GET /api/gastos/stats", r.ok, f"{r.status_code}")
+if r.ok:
+    d = r.json()
+    check("stats.total_facturas > 0", d.get("total_facturas", 0) > 0, str(d)[:80])
+    check("stats.vendors_unicos > 0", d.get("vendors_unicos", 0) > 0, "")
+
+# Detalle
+r = requests.get(f"{HOST}/api/gastos?page=1&page_size=1", auth=AUTH, timeout=TIMEOUT)
+if r.ok and r.json().get("rows"):
+    fid = r.json()["rows"][0]["id"]
+    r2 = requests.get(f"{HOST}/api/gastos/{fid}", auth=AUTH, timeout=TIMEOUT)
+    check(f"GET /api/gastos/{{id}} ({fid[:8]})", r2.ok, f"{r2.status_code}")
+    if r2.ok:
+        d = r2.json()
+        check("detalle tiene vendor_name", "vendor_name" in d, "")
+        check("detalle tiene total_amount", "total_amount" in d, "")
+        check("detalle tiene pdf_exists (bool)", isinstance(d.get("pdf_exists"), bool), "")
+
+# Detalle con id inválido -> 404
+r = requests.get(f"{HOST}/api/gastos/00000000-0000-0000-0000-000000000000", auth=AUTH, timeout=TIMEOUT)
+check("GET /api/gastos/<id-inexistente> -> 404", r.status_code == 404, f"{r.status_code}")
+
+# Timeline
+r = requests.get(f"{HOST}/api/gastos/timeline/groups", auth=AUTH, timeout=TIMEOUT)
+check("GET /api/gastos/timeline/groups", r.ok, f"{r.status_code}")
+if r.ok:
+    d = r.json()
+    check("timeline es lista", isinstance(d, list), "")
+    check("timeline con grupos", len(d) > 0, f"len={len(d)}")
+
+# Auth
+r = requests.get(f"{HOST}/api/gastos", timeout=TIMEOUT)
+check("/api/gastos sin auth -> 401", r.status_code == 401, f"{r.status_code}")
+
+
+# ── 11. v6: Alertas (nuevo Entregable D2) ────────────────────────
+section("v6: Alertas (Entregable D2)")
+r = requests.get(f"{HOST}/api/alertas", auth=AUTH, timeout=TIMEOUT)
+check("GET /api/alertas", r.ok, f"{r.status_code}")
+if r.ok:
+    d = r.json()
+    check("alertas.generated_at existe", "generated_at" in d, "")
+    check("alertas.items es lista", isinstance(d.get("items"), list), "")
+    check("alertas.resumen tiene 4 niveles", set(d.get("resumen", {}).keys()) >= {"high","medium","low","info"}, "")
+    check("alertas.total == len(items)", d.get("total") == len(d.get("items", [])), f"total={d.get('total')} len={len(d.get('items', []))}")
+    if d.get("items"):
+        a = d["items"][0]
+        check("alerta tiene severity", a.get("severity") in {"high","medium","low","info"}, str(a)[:80])
+        check("alerta tiene titulo", bool(a.get("titulo")), "")
+        check("alerta tiene descripcion", bool(a.get("descripcion")), "")
+        check("alerta tiene accion_sugerida", bool(a.get("accion_sugerida")), "")
+
+r = requests.get(f"{HOST}/api/alertas", timeout=TIMEOUT)
+check("/api/alertas sin auth -> 401", r.status_code == 401, f"{r.status_code}")
+
+
+# ── 12. v6: Gmail status (nuevo Entregable B) ────────────────────
+section("v6: Gmail status (Entregable B)")
+r = requests.get(f"{HOST}/api/admin/gmail-status", auth=AUTH, timeout=TIMEOUT)
+check("GET /api/admin/gmail-status", r.ok, f"{r.status_code}")
+if r.ok:
+    d = r.json()
+    check("gmail-status.accounts es lista", isinstance(d.get("accounts"), list), "")
+    # Verificar que NO hay campos con nombres de tokens secretos (solo flags booleanos has_*).
+    serialized = json.dumps(d)
+    check("gmail-status NO expone 'refresh_token' como campo",
+          '"refresh_token"' not in serialized, f"LEAK: {serialized[:200]}")
+    check("gmail-status NO expone 'access_token' como campo",
+          '"access_token"' not in serialized, f"LEAK: {serialized[:200]}")
+    check("gmail-status NO expone 'client_secret'",
+          '"client_secret"' not in serialized, f"LEAK: {serialized[:200]}")
+    for a in d.get("accounts", []):
+        check(f"cuenta {a['account']} tiene status", "status" in a, "")
+
+r = requests.get(f"{HOST}/api/admin/gmail-status", timeout=TIMEOUT)
+check("/api/admin/gmail-status sin auth -> 401", r.status_code == 401, f"{r.status_code}")
+
 
 # ── Resumen ─────────────────────────────────────────────────────
 print(f"\n{'='*60}")

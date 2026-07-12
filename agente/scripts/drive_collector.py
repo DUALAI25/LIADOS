@@ -28,7 +28,11 @@ import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from io import BytesIO
+from googleapiclient.http import MediaIoBaseDownload
+
 from db_connection import get_conn
+from is_invoice_filter import is_invoice_attachment
 
 # Carga .env manualmente (igual que gmail_collector)
 try:
@@ -71,7 +75,8 @@ VALID_MIME_TYPES = (
 RAW_SUBPATH = "data/invoices/raw"
 
 # Sync control table: misma que gmail_collector usa
-SYNC_KEY = "drive"
+# SYNC_KEY_PREFIX + account = "drive:principal" (debe matchear sync_control CHECK constraint)
+SYNC_KEY_PREFIX = "drive"
 
 
 def get_drive_accounts():
@@ -81,42 +86,19 @@ def get_drive_accounts():
 
 
 def get_folder_id_for_account(account):
-    """Si GMAIL_ACCOUNTS=principal, busca DRIVE_FOLDER_ID_principal en env."""
-    return os.getenv(f"DRIVE_FOLDER_ID_{account}", "").strip() or "root"
+    """Devuelve LISTA de folder IDs para la cuenta.
+
+    Soporta DRIVE_FOLDER_ID_<account> con uno o varios IDs separados por coma.
+    Si no existe la variable, devuelve ["root"] (todo el Drive).
+    """
+    raw = os.getenv(f"DRIVE_FOLDER_ID_{account}", "").strip()
+    if not raw:
+        return ["root"]
+    return [f.strip() for f in raw.split(",") if f.strip()]
 
 
-def get_last_sync(key):
-    """Lee timestamp del ultimo sync exitoso. None si nunca ha corrido."""
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT last_sync_at FROM sync_control WHERE key = %s",
-            (key,)
-        )
-        row = cur.fetchone()
-        if row and row[0]:
-            return row[0]
-        return None
-    finally:
-        put_conn(conn)
-
-
-def update_last_sync(key, ts=None):
-    """Persiste timestamp del ultimo sync."""
-    if ts is None:
-        ts = datetime.now(timezone.utc)
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO sync_control (key, last_sync_at)
-            VALUES (%s, %s)
-            ON CONFLICT (key) DO UPDATE SET last_sync_at = EXCLUDED.last_sync_at
-        """, (key, ts))
-        conn.commit()
-    finally:
-        put_conn(conn)
+# Reusar db_writer (mismo patron que gmail_collector)
+from db_writer import get_last_sync, update_last_sync
 
 
 def put_conn(conn):
@@ -167,6 +149,56 @@ def list_drive_files(service, folder_id="root", modified_after=None, page_size=1
     return files
 
 
+def list_drive_files_recursive(service, folder_id, modified_after=None, page_size=100, depth=0, max_depth=10):
+    """Lista archivos recursivamente entrando en subcarpetas.
+
+    Devuelve lista plana con todos los archivos encontrados bajo folder_id
+    y todas sus subcarpetas hasta max_depth.
+    """
+    if depth > max_depth:
+        logger.warning(f"Drive recursion depth > {max_depth}, parando en {folder_id}")
+        return []
+
+    # Listar archivos directos (filtro mime valido)
+    files = list_drive_files(service, folder_id, modified_after, page_size)
+
+    # Listar subcarpetas y recursar.
+    # NO filtramos subcarpetas por modified_after: una carpeta de 2025 puede
+    # contener PDFs de 2026. Solo filtramos al listar ARCHIVOS finales.
+    q = [
+        f"'{folder_id}' in parents",
+        "trashed = false",
+        "mimeType = 'application/vnd.google-apps.folder'",
+    ]
+    query = " and ".join(q)
+
+    subfolder_files = []
+    page_token = None
+    while True:
+        kwargs = {
+            "q": query,
+            "pageSize": page_size,
+            "fields": "nextPageToken, files(id,name)",
+            "supportsAllDrives": True,
+            "includeItemsFromAllDrives": True,
+        }
+        if page_token:
+            kwargs["pageToken"] = page_token
+        resp = service.files().list(**kwargs).execute()
+        for sub in resp.get("files", []):
+            subfolder_files.extend(
+                list_drive_files_recursive(
+                    service, sub["id"], modified_after, page_size,
+                    depth=depth + 1, max_depth=max_depth
+                )
+            )
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+
+    return files + subfolder_files
+
+
 def download_drive_file(service, file_id, dest_path):
     """Descarga archivo de Drive a dest_path. Devuelve bytes escritos."""
     Path(dest_path).parent.mkdir(parents=True, exist_ok=True)
@@ -192,10 +224,10 @@ def process_account(account, dry_run=False):
 
     Returns: (processed, errors, dry_report_dict_or_None)
     """
-    folder_id = get_folder_id_for_account(account)
-    logger.info(f"[drive:{account}] carpeta Drive: {folder_id}")
+    folder_ids = get_folder_id_for_account(account)
+    logger.info(f"[drive:{account}] carpetas Drive: {folder_ids}")
 
-    last_sync = get_last_sync(f"{SYNC_KEY}:{account}")
+    last_sync = get_last_sync(f"{SYNC_KEY_PREFIX}:{account}")
     # Ventana inicial: 30 dias si nunca ha corrido
     if last_sync is None:
         from os import getenv as _ge
@@ -212,7 +244,11 @@ def process_account(account, dry_run=False):
         raise RuntimeError(f"Drive token no OK para {account}: {status}")
 
     # Listar archivos candidatos
-    files = list_drive_files(service, folder_id=folder_id, modified_after=last_sync)
+    files = []
+    for fid in folder_ids:
+        sub = list_drive_files_recursive(service, fid, modified_after=last_sync)
+        logger.info(f"[drive:{account}] {len(sub)} archivos en carpeta {fid} (recursivo)")
+        files.extend(sub)
     logger.info(f"[drive:{account}] {len(files)} archivos candidatos")
 
     if dry_run:
@@ -228,8 +264,13 @@ def process_account(account, dry_run=False):
 
     for f in files:
         name = f.get("name", "")
-        if not is_likely_invoice(name):
-            logger.debug(f"[drive:{account}] saltando {name} (no parece factura)")
+        try:
+            is_inv, reason = is_invoice_attachment(name, subject=None)
+        except Exception as e:
+            logger.warning(f"[drive:{account}] is_invoice_filter fallo {name}: {e}")
+            is_inv, reason = True, "filter_unavailable"
+        if not is_inv:
+            logger.debug(f"[drive:{account}] saltando {name} (no-factura: {reason})")
             continue
 
         file_id = f["id"]
@@ -286,11 +327,26 @@ def process_account(account, dry_run=False):
             with open(final_path, "rb") as fh:
                 content_bytes = fh.read()
             # parse_invoice espera path o bytes; ajustar segun firma
-            try:
-                parsed = parse_invoice(final_path)
-            except TypeError:
-                # Si parse_invoice toma bytes, fallback
-                parsed = parse_invoice(content_bytes)
+            # parse_invoice(file_path_or_content, mime_type, filename)
+            # El mime del archivo Drive se infiere del nombre (Drive ya filtro por extension)
+            mime = "application/pdf"
+            if name.lower().endswith((".jpg", ".jpeg")):
+                mime = "image/jpeg"
+            elif name.lower().endswith(".png"):
+                mime = "image/png"
+            elif name.lower().endswith(".webp"):
+                mime = "image/webp"
+            elif name.lower().endswith(".heic"):
+                mime = "image/heic"
+            parsed = parse_invoice(final_path, mime, name) or {}
+            # Detectar facturas rechazadas por el parser (heuristica: confidence muy baja o explicitamente no-factura)
+            is_actually_invoice = parsed.get('is_invoice', True)
+            confidence = parsed.get('confidence_score', 0.0) or 0.0
+            if not is_actually_invoice or confidence < 0.3:
+                logger.info(f"[drive:{account}] no-factura {name} (conf={confidence:.2f})")
+                # Insertar como is_invoice=false (igual que el auto-reject del flujo normal)
+                parsed['is_invoice'] = False
+                parsed['category_raw'] = None
 
             # Insertar en BD
             invoice_id = _insert_invoice(
@@ -299,7 +355,7 @@ def process_account(account, dry_run=False):
                 source_account=account,
                 file_path=final_path,
                 content_hash=content_hash,
-                parsed=parsed or {},
+                parsed=parsed,
             )
             logger.info(f"[drive:{account}] OK {name} -> {invoice_id}")
             processed += 1
@@ -308,18 +364,23 @@ def process_account(account, dry_run=False):
             errors += 1
 
     # Update sync_control
-    update_last_sync(f"{SYNC_KEY}:{account}")
+    update_last_sync(f"{SYNC_KEY_PREFIX}:{account}")
     logger.info(f"[drive:{account}] processed={processed} errors={errors}")
     return processed, errors, None
 
 
 def _insert_invoice(source, source_id, source_account, file_path, content_hash, parsed):
-    """Inserta fila en tabla invoices con los campos parseados. Devuelve UUID."""
+    """Inserta fila en tabla invoices con los campos parseados. Devuelve UUID.
+
+    is_invoice: respeta lo que decidio el parser (default True si no viene).
+    category_raw: puede ser None si no es factura.
+    """
     import uuid
     conn = get_conn()
     try:
         cur = conn.cursor()
         invoice_id = str(uuid.uuid4())
+        is_inv = bool(parsed.get('is_invoice', True))
         cur.execute("""
             INSERT INTO invoices (
                 id, type, source, source_id, source_account, raw_file_url,
@@ -331,10 +392,24 @@ def _insert_invoice(source, source_id, source_account, file_path, content_hash, 
                 %s, 'expense', %s, %s, %s, %s,
                 %s, %s, %s, %s, %s,
                 %s, %s, %s, %s,
-                %s, %s, %s, 'classified', true,
+                %s, %s, %s, 'classified', %s,
                 NOW(), NOW()
             )
             ON CONFLICT (source, source_id) DO UPDATE SET
+                invoice_number = EXCLUDED.invoice_number,
+                invoice_date = EXCLUDED.invoice_date,
+                vendor_name = EXCLUDED.vendor_name,
+                vendor_tax_id = EXCLUDED.vendor_tax_id,
+                base_amount = EXCLUDED.base_amount,
+                tax_amount = EXCLUDED.tax_amount,
+                total_amount = EXCLUDED.total_amount,
+                currency = EXCLUDED.currency,
+                category_raw = EXCLUDED.category_raw,
+                description = EXCLUDED.description,
+                confidence_score = EXCLUDED.confidence_score,
+                is_invoice = EXCLUDED.is_invoice,
+                raw_file_url = EXCLUDED.raw_file_url,
+                content_hash = EXCLUDED.content_hash,
                 updated_at = NOW()
             RETURNING id
         """, (
@@ -351,10 +426,15 @@ def _insert_invoice(source, source_id, source_account, file_path, content_hash, 
             parsed.get("category_raw"),
             parsed.get("description"),
             parsed.get("confidence_score", 0.5),
+            is_inv,
         ))
         row = cur.fetchone()
         conn.commit()
         return row[0] if row else invoice_id
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"_insert_invoice failed for {source}:{source_id}: {e}")
+        raise
     finally:
         put_conn(conn)
 

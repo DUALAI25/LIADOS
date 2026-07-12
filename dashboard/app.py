@@ -1080,10 +1080,14 @@ def api_gastos_desglose(
     where_sql = " AND ".join(where_parts)
 
     # SELECT campos necesarios para todas las dimensiones posibles
+    # JOIN categories para devolver la FK canonica (no el category_raw libre)
     rows = q(f"""
-        SELECT vendor_name, category_raw, source_account, source, status,
-               invoice_date, total_amount
-        FROM invoices
+        SELECT i.vendor_name,
+               COALESCE(c.name, i.category_raw) as category,
+               i.source_account, i.source, i.status,
+               i.invoice_date, i.total_amount
+        FROM invoices i
+        LEFT JOIN categories c ON c.id = i.category_id
         WHERE {where_sql}
         LIMIT 5000
     """, tuple(params))
@@ -1136,20 +1140,47 @@ def api_gastos_reclasificar(
     update_params = []
     field_map = {
         "vendor_name": "vendor_name",
-        "category_raw": "category_raw",
+        "category_raw": None,  # especial: se traduce a category_id (FK)
+        "category_name": None,  # alias para buscar por nombre canonico
         "total_amount_cents": None,  # especial
         "invoice_date": "invoice_date",
         "description": "description",
     }
     for key, col in field_map.items():
-        if key in payload:
-            if key == "total_amount_cents":
-                # convertir euros a céntimos
-                update_parts.append(f"{col or 'total_amount'} = %s")
-                update_params.append(int(payload[key] * 100))
-            elif col:
-                update_parts.append(f"{col} = %s")
-                update_params.append(payload[key])
+        if key not in payload:
+            continue
+        if key == "total_amount_cents":
+            # convertir euros a céntimos
+            update_parts.append(f"{col or 'total_amount'} = %s")
+            update_params.append(int(payload[key] * 100))
+        elif key == "category_raw":
+            # Lookup en categories por nombre canonico
+            cr_value = payload[key].strip()
+            cat_rows = q("SELECT id FROM categories WHERE LOWER(name) = LOWER(%s)", (cr_value,))
+            if cat_rows:
+                update_parts.append("category_id = %s")
+                update_params.append(cat_rows[0]['id'])
+            else:
+                # Si no existe la categoria, la creamos
+                new_cat = q_exec_returning(
+                    "INSERT INTO categories (name) VALUES (%s) ON CONFLICT (name) DO UPDATE SET name=EXCLUDED.name RETURNING id",
+                    (cr_value,)
+                )
+                update_parts.append("category_id = %s")
+                update_params.append(new_cat)
+            # Tambien guardamos el category_raw para auditoria
+            update_parts.append("category_raw = %s")
+            update_params.append(cr_value)
+        elif key == "category_name":
+            # Alias de category_raw
+            cn_value = payload[key].strip()
+            cat_rows = q("SELECT id FROM categories WHERE LOWER(name) = LOWER(%s)", (cn_value,))
+            if cat_rows:
+                update_parts.append("category_id = %s")
+                update_params.append(cat_rows[0]['id'])
+        elif col:
+            update_parts.append(f"{col} = %s")
+            update_params.append(payload[key])
     # Alias: total_amount (euros) -> total_amount (cents)
     if "total_amount" in payload:
         update_parts.append("total_amount = %s")

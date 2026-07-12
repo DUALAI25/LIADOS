@@ -27,6 +27,10 @@ from psycopg2.extras import RealDictCursor
 
 # Chat conversacional (wrapper sobre agent.py, sin modificarlo).
 from dashboard import chat as chat_engine
+try:
+    from agente.scripts.oauth_drive import get_drive_status as _gd_status
+except Exception:
+    def _gd_status(account): return {"account": account, "status": "NOT_AVAILABLE", "error": "oauth_drive no importable"}
 
 app = FastAPI(title="Liados Dashboard", version="6.0.0")
 security = HTTPBasic()
@@ -1000,6 +1004,24 @@ def api_gastos(
         "facets": facets,
     }
 
+
+
+
+# ── API: Google Drive status (read-only) ────────────────────────
+
+@app.get("/api/admin/gdrive-status")
+def api_gdrive_status(user: str = Depends(get_current_user)):
+    """Estado de los tokens Drive de las cuentas configuradas. SOLO LECTURA."""
+    accounts_env = os.getenv("GMAIL_ACCOUNTS", "").strip()
+    configured = [a.strip() for a in accounts_env.split(",") if a.strip()] if accounts_env else []
+    result = []
+    for acc in configured:
+        try:
+            entry = _gd_status(acc)
+        except Exception as e:
+            entry = {"account": acc, "error": str(e)}
+        result.append(entry)
+    return {"accounts": result}
 
 # ── API: Gastos desglose (Entregable D2) ─────────────────────────
 

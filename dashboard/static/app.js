@@ -235,12 +235,66 @@ async function renderGastosDetalle() {
     const el = $('#'+id);
     if (el) el.onkeydown = (e) => { if (e.key === 'Enter') { GD.page = 1; loadGastos(); } };
   });
+  // Wire desglose
+  const desgloseBtn = $('#gd-desglose-apply');
+  if (desgloseBtn && !desgloseBtn._wired) {
+    desgloseBtn._wired = true;
+    desgloseBtn.onclick = renderDesglose;
+  }
   loadGastos();
+  // Auto-cargar desglose inicial
+  if (desgloseBtn) renderDesglose();
 }
 
 async function refreshGastosDetalle() {
   // Re-carga sin resetear paginación (para refresh manual)
   loadGastos();
+}
+
+// ── v7: Desglose multidimensional ──────────────────────────────────────
+async function renderDesglose() {
+  const wrap = $('#gd-desglose-results');
+  if (!wrap) return;
+  const dims = $('#gd-desglose-dims')?.value || 'category';
+  const metric = $('#gd-desglose-metric')?.value || 'sum';
+  const minEur = $('#gd-desglose-min')?.value;
+  wrap.innerHTML = '<div class="muted">⏳ Calculando desglose…</div>';
+  try {
+    const p = new URLSearchParams();
+    p.set('group_by', dims);
+    p.set('metric', metric);
+    if (minEur) p.set('min_eur', minEur);
+    const data = await getJSON('/api/gastos/desglose?' + p.toString());
+    if (!data.rows || data.rows.length === 0) {
+      wrap.innerHTML = '<div class="muted">Sin datos para esta agrupación</div>';
+      return;
+    }
+    // Renderizar como tabla con barra visual
+    const maxVal = Math.max(...data.rows.map(r => Number(r.value) || 0));
+    const dimLabels = { category:'Categoría', vendor:'Proveedor', month:'Mes', quarter:'Trimestre', cuenta:'Cuenta', source:'Origen', status:'Estado' };
+    const cols = dims.split(',').map(d => ({ key: d, label: dimLabels[d.trim()] || d }));
+    const metricLabel = { sum:'Suma €', count:'Nº', avg:'Media €', max:'Máx €' }[metric] || metric;
+    const isMoney = metric === 'sum' || metric === 'avg' || metric === 'max';
+    const formatVal = (v) => isMoney ? eur(v).replace('€','€') : new Intl.NumberFormat('es-ES').format(v);
+
+    // Cabecera: una columna por cada dimensión + métricas
+    const headCols = cols.map(c => `<th>${esc(c.label)}</th>`).join('') +
+      `<th class="num">Nº</th><th class="num">${esc(metricLabel)}</th><th style="width:40%">Distribución</th>`;
+    const rows = data.rows.map(r => {
+      const dimCells = cols.map(c => {
+        const v = r[c.key];
+        return `<td>${v == null ? '<span class="muted">—</span>' : esc(String(v))}</td>`;
+      }).join('');
+      const v = Number(r.value) || 0;
+      const pct = maxVal > 0 ? (v / maxVal * 100) : 0;
+      const barColor = '#06B6D4';
+      return `<tr>${dimCells}<td class="num">${(r.count||0).toLocaleString('es-ES')}</td><td class="num"><b>${formatVal(v)}</b></td><td><div class="gd-bar" style="background:linear-gradient(90deg, ${barColor} 0%, ${barColor} ${pct.toFixed(1)}%, transparent ${pct.toFixed(1)}%);height:18px;border-radius:3px"></div></td></tr>`;
+    }).join('');
+    wrap.innerHTML = `<div class="table-wrap"><table class="gd-desglose-table"><thead><tr>${headCols}</tr></thead><tbody>${rows}</tbody></table></div>`;
+  } catch(e) {
+    wrap.innerHTML = '<div class="state error"><div class="title">Error</div><div class="desc">' + esc(e.message) + '</div></div>';
+    toast('Error en desglose: ' + e.message, 'error');
+  }
 }
 
 function buildGastosParams() {
@@ -333,6 +387,13 @@ async function loadGastos() {
   }
 }
 
+// ── v7: Reclasificar (modal) ───────────────────────────────────────────
+const CATEGORIES = [
+  'Suministros','Restauración y Hostelería','Servicios Profesionales',
+  'Marketing y Publicidad','Alquiler','Impuestos y Tasas','Gastos Bancarios',
+  'Software y SaaS','Oficina','Otros','Seguros','Telecomunicaciones','Viajes y Transporte'
+];
+
 async function openFacturaModal(id) {
   openModal('facturaModal');
   $('#factura-body').innerHTML = '<div class="skeleton-card"></div>';
@@ -343,6 +404,9 @@ async function openFacturaModal(id) {
     const cat = f.category_name
       ? `<span class="pill" style="background:${esc(f.category_color||'#6b7280')};color:#fff">${esc(f.category_name)}</span>`
       : (f.category_raw ? `<span class="pill">${esc(f.category_raw)}</span>` : '<span class="muted">sin categoría</span>');
+    const catOptions = CATEGORIES.map(c =>
+      `<option value="${esc(c)}" ${(f.category_name===c||f.category_raw===c)?'selected':''}>${esc(c)}</option>`
+    ).join('');
     const pdfBlock = f.raw_file_url
       ? (f.pdf_exists
           ? `<a class="btn primary" href="/api/gastos/${id}/pdf" target="_blank" rel="noopener" download>📄 Ver/Descargar PDF (${(f.pdf_size_bytes/1024).toFixed(1)} KB)</a>`
@@ -379,6 +443,22 @@ async function openFacturaModal(id) {
       </div>
       <div class="factura-actions">
         <button class="btn ghost" onclick="chatPrefill('Analiza la factura ${esc(f.invoice_number||id)} de ${esc((f.vendor_name||'').replace(/'/g, ''))}')">💬 Abrir en chat AI</button>
+        <button class="btn ghost" id="reclass-toggle-${esc(id)}" onclick="toggleReclassPanel('${esc(id)}')">✏️ Reclasificar</button>
+      </div>
+      <div class="reclass-panel" id="reclass-panel-${esc(id)}" style="display:none">
+        <h4>Reclasificar factura</h4>
+        <div class="reclass-form">
+          <label class="gd-field"><span>Nueva categoría</span>
+            <select id="reclass-cat-${esc(id)}">${catOptions}</select>
+          </label>
+          <label class="gd-field"><span>Motivo (auditoría)</span>
+            <input type="text" id="reclass-reason-${esc(id)}" placeholder="ej. era marketing, no oficina">
+          </label>
+          <div class="reclass-buttons">
+            <button class="btn primary" onclick="submitReclass('${esc(id)}')">Guardar reclasificación</button>
+            <button class="btn ghost" onclick="toggleReclassPanel('${esc(id)}')">Cancelar</button>
+          </div>
+        </div>
       </div>
     `;
   } catch(e) {
@@ -394,6 +474,36 @@ function chatPrefill(text) {
     $('#chatText').value = text;
     $('#chatText').focus();
   }, 200);
+}
+
+// ── v7: Reclasificar (handlers) ────────────────────────────────────────
+function toggleReclassPanel(id) {
+  const p = $('#reclass-panel-' + id);
+  if (p) p.style.display = (p.style.display === 'none' ? 'block' : 'none');
+}
+
+async function submitReclass(id) {
+  const cat = $('#reclass-cat-' + id)?.value;
+  const reason = $('#reclass-reason-' + id)?.value?.trim();
+  if (!cat) { toast('Selecciona una categoría', 'error'); return; }
+  if (!reason) { toast('El motivo es obligatorio (auditoría)', 'error'); return; }
+  try {
+    const r = await _fetchAuth('/api/gastos/' + id + '/reclasificar', {
+      method: 'POST',
+      json: { category_raw: cat, reason: reason }
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || r.statusText);
+    }
+    const data = await r.json();
+    toast(`✓ Reclasificada a «${cat}»`, 'ok');
+    toggleReclassPanel(id);
+    // Refrescar modal con nuevos datos
+    openFacturaModal(id);
+  } catch(e) {
+    toast('Error reclasificando: ' + e.message, 'error');
+  }
 }
 
 // ── v6: Alertas (detector de anomalías) ─────────────────────────────────

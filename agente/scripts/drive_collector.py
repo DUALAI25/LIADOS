@@ -363,8 +363,11 @@ def process_account(account, dry_run=False):
             logger.error(f"[drive:{account}] parse/insert fallo {name}: {e}")
             errors += 1
 
-    # Update sync_control
-    update_last_sync(f"{SYNC_KEY_PREFIX}:{account}")
+    # Update sync_control SOLO si procesamos archivos (sino la siguiente corrida se queda sin ventana)
+    if processed > 0:
+        update_last_sync(f"{SYNC_KEY_PREFIX}:{account}")
+    else:
+        logger.info(f"[drive:{account}] sin archivos nuevos, last_sync no actualizado")
     logger.info(f"[drive:{account}] processed={processed} errors={errors}")
     return processed, errors, None
 

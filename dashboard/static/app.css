@@ -858,3 +858,56 @@ button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
   border-left: 3px solid #22c55e;
   border-radius: var(--r-sm);
 }
+
+/* v7: Desglose multidimensional */
+.gd-desglose-card { margin-top: var(--s-4); }
+.gd-desglose-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+  align-items: flex-end;
+  margin-bottom: var(--s-4);
+}
+.gd-desglose-controls .gd-field { min-width: 160px; }
+.gd-desglose-results {
+  margin-top: var(--s-3);
+  overflow-x: auto;
+}
+.gd-desglose-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.gd-desglose-table th,
+.gd-desglose-table td {
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--bg-2, rgba(255,255,255,.08));
+}
+.gd-desglose-table th.num,
+.gd-desglose-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.gd-desglose-table tbody tr:hover {
+  background: rgba(255,255,255,.03);
+}
+
+/* v7: Reclasificador modal */
+.reclass-panel {
+  margin-top: var(--s-4);
+  padding: var(--s-3);
+  background: rgba(6,182,212,.06);
+  border: 1px solid rgba(6,182,212,.25);
+  border-radius: var(--r-md);
+}
+.reclass-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  margin-top: var(--s-2);
+}
+.reclass-buttons {
+  display: flex;
+  gap: var(--s-2);
+  justify-content: flex-end;
+}

@@ -1204,6 +1204,13 @@ def api_gastos_reclasificar(
     # Insertar en tabla de auditoría (si existe; si no, la creamos)
     # Usamos un INSERT idempotente: si la tabla no existe, la creamos on-the-fly.
     # En producción la tabla se crea via migración 005.
+    import json as _json
+    from decimal import Decimal as _Dec
+    from datetime import date as _Date, datetime as _DateTime
+    class _JsonSafeEncoder(_json.JSONEncoder):
+        def default(self, o):
+            if isinstance(o, (_Dec, _Date, _DateTime)): return str(o)
+            return super().default(o)
     try:
         q_exec("""
             INSERT INTO invoice_corrections
@@ -1213,9 +1220,8 @@ def api_gastos_reclasificar(
             factura_id,
             user,
             payload.get("reason", ""),
-            # No tenemos jsonb adapter nativo en psycopg2 -> usamos json.dumps
-            __import__("json").dumps({k: str(v) for k, v in old.items()}),
-            __import__("json").dumps({k: payload.get(k, old.get(k)) for k in ["vendor_name","category_raw","total_amount","invoice_date","description"]}),
+            _json.dumps({k: str(v) for k, v in old.items()}, cls=_JsonSafeEncoder),
+            _json.dumps({k: payload.get(k, old.get(k)) for k in ["vendor_name","category_raw","total_amount","invoice_date","description"]}, cls=_JsonSafeEncoder),
         ))
     except psycopg2.errors.UndefinedTable:
         # Tabla no existe: la creamos y reintentamos (one-shot)
@@ -1247,11 +1253,13 @@ def api_gastos_reclasificar(
             factura_id,
             user,
             payload.get("reason", ""),
-            __import__("json").dumps({k: str(v) for k, v in old.items()}),
-            __import__("json").dumps({k: payload.get(k, old.get(k)) for k in ["vendor_name","category_raw","total_amount","invoice_date","description"]}),
+            _json.dumps({k: str(v) for k, v in old.items()}, cls=_JsonSafeEncoder),
+            _json.dumps({k: payload.get(k, old.get(k)) for k in ["vendor_name","category_raw","total_amount","invoice_date","description"]}, cls=_JsonSafeEncoder),
         ))
-    except Exception:
-        pass  # auditoría best-effort
+    except Exception as _aud_err:
+        # NO tragamos el error: si la auditoría falla, lo logueamos para investigar.
+        import logging as _logging
+        _logging.getLogger("dashboard.app").error(f"reclasificar auditoria fallo: {_aud_err!r}", exc_info=True)
 
     # Devolver la fila actualizada
     new = q("""
@@ -1912,6 +1920,46 @@ INDEX_HTML = """<!DOCTYPE html>
         <div class="gd-stat"><span class="gd-stat-label">Ticket medio</span><b id="gd-stat-ticket">—</b></div>
         <div class="gd-stat"><span class="gd-stat-label">Vendors únicos</span><b id="gd-stat-vendors">—</b></div>
         <div class="gd-stat"><span class="gd-stat-label">Con PDF</span><b id="gd-stat-pdf">—</b></div>
+      </div>
+
+      <!-- Desglose multidimensional -->
+      <div class="card gd-desglose-card">
+        <div class="card-head">
+          <h2>📊 Desglose multidimensional</h2>
+          <span class="subtitle">Agrupar facturas por varias dimensiones</span>
+        </div>
+        <div class="card-body">
+          <div class="gd-desglose-controls">
+            <label class="gd-field"><span>Agrupar por</span>
+              <select id="gd-desglose-dims">
+                <option value="category">Categoría</option>
+                <option value="vendor">Proveedor</option>
+                <option value="month">Mes</option>
+                <option value="quarter">Trimestre</option>
+                <option value="cuenta">Cuenta (Gmail)</option>
+                <option value="source">Origen (gmail/drive/erp)</option>
+                <option value="status">Estado</option>
+                <option value="category,month">Categoría × Mes</option>
+                <option value="category,vendor">Categoría × Proveedor</option>
+              </select>
+            </label>
+            <label class="gd-field"><span>Métrica</span>
+              <select id="gd-desglose-metric">
+                <option value="sum">Suma €</option>
+                <option value="count">Nº facturas</option>
+                <option value="avg">Ticket medio €</option>
+                <option value="max">Importe máximo €</option>
+              </select>
+            </label>
+            <label class="gd-field"><span>Importe ≥ €</span>
+              <input type="number" id="gd-desglose-min" min="0" step="0.01" placeholder="0">
+            </label>
+            <button class="btn primary" id="gd-desglose-apply">Aplicar desglose</button>
+          </div>
+          <div id="gd-desglose-results" class="gd-desglose-results">
+            <div class="muted">Selecciona agrupación + métrica y pulsa «Aplicar desglose»</div>
+          </div>
+        </div>
       </div>
 
       <!-- Filtros -->

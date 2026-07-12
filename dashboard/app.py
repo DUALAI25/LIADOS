@@ -1001,6 +1001,220 @@ def api_gastos(
     }
 
 
+# ── API: Gastos desglose (Entregable D2) ─────────────────────────
+
+@app.get("/api/gastos/desglose")
+def api_gastos_desglose(
+    group_by: str = Query(..., description="Dimensiones separadas por coma. Ej: category,month"),
+    metric: str = Query("sum", description="count|sum|avg|min|max"),
+    date_from: str = Query(None, description="YYYY-MM-DD"),
+    date_to: str = Query(None, description="YYYY-MM-DD"),
+    cuenta: str = Query(None, description="Filtrar por source_account"),
+    status: str = Query(None, description="Filtrar por status"),
+    min_eur: float = Query(None, ge=0),
+    max_eur: float = Query(None, ge=0),
+    user: str = Depends(get_current_user),
+):
+    """Desglose multidimensional de gastos.
+
+    Devuelve filas agrupadas por las dimensiones indicadas con la métrica aplicada.
+
+    Ejemplo de uso:
+        /api/gastos/desglose?group_by=category,month&metric=sum
+        /api/gastos/desglose?group_by=vendor&metric=avg&min_eur=100
+    """
+    from dashboard.desglose import build_desglose, normalize_invoice_row, DesgloseError
+    from urllib.parse import unquote_plus
+
+    # Parsear dimensiones (max 4)
+    dims = [d.strip() for d in group_by.split(",") if d.strip()]
+
+    # Validar metric
+    if metric not in ("count", "sum", "avg", "min", "max"):
+        raise HTTPException(status_code=422, detail=f"metric inválida: {metric}")
+
+    # Construir WHERE dinámico
+    where_parts = [expense_filter()]
+    params = []
+    if date_from:
+        where_parts.append("invoice_date >= %s")
+        params.append(date_from)
+    if date_to:
+        where_parts.append("invoice_date <= %s")
+        params.append(date_to)
+    if cuenta:
+        where_parts.append("source_account = %s")
+        params.append(cuenta)
+    if status:
+        where_parts.append("status = %s")
+        params.append(status)
+    if min_eur is not None:
+        where_parts.append("total_amount >= %s")
+        params.append(int(min_eur * 100))
+    if max_eur is not None:
+        where_parts.append("total_amount <= %s")
+        params.append(int(max_eur * 100))
+
+    where_sql = " AND ".join(where_parts)
+
+    # SELECT campos necesarios para todas las dimensiones posibles
+    rows = q(f"""
+        SELECT vendor_name, category_raw, source_account, source, status,
+               invoice_date, total_amount
+        FROM invoices
+        WHERE {where_sql}
+        LIMIT 5000
+    """, tuple(params))
+
+    # Normalizar y delegar al módulo
+    norm_rows = [normalize_invoice_row(dict(r)) for r in rows]
+
+    try:
+        out = build_desglose(norm_rows, dims, metric)
+    except DesgloseError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    return out
+
+
+@app.post("/api/gastos/{factura_id}/reclasificar")
+def api_gastos_reclasificar(
+    factura_id: str,
+    payload: dict,
+    user: str = Depends(get_current_user),
+):
+    """Reclasifica una factura existente (manual override).
+
+    Body esperado (todos opcionales; sólo se actualizan los enviados):
+        {
+            "vendor_name": str,
+            "category_raw": str,
+            "total_amount": float (en euros),
+            "invoice_date": "YYYY-MM-DD",
+            "description": str,
+            "reason": str (motivo, requerido para auditoría)
+        }
+    """
+    if not payload.get("reason"):
+        raise HTTPException(status_code=422, detail="Falta 'reason' para auditar el cambio")
+
+    # Verificar que la factura existe y es expense
+    rows = q(
+        "SELECT id, vendor_name, category_raw, total_amount, invoice_date, status "
+        "FROM invoices WHERE id = %s AND type = 'expense'",
+        (factura_id,)
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Factura no encontrada")
+
+    old = dict(rows[0])
+
+    # Construir UPDATE dinámico (sólo campos enviados)
+    update_parts = []
+    update_params = []
+    field_map = {
+        "vendor_name": "vendor_name",
+        "category_raw": "category_raw",
+        "total_amount_cents": None,  # especial
+        "invoice_date": "invoice_date",
+        "description": "description",
+    }
+    for key, col in field_map.items():
+        if key in payload:
+            if key == "total_amount_cents":
+                # convertir euros a céntimos
+                update_parts.append(f"{col or 'total_amount'} = %s")
+                update_params.append(int(payload[key] * 100))
+            elif col:
+                update_parts.append(f"{col} = %s")
+                update_params.append(payload[key])
+    # Alias: total_amount (euros) -> total_amount (cents)
+    if "total_amount" in payload:
+        update_parts.append("total_amount = %s")
+        update_params.append(int(float(payload["total_amount"]) * 100))
+
+    if not update_parts:
+        raise HTTPException(status_code=422, detail="No hay campos para actualizar")
+
+    update_parts.append("verified_by = %s")
+    update_params.append(user)
+    update_parts.append("verified_at = NOW()")
+    update_parts.append("updated_at = NOW()")
+    update_params.append(factura_id)
+
+    sql = f"UPDATE invoices SET {', '.join(update_parts)} WHERE id = %s"
+    try:
+        q_exec(sql, tuple(update_params))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error actualizando: {e}")
+
+    # Insertar en tabla de auditoría (si existe; si no, la creamos)
+    # Usamos un INSERT idempotente: si la tabla no existe, la creamos on-the-fly.
+    # En producción la tabla se crea via migración 005.
+    try:
+        q_exec("""
+            INSERT INTO invoice_corrections
+                (invoice_id, user_id, reason, before_json, after_json, created_at)
+            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, NOW())
+        """, (
+            factura_id,
+            user,
+            payload.get("reason", ""),
+            # No tenemos jsonb adapter nativo en psycopg2 -> usamos json.dumps
+            __import__("json").dumps({k: str(v) for k, v in old.items()}),
+            __import__("json").dumps({k: payload.get(k, old.get(k)) for k in ["vendor_name","category_raw","total_amount","invoice_date","description"]}),
+        ))
+    except psycopg2.errors.UndefinedTable:
+        # Tabla no existe: la creamos y reintentamos (one-shot)
+        conn = get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS invoice_corrections (
+                    id BIGSERIAL PRIMARY KEY,
+                    invoice_id UUID NOT NULL,
+                    user_id TEXT NOT NULL,
+                    reason TEXT,
+                    before_json JSONB,
+                    after_json JSONB,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_invoice_corrections_invoice
+                    ON invoice_corrections(invoice_id);
+            """)
+            conn.commit()
+        finally:
+            put_conn(conn)
+        # Reintentar
+        q_exec("""
+            INSERT INTO invoice_corrections
+                (invoice_id, user_id, reason, before_json, after_json, created_at)
+            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, NOW())
+        """, (
+            factura_id,
+            user,
+            payload.get("reason", ""),
+            __import__("json").dumps({k: str(v) for k, v in old.items()}),
+            __import__("json").dumps({k: payload.get(k, old.get(k)) for k in ["vendor_name","category_raw","total_amount","invoice_date","description"]}),
+        ))
+    except Exception:
+        pass  # auditoría best-effort
+
+    # Devolver la fila actualizada
+    new = q("""
+        SELECT i.id, i.vendor_name, i.category_raw, i.total_amount, i.invoice_date,
+               i.description, i.status, i.verified_by, i.verified_at, i.updated_at
+        FROM invoices i WHERE id = %s
+    """, (factura_id,))
+
+    if not new:
+        raise HTTPException(status_code=500, detail="Factura desapareció tras update")
+
+    out = to_dict(new[0])
+    out["correction_reason"] = payload.get("reason")
+    return out
+
+
 @app.get("/api/gastos/stats")
 def api_gastos_stats(user: str = Depends(get_current_user)):
     """Estadísticas globales de gastos (para header de la vista)."""
@@ -1109,6 +1323,7 @@ def api_gastos_timeline_groups(user: str = Depends(get_current_user)):
           AND invoice_date >= now() - interval '12 months'
         GROUP BY dia ORDER BY dia
     """)]
+
 
 
 @app.get("/api/alertas")

@@ -24,6 +24,9 @@ from typing import Optional, List
 import psycopg2
 from psycopg2 import pool as pgpool
 from psycopg2.extras import RealDictCursor
+import logging as _logging
+
+logger = _logging.getLogger(__name__)
 
 # Chat conversacional (wrapper sobre agent.py, sin modificarlo).
 from dashboard import chat as chat_engine
@@ -32,7 +35,7 @@ try:
 except Exception:
     def _gd_status(account): return {"account": account, "status": "NOT_AVAILABLE", "error": "oauth_drive no importable"}
 
-app = FastAPI(title="Liados Dashboard", version="6.0.0")
+app = FastAPI(title="Liados Dashboard", version="7.1.0")
 security = HTTPBasic()
 
 # Servir assets estaticos (fuentes, css, js) sin auth (son publicos, sin secretos).
@@ -69,6 +72,14 @@ async def _security_headers(request: Request, call_next):
     )
     if request.url.path in no_cache_paths:
         resp.headers['Cache-Control'] = 'no-cache, must-revalidate'
+    # v7.1 PRO: endpoints /api/* autenticados no deben cachearse en proxies
+    # compartidos (riesgo de fuga entre usuarios). Vary: Authorization es
+    # importante por si un CDN intermedio cachea por Authorization header.
+    elif request.url.path.startswith('/api/'):
+        # Solo si no es /api/health (que es publica)
+        if not request.url.path.startswith('/api/health'):
+            resp.headers['Cache-Control'] = 'private, no-store'
+            resp.headers['Vary'] = 'Authorization'
     return resp
 
 
@@ -153,6 +164,8 @@ def _init_pool():
                 user=os.getenv("DB_USER", "desliado"),
                 password=os.environ["DB_PASSWORD"],
                 connect_timeout=5,
+                # v7.1 PRO: limites en sesion para evitar queries colgadas
+                options="-c statement_timeout=15000 -c idle_in_transaction_session_timeout=30000",
             )
     return _POOL
 
@@ -221,6 +234,15 @@ def q_exec(sql, params=()):
         raise
     finally:
         put_conn(conn)
+
+
+def q_exec_returning(sql, params=()):
+    """Helper: ejecuta INSERT con RETURNING y devuelve la PRIMERA fila como dict.
+
+    CRITICAL fix v7.1 PRO: antes este helper no existía y reclasificar()
+    con categoria nueva petaba con NameError. Ahora devuelve el row o None."""
+    rows = q_exec(sql, params)
+    return rows[0] if rows else None
 
 
 def to_dict(row):
@@ -424,7 +446,7 @@ def api_facturas_recientes(limit: int = Query(15, ge=1, le=100, description='Max
 @app.get("/api/health")
 def health():
     """Health check enriquecido: BD OK, pool stats, version."""
-    out = {"status": "ok", "version": "6.0.0", "checks": {}}
+    out = {"status": "ok", "version": "7.1.0", "checks": {}}
     # Test BD (importante: usar try/finally + put_conn para no romper el pool)
     conn = get_conn()
     try:
@@ -1051,9 +1073,20 @@ def api_gastos_desglose(
     # Parsear dimensiones (max 4)
     dims = [d.strip() for d in group_by.split(",") if d.strip()]
 
-    # Validar metric
+    # v7.1.1: Validar metric
     if metric not in ("count", "sum", "avg", "min", "max"):
         raise HTTPException(status_code=422, detail=f"metric inválida: {metric}")
+
+    # v7.1.1: Validar fechas (YYYY-MM-DD). Antes pasaban crudas a SQL -> 500.
+    from datetime import datetime as _dt
+    if date_from:
+        try: _dt.strptime(date_from, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=422, detail="date_from debe ser YYYY-MM-DD")
+    if date_to:
+        try: _dt.strptime(date_to, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=422, detail="date_to debe ser YYYY-MM-DD")
 
     # Construir WHERE dinámico
     where_parts = [expense_filter()]
@@ -1072,10 +1105,10 @@ def api_gastos_desglose(
         params.append(status)
     if min_eur is not None:
         where_parts.append("total_amount >= %s")
-        params.append(int(min_eur * 100))
+        params.append(min_eur)
     if max_eur is not None:
         where_parts.append("total_amount <= %s")
-        params.append(int(max_eur * 100))
+        params.append(max_eur)
 
     where_sql = " AND ".join(where_parts)
 
@@ -1161,13 +1194,17 @@ def api_gastos_reclasificar(
                 update_parts.append("category_id = %s")
                 update_params.append(cat_rows[0]['id'])
             else:
-                # Si no existe la categoria, la creamos
+                # Si no existe la categoria, la creamos (v7.1: usar q_exec_returning + id)
                 new_cat = q_exec_returning(
                     "INSERT INTO categories (name) VALUES (%s) ON CONFLICT (name) DO UPDATE SET name=EXCLUDED.name RETURNING id",
                     (cr_value,)
                 )
-                update_parts.append("category_id = %s")
-                update_params.append(new_cat)
+                if new_cat and 'id' in new_cat:
+                    update_parts.append("category_id = %s")
+                    update_params.append(new_cat['id'])
+                else:
+                    # Fallback de seguridad: no rompemos el update
+                    logger.warning(f"reclasificar: no se pudo crear/encontrar categoria '{cr_value}'")
             # Tambien guardamos el category_raw para auditoria
             update_parts.append("category_raw = %s")
             update_params.append(cr_value)
@@ -1309,6 +1346,10 @@ def api_gastos_stats(user: str = Depends(get_current_user)):
 @app.get("/api/gastos/{factura_id}")
 def api_gastos_detalle(factura_id: str, user: str = Depends(get_current_user)):
     """Detalle completo de una factura de gasto por id (UUID)."""
+    import re as _re_det
+    # v7.1.1: Validar UUID para evitar 500 al hacer SELECT ... = 'not-a-uuid'
+    if not _re_det.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', factura_id, _re_det.I):
+        raise HTTPException(status_code=404, detail="Factura no encontrada")
     rows = q("""
         SELECT i.id, i.invoice_number, i.invoice_date, i.due_date, i.vendor_name,
                i.vendor_tax_id, i.base_amount, i.tax_amount, i.total_amount, i.currency,
@@ -1353,18 +1394,34 @@ def api_gastos_detalle(factura_id: str, user: str = Depends(get_current_user)):
 
 @app.get("/api/gastos/{factura_id}/pdf")
 def api_gastos_pdf(factura_id: str, user: str = Depends(get_current_user)):
-    """Descarga el PDF de una factura (raw_file_url). Solo lectura del archivo."""
+    """Descarga el PDF de una factura (raw_file_url). Solo lectura del archivo.
+
+    v7.1 PRO: Validaciones de seguridad contra path traversal:
+      - factura_id debe ser UUID válido
+      - pdf_path resuelto debe estar dentro de data/invoices/raw/
+    """
+    import re as _re
+    from pathlib import Path as _Path
     from fastapi.responses import FileResponse
-    rows = q("SELECT raw_file_url, invoice_number, vendor_name FROM invoices WHERE id = %s AND type = 'expense'", (factura_id,))
+    # v7.1: Validar formato UUID para evitar inyeccion de path en la URL
+    if not _re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', factura_id, _re.I):
+        raise HTTPException(status_code=400, detail="ID de factura invalido (debe ser UUID)")
+    rows = q("SELECT raw_file_url, invoice_number, vendor_name FROM invoices WHERE id = %s::uuid AND type = 'expense'", (factura_id,))
     if not rows:
         raise HTTPException(status_code=404, detail="Factura no encontrada")
     r = rows[0]
     pdf_path = r["raw_file_url"]
     if not pdf_path:
         raise HTTPException(status_code=404, detail="Esta factura no tiene PDF asociado")
-    import os as _os
-    if not _os.path.isfile(pdf_path):
-        raise HTTPException(status_code=404, detail=f"PDF no encontrado en disco: {pdf_path}")
+    # v7.1: Verificar que la ruta resuelta esta dentro del directorio permitido (anti path-traversal)
+    try:
+        raw_root = (_Path("/root/liados") / "data" / "invoices" / "raw").resolve()
+        resolved = _Path(pdf_path).resolve()
+        resolved.relative_to(raw_root)  # lanza ValueError si esta fuera
+    except (ValueError, OSError) as _e:
+        raise HTTPException(status_code=403, detail="Acceso al archivo denegado") from None
+    if not _Path(pdf_path).is_file():
+        raise HTTPException(status_code=404, detail="PDF no encontrado en disco")
     vendor = (r["vendor_name"] or "vendor").replace(" ", "_").replace("/", "-")[:40]
     num = (r["invoice_number"] or "sinn").replace("/", "-")[:30]
     filename = f"{vendor}_{num}.pdf"
@@ -1589,19 +1646,25 @@ def api_alertas(user: str = Depends(get_current_user)):
         pass
 
     # 8. duplicado_potencial: facturas con mismo vendor+total±3d
+    # v7.1 PRO: GROUP BY + EXISTS (no self-join cuadrático)
     try:
         dups = q("""
-            SELECT count(*) as n FROM (
-                SELECT a.id
-                FROM invoices a JOIN invoices b ON a.id < b.id
-                WHERE a.type = 'expense' AND b.type = 'expense'
-                  AND a.status != 'rejected' AND b.status != 'rejected'
-                  AND a.is_invoice = true AND b.is_invoice = true
-                  AND a.vendor_name = b.vendor_name
-                  AND a.total_amount = b.total_amount
-                  AND abs(a.invoice_date - b.invoice_date) <= 3
-                  AND a.status != 'duplicate' AND b.status != 'duplicate'
-            ) s
+            WITH grupos AS (
+                SELECT vendor_name, total_amount
+                FROM invoices
+                WHERE type = 'expense' AND status NOT IN ('rejected','duplicate')
+                  AND is_invoice = true
+                  AND vendor_name IS NOT NULL
+                  AND total_amount IS NOT NULL
+                GROUP BY vendor_name, total_amount
+                HAVING count(*) > 1
+                  AND bool_and(
+                    abs(
+                      extract(epoch FROM (max(invoice_date) - min(invoice_date))) <= 259200
+                    )
+                  )
+            )
+            SELECT count(*) as n FROM grupos
         """)[0]
         n_dup = int(dups["n"])
         if n_dup > 0:
@@ -2011,7 +2074,10 @@ INDEX_HTML = """<!DOCTYPE html>
           <h2>🔔 Alertas y anomalías</h2>
           <span class="subtitle">Detector automático · Última actualización: <span id="al-generated">—</span></span>
         </div>
-        <div class="al-resumen" id="al-resumen"></div>
+        <div class="al-header-actions">
+          <button class="btn ghost" id="al-bulk-ack" style="display:none">✓ Marcar todas como revisadas</button>
+          <div class="al-resumen" id="al-resumen"></div>
+        </div>
       </div>
       <div id="al-list" class="al-list">
         <div class="skeleton-card" aria-hidden="true"></div>
@@ -2262,15 +2328,18 @@ def last_invoice_card(account: str = "", user: str = Depends(get_current_user)):
     currency = li.get("currency") or ""
     amount = li.get("total_amount")
     amount_str = f"{amount:.2f} {currency}" if amount is not None else "-"
+    from html import escape as _h
+    # v7.1 PRO: escape de TODO dato externo (vendor, invoice_number, etc.) para
+    # evitar XSS almacenado si una factura trae payload con HTML/JS.
     html = (
         '<div class="card last-invoice">'
         '<h3>Ultima factura extraida</h3>'
-        f'<div class="li-row"><span class="li-label">Numero</span><b>{li["invoice_number"]}</b></div>'
-        f'<div class="li-row"><span class="li-label">Vendor</span><b>{li["vendor"] or "-"}</b></div>'
-        f'<div class="li-row"><span class="li-label">Importe</span><b>{amount_str}</b></div>'
-        f'<div class="li-row"><span class="li-label">Fecha factura</span><b>{li["date"]}</b></div>'
-        f'<div class="li-row"><span class="li-label">Cuenta</span><b>{li["source_account"] or "-"} ({li["source"]})</b></div>'
-        f'<div class="li-meta">Extraida: {li["received_at"]} · Endpoint: /api/invoices/last-invoice</div>'
+        f'<div class="li-row"><span class="li-label">Numero</span><b>{_h(str(li["invoice_number"]))}</b></div>'
+        f'<div class="li-row"><span class="li-label">Vendor</span><b>{_h(str(li["vendor"] or "-"))}</b></div>'
+        f'<div class="li-row"><span class="li-label">Importe</span><b>{_h(amount_str)}</b></div>'
+        f'<div class="li-row"><span class="li-label">Fecha factura</span><b>{_h(str(li["date"]))}</b></div>'
+        f'<div class="li-row"><span class="li-label">Cuenta</span><b>{_h(str(li["source_account"] or "-"))} ({_h(str(li["source"]))})</b></div>'
+        f'<div class="li-meta">Extraida: {_h(str(li["received_at"]))} · Endpoint: /api/invoices/last-invoice</div>'
         '</div>'
         '<style>.card.last-invoice{padding:1rem;background:var(--bg-1,#0e1426);border-radius:12px;margin:1rem 0}'
         '.card.last-invoice h3{margin:0 0 .5rem 0;font-size:1rem}'
@@ -2285,3 +2354,92 @@ def last_invoice_card(account: str = "", user: str = Depends(get_current_user)):
 @app.get("/", response_class=HTMLResponse)
 def index(user: str = Depends(get_current_user)):
     return INDEX_HTML
+
+
+# ── v7.1 PRO: Reclasificar v2 (seguro, solo categoria) ─────────────────
+# Reemplazo al endpoint original que permitia modificar vendor/total/fecha
+# (vectores de fraude y XSS). Solo categoria + nota, con UUID validado.
+
+from pydantic import BaseModel as _BM, Field as _F
+from typing import Optional as _Opt
+import re as _re_v7
+
+class _ReclasificarPayload(_BM):
+    category_name: str = _F(..., min_length=1, max_length=80, strip_whitespace=True, description="Nombre canonico de la categoria (sin espacios al inicio/final)")
+    reason: str = _F(..., min_length=1, max_length=500, strip_whitespace=True, description="Motivo del cambio (auditable, sin espacios al inicio/final)")
+
+
+@app.post("/api/gastos/{factura_id}/reclasificar-v2")
+def api_gastos_reclasificar_v2(factura_id: str, payload: _ReclasificarPayload, user: str = Depends(get_current_user)):
+    """v7.1: Reclasificacion SEGURA. Solo permite cambiar categoria.
+
+    Cambios vs v7:
+    - Validacion UUID regex (anti path-injection en la URL)
+    - Pydantic valida category_name y reason (no pueden ser vacios ni > 80/500 chars)
+    - Solo se actualiza category_id + category_raw + audit fields
+    - NO se permite cambiar vendor/total/fecha/descripcion (reduccion de superficie)
+    """
+    # 1. Validar UUID
+    if not _re_v7.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', factura_id, _re_v7.I):
+        raise HTTPException(status_code=400, detail="ID de factura invalido (debe ser UUID)")
+
+    # 2. Verificar factura existe
+    rows = q("SELECT id, category_raw FROM invoices WHERE id = %s::uuid AND type = 'expense'", (factura_id,))
+    if not rows:
+        raise HTTPException(status_code=404, detail="Factura no encontrada")
+    old = dict(rows[0])
+
+    # 3. Buscar categoria por nombre (case-insensitive). Auto-crear si no existe.
+    cat_rows = q("SELECT id, name FROM categories WHERE LOWER(name) = LOWER(%s)", (payload.category_name.strip(),))
+    if cat_rows:
+        category_id = cat_rows[0]['id']
+        category_db_name = cat_rows[0]['name']
+    else:
+        new_cat = q_exec_returning(
+            "INSERT INTO categories (name) VALUES (%s) ON CONFLICT (name) DO UPDATE SET name=EXCLUDED.name RETURNING id, name",
+            (payload.category_name.strip(),)
+        )
+        if not new_cat or 'id' not in new_cat:
+            raise HTTPException(status_code=500, detail="No se pudo crear/encontrar la categoria")
+        category_id = new_cat['id']
+        category_db_name = new_cat['name']
+
+    # 4. UPDATE SOLO de categoria (no tocar otros campos)
+    try:
+        q_exec(
+            "UPDATE invoices SET category_id = %s, category_raw = %s, "
+            "verified_by = %s, verified_at = NOW(), updated_at = NOW() WHERE id = %s::uuid",
+            (category_id, category_db_name, user, factura_id)
+        )
+    except Exception as e:
+        logger.exception(f"reclasificar v2 UPDATE fallo: {e!r}")
+        raise HTTPException(status_code=500, detail="Error actualizando la factura")
+
+    # 5. Auditoria (best-effort, no rompe si falla)
+    try:
+        from datetime import date as _Ad, datetime as _Adt
+        from decimal import Decimal as _Ad_dec
+        import json as _Aj
+        class _AdEncoder(_Aj.JSONEncoder):
+            def default(self, o):
+                if isinstance(o, (_Ad_dec, _Ad, _Adt)): return str(o)
+                return super().default(o)
+        q_exec("""
+            INSERT INTO invoice_corrections
+                (invoice_id, user_id, reason, before_json, after_json, created_at)
+            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, NOW())
+        """, (
+            factura_id, user, payload.reason,
+            _Aj.dumps({k: str(v) for k, v in old.items()}, cls=_AdEncoder),
+            _Aj.dumps({"category_raw": category_db_name, "category_id": str(category_id)}, cls=_AdEncoder),
+        ))
+    except Exception as _ae:
+        logger.warning(f"reclasificar v2: auditoria no insertada ({_ae!r})")
+
+    return {
+        "ok": True,
+        "factura_id": factura_id,
+        "category_id": str(category_id),
+        "category_name": category_db_name,
+        "verified_by": user,
+    }

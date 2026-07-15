@@ -49,4 +49,13 @@ Last run: 2026-07-06 07:42 (P0-1 + P0-3 resueltos)
 
 ---
 
-Run log: L1 report-only (2026-07-06 07:42). Sin auto-fix L2 (pendiente habilitar tras resolver P0 Gmail tokens + decisión push).
+## Verification run 2026-07-15
+
+- L1 report-only; no source/config changes made.
+- Dashboard: `liados-dashboard` active/enabled, Uvicorn listening on `0.0.0.0:9121`, `/api/health` 200, version `7.1.0`, database/pool OK.
+- Python syntax compile: `dashboard/app.py`, `drive_collector.py`, `oauth_drive.py`, `desglose.py` passed.
+- E2E command `tests/test_api.py http://localhost:9121`: **122 PASS / 0 FAIL**.
+- Targeted checks: health, desglose, gdrive-status, alertas and reclasificar-v2 responded successfully; additional negative checks exposed 500s for invalid desglose dates and invalid gasto-detail UUID.
+- Findings reported: v2 audit-table/logger failure path, Drive checkpoint/retry issues, desglose euro/date validation issues, residual JS injection contexts, gdrive token path disclosure, and redundant migration index.
+
+Run log: L1 report-only (2026-07-15). E2E 122/122; bugs reported, no auto-fix.

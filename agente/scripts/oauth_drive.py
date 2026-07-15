@@ -197,14 +197,21 @@ def get_drive_oauth_url(account="principal", redirect_port=None):
         prompt="consent",  # forzar refresh_token
     )
     # Persistir PKCE state para que exchange_code_for_token pueda reuse el verifier
-    pkce_file = f"/tmp/drive_pkce_{account}.pkl"
+    # v7.1 PRO: usar JSON en vez de pickle (anti code-execution)
+    import json as _json
+    pkce_file = f"/tmp/drive_pkce_{account}.json"
     try:
-        with open(pkce_file, "wb") as f:
-            pickle.dump({
+        client_config_dict = None
+        try:
+            client_config_dict = dict(flow.client_config) if flow.client_config else None
+        except Exception:
+            client_config_dict = None
+        with open(pkce_file, "w") as f:
+            _json.dump({
                 "code_verifier": flow.code_verifier,
-                "client_config": flow.client_config,
+                "client_config": client_config_dict,
                 "redirect_uri": flow.redirect_uri,
-                "scopes": DRIVE_SCOPES,
+                "scopes": list(DRIVE_SCOPES),
             }, f)
         os.chmod(pkce_file, 0o600)
     except Exception as e:
@@ -224,14 +231,18 @@ def exchange_code_for_token(account, code, redirect_port=None):
         else "http://localhost/"
     )
     # Reusar PKCE del auth-url si existe (CRITICO para que fetch_token funcione)
-    pkce_file = f"/tmp/drive_pkce_{account}.pkl"
+    # v7.1 PRO: usar JSON en vez de pickle (anti code-execution)
+    pkce_file = f"/tmp/drive_pkce_{account}.json"
     pkce_state = None
     if os.path.exists(pkce_file):
-        with open(pkce_file, "rb") as f:
-            pkce_state = pickle.load(f)
-        # Aplicar PKCE al flow
-        flow.code_verifier = pkce_state["code_verifier"]
-        flow.redirect_uri = pkce_state["redirect_uri"]
+        try:
+            with open(pkce_file, "r") as f:
+                pkce_state = json.load(f)
+            flow.code_verifier = pkce_state["code_verifier"]
+            flow.redirect_uri = pkce_state["redirect_uri"]
+        except Exception as _e:
+            logger.warning(f"PKCE JSON corrupto o ilegible, regenerando: {_e}")
+            pkce_state = None
 
     # Google agrega scopes ya autorizados (gmail.readonly) al token Drive,
     # y oauthlib levanta Warning por scope-change. Variable de entorno

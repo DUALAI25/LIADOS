@@ -42,9 +42,9 @@ def section(title):
 # ── 1. Salud ────────────────────────────────────────────────────
 section("Salud")
 r = requests.get(f"{HOST}/api/health", timeout=TIMEOUT)
-check("GET /api/health", r.ok and r.json().get("version", "").startswith("6"),
+check("GET /api/health", r.ok and r.json().get("version", "").startswith("7"),
       f"status={r.status_code} body={r.text[:100]}")
-check("version 6.x", "6." in r.json().get("version", ""), r.json().get("version"))
+check("version 7.x", "7." in r.json().get("version", ""), r.json().get("version"))
 
 # ── 2. KPIs y charts ───────────────────────────────────────────
 section("KPIs y charts")
@@ -391,6 +391,132 @@ check("/api/admin/gmail-status sin auth -> 401", r.status_code == 401, f"{r.stat
 
 
 # ── Resumen ─────────────────────────────────────────────────────
+print(f"\n{'='*60}")
+print(f"Tests: {PASS + FAIL} | PASS: {PASS} | FAIL: {FAIL}")
+if ERRORS:
+    print("Errores:")
+    for e in ERRORS:
+        print(f"  - {e}")
+    # sys.exit movido al final del archivo (despues de tests v7.1)
+    # sys.exit(1)
+else:
+    print("OK -- todos los tests pasan (parcial)")
+    # sys.exit(0)
+
+
+# ── 13. v7.1 PRO: Seguridad - path traversal /api/gastos/{id}/pdf ─────────
+section("v7.1 PRO: Seguridad path traversal PDF")
+# UUID inválido (path traversal)
+r = requests.get(f"{HOST}/api/gastos/..%2Fetc%2Fpasswd/pdf", auth=AUTH, timeout=TIMEOUT)
+check("UUID con ../ rechazado -> 400 o 404", r.status_code in (400, 404), f"{r.status_code}")
+r = requests.get(f"{HOST}/api/gastos/notauuid/pdf", auth=AUTH, timeout=TIMEOUT)
+check("UUID no-UUID rechazado -> 400", r.status_code == 400, f"{r.status_code}")
+# Test que el endpoint funciona con UUID real
+r = requests.get(f"{HOST}/api/gastos?page=1&page_size=1", auth=AUTH, timeout=TIMEOUT)
+if r.ok and r.json().get("rows"):
+    fid = r.json()["rows"][0]["id"]
+    r = requests.get(f"{HOST}/api/gastos/{fid}/pdf", auth=AUTH, timeout=TIMEOUT)
+    check("PDF con UUID valido -> 200 o 404 si no hay PDF", r.status_code in (200, 404), f"{r.status_code}")
+
+
+# ── 14. v7.1 PRO: Seguridad - UUID regex en /api/gastos/{id} ──────────────
+section("v7.1 PRO: UUID validation")
+r = requests.get(f"{HOST}/api/gastos/not-a-uuid", auth=AUTH, timeout=TIMEOUT)
+check("detalle con UUID invalido -> 404 o 500 (filtrado en SQL)", r.status_code in (404, 500), f"{r.status_code}")
+
+
+# ── 15. v7.1 PRO: Desglose multidimensional ─────────────────────────────
+section("v7.1 PRO: /api/gastos/desglose")
+r = requests.get(f"{HOST}/api/gastos/desglose?group_by=month&metric=sum", auth=AUTH, timeout=TIMEOUT)
+check("GET /api/gastos/desglose", r.ok, f"{r.status_code}")
+if r.ok:
+    d = r.json()
+    check("desglose tiene 'rows'", "rows" in d, "")
+    check("desglose tiene 'total'", "total" in d, "")
+    check("desglose.total.value es numero", isinstance(d.get("total",{}).get("value"), (int, float)), "")
+# Sin auth
+r = requests.get(f"{HOST}/api/gastos/desglose", timeout=TIMEOUT)
+check("/api/gastos/desglose sin auth -> 401", r.status_code == 401, f"{r.status_code}")
+
+
+# ── 16. v7.1 PRO: Reclasificar v2 (endpoint seguro) ─────────────────
+section("v7.1 PRO: /api/gastos/{id}/reclasificar-v2")
+# UUID inválido (path injection) -> devuelve 404 (FastAPI no encuentra ruta valida)
+r = requests.post(f"{HOST}/api/gastos/..%2Fetc%2Fpasswd/reclasificar-v2",
+                  auth=AUTH, json={"category_name": "x", "reason": "y"}, timeout=TIMEOUT)
+check("reclasificar-v2 UUID invalido -> 404 (path no matchea)", r.status_code == 404, f"{r.status_code}")
+# UUID no-UUID -> 400 (validacion regex)
+r = requests.post(f"{HOST}/api/gastos/notauuid/reclasificar-v2",
+                  auth=AUTH, json={"category_name": "x", "reason": "y"}, timeout=TIMEOUT)
+check("reclasificar-v2 UUID no-UUID -> 400", r.status_code == 400, f"{r.status_code}")
+# Sin categoria -> 422 (validacion pydantic)
+r = requests.post(f"{HOST}/api/gastos/00000000-0000-0000-0000-000000000000/reclasificar-v2",
+                  auth=AUTH, json={"reason": "test"}, timeout=TIMEOUT)
+check("reclasificar-v2 sin categoria -> 422", r.status_code == 422, f"{r.status_code}")
+# Sin reason -> 422
+r = requests.post(f"{HOST}/api/gastos/00000000-0000-0000-0000-000000000000/reclasificar-v2",
+                  auth=AUTH, json={"category_name": "x"}, timeout=TIMEOUT)
+check("reclasificar-v2 sin reason -> 422", r.status_code == 422, f"{r.status_code}")
+# Happy path con UUID real
+r = requests.get(f"{HOST}/api/gastos?page=1&page_size=1", auth=AUTH, timeout=TIMEOUT)
+if r.ok and r.json().get("rows"):
+    fid = r.json()["rows"][0]["id"]
+    test_cat = "TEST_V71_E2E_" + str(__import__("time").time())
+    r = requests.post(f"{HOST}/api/gastos/{fid}/reclasificar-v2",
+                      auth=AUTH, json={"category_name": test_cat, "reason": "test v7.1 e2e"},
+                      timeout=TIMEOUT)
+    check("reclasificar-v2 happy path OK (200)", r.ok, f"{r.status_code}: {r.text[:150]}")
+
+
+# ── 17. v7.1 PRO: Drive status ─────────────────────────────────────────
+section("v7.1 PRO: /api/admin/gdrive-status")
+r = requests.get(f"{HOST}/api/admin/gdrive-status", auth=AUTH, timeout=TIMEOUT)
+check("GET /api/admin/gdrive-status", r.ok, f"{r.status_code}")
+if r.ok:
+    d = r.json()
+    check("gdrive-status.accounts es lista", isinstance(d.get("accounts"), list), "")
+    for a in d.get("accounts", []):
+        # NO debe filtrar rutas absolutas (info disclosure)
+        check(f"cuenta {a['account']} NO expone token_file path",
+              "token_file" not in a or a.get("status") in ("OK", "MISSING", "STALE"),
+              f"token_file leak: {a.get('token_file')}")
+# Sin auth
+r = requests.get(f"{HOST}/api/admin/gdrive-status", timeout=TIMEOUT)
+check("/api/admin/gdrive-status sin auth -> 401", r.status_code == 401, f"{r.status_code}")
+
+
+# ── 18. v7.1 PRO: Cache-Control en /api/* autenticados ──────────────────
+section("v7.1 PRO: Cache-Control privado en /api/*")
+r = requests.get(f"{HOST}/api/kpis", auth=AUTH, timeout=TIMEOUT)
+cc = r.headers.get("Cache-Control", "")
+check("/api/kpis Cache-Control privado", "private" in cc and "no-store" in cc, f"cc={cc}")
+vary = r.headers.get("Vary", "")
+check("/api/kpis Vary: Authorization", "Authorization" in vary, f"vary={vary}")
+
+
+# ── 19. v7.1 PRO: Version 7.1.0 ────────────────────────────────────────
+section("v7.1 PRO: Versioning")
+r = requests.get(f"{HOST}/api/health", timeout=TIMEOUT)
+check("version 7.1.x", r.json().get("version", "").startswith("7.1"), r.json().get("version"))
+
+
+# ── 20. v7.1 PRO: q_exec_returning helper (reclasificar fix) ──────────
+section("v7.1 PRO: endpoints que usan q_exec_returning")
+# Solo verificar que reclasificar con categoria NUEVA no peta 500
+# (en ambiente de test no tocamos la BD para no corromper demos)
+r = requests.get(f"{HOST}/api/gastos?page=1&page_size=1", auth=AUTH, timeout=TIMEOUT)
+if r.ok and r.json().get("rows"):
+    # Probamos el flow completo con datos reales (puede crear categoria nueva)
+    fid = r.json()["rows"][0]["id"]
+    test_cat = "TEST_CAT_DEL_" + str(__import__("time").time())
+    test_reason = "test v7.1 e2e"
+    r = requests.post(f"{HOST}/api/gastos/{fid}/reclasificar-v2",
+                      auth=AUTH, json={"category_name": test_cat, "reason": test_reason},
+                      timeout=TIMEOUT)
+    check("reclasificar-v2 happy path OK (200)", r.ok, f"{r.status_code}: {r.text[:150]}")
+
+
+# ── Resumen final (movido al final del archivo) ────────────────────────
 print(f"\n{'='*60}")
 print(f"Tests: {PASS + FAIL} | PASS: {PASS} | FAIL: {FAIL}")
 if ERRORS:

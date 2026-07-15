@@ -16,7 +16,7 @@ const eur = n => Number(n||0).toLocaleString('es-ES', {minimumFractionDigits:2, 
 const eur0 = n => Number(n||0).toLocaleString('es-ES', {maximumFractionDigits:0}) + '€';
 const fmt = n => Math.abs(n)>=1000 ? (n/1000).toFixed(1).replace('.0','')+'k' : Math.round(n).toString();
 const pct = (cur, prev) => { if (!prev) return null; return (cur-prev)/Math.abs(prev)*100; };
-const esc = s => (s||'').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const esc = s => (s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 // ── Markdown renderer (minimal, seguro: escapa primero) ──────────────────
 function mdToHtml(md) {
@@ -228,8 +228,16 @@ async function renderGastosDetalle() {
     GD.page = 1; GD.filters = {}; loadGastos();
     toast('Filtros limpiados', 'info');
   };
-  $('#gd-prev').onclick = () => { if (GD.page > 1) { GD.page--; loadGastos(); } };
-  $('#gd-next').onclick = () => { GD.page++; loadGastos(); };
+  $('#gd-prev').onclick = () => {
+    if (GD.page > 1) { GD.page--; loadGastos(); }
+  };
+  $('#gd-next').onclick = () => {
+    // v7.1: clamp cliente para no pedir paginas vacias
+    const _maxPages = parseInt($('#gd-page-info').dataset.pages || '0', 10);
+    if (_maxPages && GD.page >= _maxPages) return;
+    GD.page++;
+    loadGastos();
+  };
   // Submit on Enter en cualquier input de filtro
   ['gd-q','gd-from','gd-to','gd-vendor','gd-cat','gd-min','gd-max'].forEach(id => {
     const el = $('#'+id);
@@ -530,7 +538,7 @@ async function loadAlertas() {
     if (r.info) resumenParts.push(`<span class="al-pill al-pill-info">${r.info} info</span>`);
     if (resumenParts.length === 0) resumenParts.push('<span class="al-pill al-pill-ok">✓ Todo OK</span>');
     $('#al-resumen').innerHTML = resumenParts.join('');
-    // Badge en nav (solo cuenta las no-revisadas)
+    // v7.1: botón "Marcar todas como revisadas" (visible solo si hay alertas HIGH/MED pendientes)
     const acks = await _loadAcks();
     const ackedIds = new Set(acks.map(a => a.alert_id));
     const pendingHigh = data.items.filter(a => a.severity === 'high' && !ackedIds.has(a.id)).length;
@@ -540,6 +548,25 @@ async function loadAlertas() {
       const total = pendingHigh + pendingMed;
       badge.textContent = total > 0 ? total : '';
       badge.style.display = total > 0 ? 'inline-block' : 'none';
+    }
+    // Botón bulk-ack
+    const bulkBtn = $('#al-bulk-ack');
+    if (bulkBtn) {
+      const pendingItems = data.items.filter(a => (a.severity === 'high' || a.severity === 'medium') && !ackedIds.has(a.id));
+      bulkBtn.style.display = pendingItems.length > 1 ? 'inline-flex' : 'none';
+      bulkBtn.onclick = async () => {
+        if (!confirm(`Marcar ${pendingItems.length} alertas como revisadas? (accion irreversible, persiste en servidor)`)) return;
+        bulkBtn.disabled = true;
+        let ok = 0, fail = 0;
+        for (const a of pendingItems) {
+          try { await _postJSON('/api/alertas/ack', {alert_id: a.id, note: 'bulk-ack'}); ok++; }
+          catch(e) { fail++; }
+        }
+        toast(`✓ ${ok} alertas marcadas${fail ? `, ${fail} fallaron` : ''}`, fail ? 'warn' : 'success');
+        _acksCache = null;  // invalidar cache
+        await loadAlertas();
+        bulkBtn.disabled = false;
+      };
     }
     if (data.items.length === 0) {
       list.innerHTML = `<div class="al-empty"><div class="al-empty-icon">✅</div><h3>Sin alertas activas</h3><p>Todos los indicadores están dentro de los rangos esperados.</p></div>`;
@@ -976,14 +1003,36 @@ function renderKpis() {
 
 function renderBars(target, rows, colorFn, labelFn, valueFn, extraFn) {
   const max = Math.max(...rows.map(valueFn), 1);
-  $(target).innerHTML = rows.map(r => {
+  // v7.1: usar createElement + textContent para evitar XSS via vendor/categoria
+  const container = $(target);
+  container.innerHTML = '';
+  if (!rows || rows.length === 0) {
+    container.innerHTML = emptyState('Sin datos este mes', 'Aún no se han registrado movimientos en el periodo actual.');
+    return;
+  }
+  rows.forEach(r => {
     const color = colorFn(r);
-    return `<div class="bar-row">
-      <div class="bar-label">${labelFn(r)}</div>
-      <div class="bar-track"><div class="bar-fill" style="width:${(valueFn(r)/max*100).toFixed(1)}%;background:${color}">${eur(valueFn(r))}</div></div>
-      <div class="bar-value">${extraFn(r)}</div>
-    </div>`;
-  }).join('') || emptyState('Sin datos este mes', 'Aún no se han registrado movimientos en el periodo actual.');
+    const row = document.createElement('div');
+    row.className = 'bar-row';
+    const label = document.createElement('div');
+    label.className = 'bar-label';
+    label.textContent = labelFn(r);  // SAFE: textContent no interpreta HTML
+    const track = document.createElement('div');
+    track.className = 'bar-track';
+    const fill = document.createElement('div');
+    fill.className = 'bar-fill';
+    fill.style.width = (valueFn(r) / max * 100).toFixed(1) + '%';
+    fill.style.background = color;
+    fill.textContent = eur(valueFn(r));
+    track.appendChild(fill);
+    const extra = document.createElement('div');
+    extra.className = 'bar-value';
+    extra.textContent = extraFn(r);
+    row.appendChild(label);
+    row.appendChild(track);
+    row.appendChild(extra);
+    container.appendChild(row);
+  });
 }
 
 function emptyState(title, desc, err=false) {
@@ -1087,7 +1136,7 @@ function buildCanalFilter() {
 }
 
 // ── Carga principal ──────────────────────────────────────────────────────
-async function loadAll() {
+async function loadAll(opts = {}) {
   const [kpis, comp, canalMes, canalMeses, margen, ingresos, proveedores, facturas, categorias, localesMes, dia, spark6m] = await Promise.all([
     getJSON('/api/kpis'), getJSON('/api/kpis-comparativa'),
     getJSON('/api/ventas-por-canal'), getJSON('/api/canal-por-mes'),
@@ -1465,14 +1514,56 @@ function init() {
   applyChartTheme();
   $('#themeToggle').onclick = toggleTheme;
   tick(); setInterval(tick, 30000);
-  // refresh sync label cada minuto
-  let syncMin = 0;
-  setInterval(() => { syncMin++; $('#syncTime').textContent = syncMin===1?'hace 1 min':`hace ${syncMin} min`; }, 60000);
+  // v7.1 PRO: badge de alertas en sidebar SI se carga al init() (no esperar a abrir vista)
+  loadAlertBadge().catch(() => {});
 
   loadAll().catch(e => {
     $$('.card-body, .kpis, .hero').forEach(el => { el.style.opacity=1; });
     $('#kpis').innerHTML = `<div class="state error" style="grid-column:1/-1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><div class="title">Error cargando datos</div><div class="desc">${esc(e.message)}</div><button class="seg" onclick="location.reload()">Reintentar</button></div>`;
   });
+
+  // v7.1 PRO: auto-refresh honesto cada 5 min (en vez del fake "+1 min")
+  let _lastLoadAt = Date.now();
+  setInterval(async () => {
+    try {
+      await loadAll({silent: true});
+      _lastLoadAt = Date.now();
+      $('#syncTime').textContent = 'ahora';
+    } catch(e) {
+      console.warn('[auto-refresh] fallo:', e.message);
+      $('#syncTime').textContent = 'actualizacion fallida';
+      $('.live-dot').style.background = '#ef4444';  // rojo = degradado
+    }
+  }, 5 * 60 * 1000);
+
+  // Update "sync" label cada 30s (timestamp honesto)
+  setInterval(() => {
+    const secs = Math.floor((Date.now() - _lastLoadAt) / 1000);
+    if (secs < 5) $('#syncTime').textContent = 'ahora';
+    else if (secs < 60) $('#syncTime').textContent = `hace ${secs}s`;
+    else if (secs < 3600) $('#syncTime').textContent = `hace ${Math.floor(secs/60)} min`;
+    else $('#syncTime').textContent = `hace ${Math.floor(secs/3600)} h`;
+  }, 30000);
+}
+
+// v7.1 PRO: carga SOLO el badge (resumen de alertas), no la lista completa.
+// Asi el sidebar badge aparece desde el primer load, sin esperar a abrir la vista.
+async function loadAlertBadge() {
+  try {
+    const data = await getJSON('/api/alertas');
+    const acks = await _loadAcks();
+    const ackedIds = new Set(acks.map(a => a.alert_id));
+    const pendingHigh = data.items.filter(a => a.severity === 'high' && !ackedIds.has(a.id)).length;
+    const pendingMed = data.items.filter(a => a.severity === 'medium' && !ackedIds.has(a.id)).length;
+    const total = pendingHigh + pendingMed;
+    const badge = $('#nav-alert-badge');
+    if (badge) {
+      badge.textContent = total > 0 ? total : '';
+      badge.style.display = total > 0 ? 'inline-block' : 'none';
+    }
+  } catch(e) {
+    // Silencioso: el badge se carga al abrir la vista.
+  }
 }
 
 // Inicializacion robusta: si el DOM ya esta listo (script cargado tarde,

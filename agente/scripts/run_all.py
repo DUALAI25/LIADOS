@@ -124,6 +124,7 @@ def main():
     parser = argparse.ArgumentParser(description="Orquestador Liados")
     parser.add_argument("--skip-lastapp", action="store_true", help="Saltar Last.app sync")
     parser.add_argument("--skip-gmail", action="store_true", help="Saltar Gmail collector")
+    parser.add_argument("--skip-drive", action="store_true", help="Saltar Drive collector")
     parser.add_argument("--days", type=int, help="Override GMAIL_INITIAL_DAYS para esta ejecucion")
     parser.add_argument("--dry-run", action="store_true", help="Solo mostrar que haria")
     args = parser.parse_args()
@@ -137,6 +138,10 @@ def main():
 
     if not args.skip_gmail:
         blocks.append(("Gmail collector", ["python3", "-m", "agente.scripts.gmail_collector"]))
+
+    if not args.skip_drive:
+        # PATCH v2: Drive collector integrado al orquestador
+        blocks.append(("Drive collector", ["python3", "-m", "agente.scripts.drive_collector", "--once"]))
 
     if not blocks:
         logger.error("Todos los bloques saltados, nada que hacer")

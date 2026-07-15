@@ -392,16 +392,11 @@ check("/api/admin/gmail-status sin auth -> 401", r.status_code == 401, f"{r.stat
 
 # ── Resumen ─────────────────────────────────────────────────────
 print(f"\n{'='*60}")
-print(f"Tests: {PASS + FAIL} | PASS: {PASS} | FAIL: {FAIL}")
+print(f"Tests (parcial): {PASS + FAIL} | PASS: {PASS} | FAIL: {FAIL} (resumen final abajo)")
 if ERRORS:
-    print("Errores:")
+    print("Errores parciales:")
     for e in ERRORS:
         print(f"  - {e}")
-    # sys.exit movido al final del archivo (despues de tests v7.1)
-    # sys.exit(1)
-else:
-    print("OK -- todos los tests pasan (parcial)")
-    # sys.exit(0)
 
 
 # ── 13. v7.1 PRO: Seguridad - path traversal /api/gastos/{id}/pdf ─────────

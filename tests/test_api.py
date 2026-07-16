@@ -42,9 +42,9 @@ def section(title):
 # ── 1. Salud ────────────────────────────────────────────────────
 section("Salud")
 r = requests.get(f"{HOST}/api/health", timeout=TIMEOUT)
-check("GET /api/health", r.ok and r.json().get("version", "").startswith("7"),
+check("GET /api/health", r.ok and r.json().get("version", "").startswith("8"),
       f"status={r.status_code} body={r.text[:100]}")
-check("version 7.x", "7." in r.json().get("version", ""), r.json().get("version"))
+check("version 8.x", "8." in r.json().get("version", ""), r.json().get("version"))
 
 # ── 2. KPIs y charts ───────────────────────────────────────────
 section("KPIs y charts")
@@ -492,7 +492,7 @@ check("/api/kpis Vary: Authorization", "Authorization" in vary, f"vary={vary}")
 # ── 19. v7.1 PRO: Version 7.1.0 ────────────────────────────────────────
 section("v7.1 PRO: Versioning")
 r = requests.get(f"{HOST}/api/health", timeout=TIMEOUT)
-check("version 7.1.x", r.json().get("version", "").startswith("7.1"), r.json().get("version"))
+check("version 8.0.x", r.json().get("version", "").startswith("8.0"), r.json().get("version"))
 
 
 # ── 20. v7.1 PRO: q_exec_returning helper (reclasificar fix) ──────────
@@ -512,6 +512,96 @@ if r.ok and r.json().get("rows"):
 
 
 # ── Resumen final (movido al final del archivo) ────────────────────────
+print(f"\n{'='*60}")
+print(f"Tests (parcial): {PASS + FAIL} | PASS: {PASS} | FAIL: {FAIL} (resumen final abajo)")
+if ERRORS:
+    print("Errores parciales:")
+    for e in ERRORS:
+        print(f"  - {e}")
+
+
+# ── 21. v8.0 PRO: Desglose Excel-style (nuevos endpoints) ──────────────
+section("v8.0 PRO: /api/gastos/desglose/* (nuevos)")
+ENDPOINTS_V8 = [
+    "/api/gastos/desglose/resumen",
+    "/api/gastos/desglose/matrix?rows=month&cols=category",
+    "/api/gastos/desglose/matrix?rows=vendor&cols=month",
+    "/api/gastos/desglose/top?by=vendor&limit=5",
+    "/api/gastos/desglose/top?by=category&limit=10&with_sparkline=true",
+    "/api/gastos/desglose/calendar?year=2026",
+    "/api/gastos/desglose/compare?by=vendor&p1_from=2026-06-01&p1_to=2026-06-30&p2_from=2026-05-01&p2_to=2026-05-31",
+    "/api/gastos/desglose/export.csv?by=category",
+]
+for ep in ENDPOINTS_V8:
+    r = requests.get(f"{HOST}{ep}", auth=AUTH, timeout=15)
+    check(f"GET {ep}", r.ok, f"{r.status_code}")
+    if r.ok:
+        ct = r.headers.get("Content-Type", "")
+        if ep.endswith(".csv"):
+            check(f"  CSV Content-Type", "csv" in ct.lower(), f"ct={ct}")
+
+# v8.0: Whitelist de dimensiones
+r = requests.get(f"{HOST}/api/gastos/desglose/matrix?rows=password&cols=vendor",
+                  auth=AUTH, timeout=5)
+check("matrix rows=password -> 400 (whitelist)", r.status_code == 400, f"{r.status_code}")
+r = requests.get(f"{HOST}/api/gastos/desglose/matrix?rows=vendor&cols=DROP_TABLE",
+                  auth=AUTH, timeout=5)
+check("matrix cols=DROP_TABLE -> 400 (whitelist)", r.status_code == 400, f"{r.status_code}")
+
+# v8.0: Métrica inválida
+r = requests.get(f"{HOST}/api/gastos/desglose/matrix?rows=vendor&cols=category&metric=evil",
+                  auth=AUTH, timeout=5)
+check("metric=evil -> 422", r.status_code == 422, f"{r.status_code}")
+
+# v8.0: Top con vendor debe tener items ordenados desc por value
+r = requests.get(f"{HOST}/api/gastos/desglose/top?by=vendor&limit=3", auth=AUTH, timeout=10)
+if r.ok:
+    d = r.json()
+    items = d.get("items", [])
+    check("top items es lista", isinstance(items, list), "")
+    check("top items ≤ 3", len(items) <= 3, f"len={len(items)}")
+    if len(items) >= 2:
+        check("top items ordenados desc", items[0]["value"] >= items[1]["value"],
+              f"{items[0]['value']} < {items[1]['value']}")
+
+# v8.0: Calendar devuelve grid mes×día
+r = requests.get(f"{HOST}/api/gastos/desglose/calendar?year=2026", auth=AUTH, timeout=10)
+if r.ok:
+    d = r.json()
+    check("calendar.year es 2026", d.get("year") == 2026, f"year={d.get('year')}")
+    check("calendar.grid es dict", isinstance(d.get("grid"), dict), "")
+    check("calendar.total_eur > 0", d.get("total_eur", 0) > 0, f"total={d.get('total_eur')}")
+
+# v8.0: Compare devuelve delta_pct
+r = requests.get(f"{HOST}/api/gastos/desglose/compare?by=vendor&p1_from=2026-06-01&p1_to=2026-06-30&p2_from=2026-05-01&p2_to=2026-05-31",
+                  auth=AUTH, timeout=10)
+if r.ok:
+    d = r.json()
+    items = d.get("items", [])
+    check("compare items es lista", isinstance(items, list), "")
+    if items:
+        it = items[0]
+        check("compare item tiene delta_pct", "delta_pct" in it or it.get("p2_total", 0) == 0,
+              f"keys={list(it.keys())}")
+
+# v8.0: CSV export contiene BOM y escapar formula injection
+r = requests.get(f"{HOST}/api/gastos/desglose/export.csv?by=category", auth=AUTH, timeout=10)
+if r.ok:
+    has_bom = r.content[:3] == b"\xef\xbb\xbf"  # UTF-8 BOM
+    check("CSV tiene BOM UTF-8", has_bom, f"first bytes={r.content[:5]!r}")
+    # Buscar posibles inyecciones
+    csv_text = r.content.decode("utf-8-sig", errors="ignore")
+    has_dangerous = any(c in csv_text for c in ["\t=cmd", "\t@SUM", "\t+HYPERLINK"])
+    check("CSV NO contiene formula injection", not has_dangerous, "riesgo CSV injection")
+
+# v8.0: Sin auth
+r = requests.get(f"{HOST}/api/gastos/desglose/resumen", timeout=5)
+check("resumen sin auth -> 401", r.status_code == 401, f"{r.status_code}")
+r = requests.get(f"{HOST}/api/gastos/desglose/export.csv?by=vendor", timeout=5)
+check("export.csv sin auth -> 401", r.status_code == 401, f"{r.status_code}")
+
+
+# ── Resumen FINAL (movido al final) ────────────────────────────
 print(f"\n{'='*60}")
 print(f"Tests: {PASS + FAIL} | PASS: {PASS} | FAIL: {FAIL}")
 if ERRORS:

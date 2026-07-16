@@ -122,6 +122,7 @@ function initNav() {
         if (v === 'gastos') renderGastos();
         if (v === 'gastos-detalle') renderGastosDetalle();
         if (v === 'alertas') renderAlertas();
+        if (v === 'desglose') renderDesglose();
         if (v === 'config') renderConfig();
         VIEWS_RENDERED.add(v);
       } else {
@@ -1482,7 +1483,7 @@ function initShortcuts() {
       pendingG = false;
       clearTimeout(pendingGTimer);
       const k = e.key.toLowerCase();
-      const map = { d:'dashboard', v:'ventas', g:'gastos', a:'alertas', c:'config' };
+      const map = { d:'dashboard', v:'ventas', g:'gastos', a:'alertas', b:'desglose', c:'config' };
       if (map[k]) { e.preventDefault(); switchView(map[k]); return; }
     }
     if (e.key.toLowerCase() === 'g') {
@@ -1573,4 +1574,493 @@ if (document.readyState === 'loading') {
 } else {
   // DOM ya listo, ejecutar inmediatamente
   init();
+}
+
+
+// ── v8.0 PRO: Desglose Excel-style ──────────────────────────────────
+
+const DG = {
+  activeTab: 'resumen',
+  filters: {},
+  _tabs: null,
+};
+
+async function renderDesglose() {
+  DG._tabs = DG._tabs || $$('.excel-tab');
+  // default fechas: últimos 12 meses
+  const today = new Date();
+  const yyyymm = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}`;
+  const fromInput = $('#dg-from');
+  const toInput = $('#dg-to');
+  if (fromInput && !fromInput.value) {
+    const d = new Date(today); d.setFullYear(d.getFullYear() - 1);
+    fromInput.value = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`;
+  }
+  if (toInput && !toInput.value) toInput.value = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+  if ($('#cal-year') && !$('#cal-year').value) $('#cal-year').value = today.getFullYear();
+
+  // Tab clicks
+  DG._tabs.forEach(tab => {
+    if (tab._wired) return;
+    tab._wired = true;
+    tab.onclick = () => switchDesgloseTab(tab.getAttribute('data-tab'));
+  });
+
+  // Botón aplicar (filtros globales)
+  const applyBtn = $('#dg-apply');
+  if (applyBtn && !applyBtn._wired) {
+    applyBtn._wired = true;
+    applyBtn.onclick = () => {
+      DG.filters = {
+        date_from: $('#dg-from')?.value || '',
+        date_to: $('#dg-to')?.value || '',
+        cuenta: $('#dg-cuenta')?.value || '',
+      };
+      // recargar pestaña activa
+      loadDesgloseTab(DG.activeTab);
+      toast('Filtros aplicados', 'success');
+    };
+  }
+
+  // Botón export CSV
+  const exportBtn = $('#desglose-export-btn');
+  if (exportBtn && !exportBtn._wired) {
+    exportBtn._wired = true;
+    exportBtn.onclick = () => exportDesgloseCsv();
+  }
+
+  // Botones pestañas específicas (matrix, top, calendar, compare)
+  wireMatrixControls();
+  wireTopControls();
+  wireCalendarControls();
+  wireCompareControls();
+
+  // Cargar pestaña activa (Resumen por defecto)
+  loadDesgloseTab(DG.activeTab);
+}
+
+function switchDesgloseTab(tabName) {
+  DG.activeTab = tabName;
+  DG._tabs.forEach(t => t.classList.toggle('active', t.getAttribute('data-tab') === tabName));
+  $$('.excel-panel').forEach(p => p.classList.toggle('active', p.getAttribute('data-tab-panel') === tabName));
+  loadDesgloseTab(tabName);
+}
+
+async function loadDesgloseTab(tabName) {
+  switch (tabName) {
+    case 'resumen': await loadDesgloseResumen(); break;
+    case 'analisis': await loadDesgloseMatrix(); break;
+    case 'top': await loadDesgloseTop(); break;
+    case 'calendario': await loadDesgloseCalendar(); break;
+    case 'comparar': await loadDesgloseCompare(); break;
+  }
+  // mostrar timestamp de generación
+  const el = $('#dg-gen-at');
+  if (el) el.textContent = `Última actualización: ${new Date().toLocaleString('es-ES')}`;
+}
+
+async function loadDesgloseResumen() {
+  const grid = $('#resumen-grid');
+  if (!grid) return;
+  grid.innerHTML = '<div class="skeleton-card"></div>'.repeat(6);
+  try {
+    const params = new URLSearchParams();
+    Object.entries(DG.filters).forEach(([k,v]) => v && params.set(k, v));
+    const d = await getJSON('/api/gastos/desglose/resumen?' + params.toString());
+
+    const fmt = (n) => Number(n||0).toLocaleString('es-ES', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    const fmt0 = (n) => Number(n||0).toLocaleString('es-ES', {maximumFractionDigits: 0});
+
+    grid.innerHTML = `
+      <div class="resumen-card accent">
+        <div class="resumen-label">Total facturas</div>
+        <div class="resumen-value">${fmt0(d.total_facturas)}</div>
+        <div class="resumen-meta">${fmt(d.n_vendors)} vendors · ${fmt0(d.n_categories)} categorías</div>
+      </div>
+      <div class="resumen-card">
+        <div class="resumen-label">Importe total</div>
+        <div class="resumen-value">${fmt(d.total_eur)}€</div>
+        <div class="resumen-meta">ticket medio ${fmt(d.ticket_medio_eur)}€</div>
+      </div>
+      <div class="resumen-card success">
+        <div class="resumen-label">Mes actual</div>
+        <div class="resumen-value">${fmt(d.eur_mes_actual)}€</div>
+        <div class="resumen-meta">${fmt0(d.facturas_mes_actual)} facturas este mes</div>
+      </div>
+      <div class="resumen-card warn">
+        <div class="resumen-label">Importe máximo</div>
+        <div class="resumen-value">${fmt(d.maximo_eur)}€</div>
+        <div class="resumen-meta">mínimo: ${fmt(d.minimo_eur)}€</div>
+      </div>
+      <div class="resumen-card">
+        <div class="resumen-label">Top categoría</div>
+        <div class="resumen-value" style="font-size: var(--fz-lg)">${esc(d.top_category || '—')}</div>
+        <div class="resumen-meta">${fmt(d.top_category_eur)}€</div>
+      </div>
+      <div class="resumen-card">
+        <div class="resumen-label">Top proveedor</div>
+        <div class="resumen-value" style="font-size: var(--fz-lg)">${esc(d.top_vendor || '—')}</div>
+        <div class="resumen-meta">${fmt(d.top_vendor_eur)}€</div>
+      </div>
+    `;
+  } catch(e) {
+    grid.innerHTML = '<div class="state error"><div class="title">Error cargando resumen</div><div class="desc">' + esc(e.message) + '</div></div>';
+  }
+}
+
+function wireMatrixControls() {
+  const btn = $('#mtx-apply');
+  if (!btn || btn._wired) return;
+  btn._wired = true;
+  btn.onclick = loadDesgloseMatrix;
+}
+
+async function loadDesgloseMatrix() {
+  const wrap = $('#mtx-results');
+  if (!wrap) return;
+  wrap.innerHTML = '<div class="skeleton-table"><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div></div>';
+  try {
+    const params = new URLSearchParams();
+    params.set('rows', $('#mtx-rows')?.value || 'month');
+    params.set('cols', $('#mtx-cols')?.value || 'category');
+    params.set('metric', $('#mtx-metric')?.value || 'sum');
+    Object.entries(DG.filters).forEach(([k,v]) => v && params.set(k, v));
+    const d = await getJSON('/api/gastos/desglose/matrix?' + params.toString());
+
+    if (!d.cells || d.cells.length === 0) {
+      wrap.innerHTML = '<div class="excel-empty"><div class="ico">📭</div><h3>Sin datos</h3><p>No hay facturas que coincidan con los filtros actuales.</p></div>';
+      return;
+    }
+
+    // Construir tabla cruzada tipo Excel
+    const rows = [...new Set(d.cells.map(c => c.row))].sort();
+    const cols = [...new Set(d.cells.map(c => c.col))].sort();
+    const cellMap = {};
+    let maxValue = 0;
+    d.cells.forEach(c => {
+      cellMap[`${c.row}|${c.col}`] = c;
+      if (c.value > maxValue) maxValue = c.value;
+    });
+
+    const fmt = (n) => Number(n||0).toLocaleString('es-ES', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    const fmt0 = (n) => Number(n||0).toLocaleString('es-ES', {maximumFractionDigits: 0});
+    const intensityClass = (v) => {
+      if (!v || maxValue === 0) return 'mtx-cell-zero';
+      const r = v / maxValue;
+      if (r < 0.2) return 'mtx-cell-1';
+      if (r < 0.4) return 'mtx-cell-2';
+      if (r < 0.6) return 'mtx-cell-3';
+      if (r < 0.8) return 'mtx-cell-4';
+      return 'mtx-cell-5';
+    };
+
+    let html = '<div style="overflow:auto;max-height:60vh"><table class="mtx-table"><thead><tr>';
+    html += '<th class="row-label">' + esc(d.row_dim) + ' ↓ \\ ' + esc(d.col_dim) + ' →</th>';
+    cols.forEach(c => { html += `<th class="num col-label">${esc(c)}</th>`; });
+    html += '<th class="num total">Total fila</th></tr></thead><tbody>';
+
+    rows.forEach(r => {
+      html += `<tr><td class="row-label">${esc(r)}</td>`;
+      let rowTotal = 0;
+      cols.forEach(c => {
+        const cell = cellMap[`${r}|${c}`];
+        if (cell) {
+          rowTotal += cell.value;
+          html += `<td class="num mtx-cell ${intensityClass(cell.value)}" title="${esc(r)} × ${esc(c)}: ${fmt(cell.value)}€ (${cell.count} fac)">${d.metric === 'count' ? fmt0(cell.value) : fmt(cell.value)}</td>`;
+        } else {
+          html += '<td class="num mtx-cell-zero">·</td>';
+        }
+      });
+      const rowTotalCell = d.row_totals[r] || rowTotal;
+      html += `<td class="num total">${fmt(rowTotalCell)}</td>`;
+      html += '</tr>';
+    });
+
+    // Total row
+    html += '<tr class="total"><td class="row-label">Total</td>';
+    cols.forEach(c => {
+      html += `<td class="num total">${fmt(d.col_totals[c] || 0)}</td>`;
+    });
+    html += `<td class="num total">${fmt(d.grand_total)}</td></tr>`;
+    html += '</tbody></table></div>';
+
+    html += `<div style="margin-top:var(--s-3);font-size:var(--fz-xs);color:var(--fg-3)">${d.n_cells} celdas · Gran total: <b>${fmt(d.grand_total)}€</b> · métrica: ${esc(d.metric)}</div>`;
+
+    wrap.innerHTML = html;
+  } catch(e) {
+    wrap.innerHTML = '<div class="state error"><div class="title">Error</div><div class="desc">' + esc(e.message) + '</div></div>';
+  }
+}
+
+function wireTopControls() {
+  const btn = $('#top-apply');
+  if (!btn || btn._wired) return;
+  btn._wired = true;
+  btn.onclick = loadDesgloseTop;
+}
+
+async function loadDesgloseTop() {
+  const wrap = $('#top-results');
+  if (!wrap) return;
+  wrap.innerHTML = '<div class="skeleton-card"></div>'.repeat(5);
+  try {
+    const params = new URLSearchParams();
+    params.set('by', $('#top-by')?.value || 'vendor');
+    params.set('metric', $('#top-metric')?.value || 'sum');
+    params.set('limit', $('#top-limit')?.value || '20');
+    if ($('#top-sparkline')?.checked) params.set('with_sparkline', 'true');
+    Object.entries(DG.filters).forEach(([k,v]) => v && params.set(k, v));
+    const d = await getJSON('/api/gastos/desglose/top?' + params.toString());
+
+    if (!d.items || d.items.length === 0) {
+      wrap.innerHTML = '<div class="excel-empty"><div class="ico">🏆</div><h3>Sin datos</h3></div>';
+      return;
+    }
+
+    const fmt = (n) => Number(n||0).toLocaleString('es-ES', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    const maxValue = Math.max(...d.items.map(i => i.value), 1);
+    const showSparkline = $('#top-sparkline')?.checked;
+
+    wrap.innerHTML = '<div class="top-list">' + d.items.map((it, idx) => {
+      const rank = idx + 1;
+      const rankClass = rank <= 3 ? `top-${rank}` : '';
+      const barWidth = (it.value / maxValue * 100).toFixed(1);
+      const sparkSvg = (showSparkline && it.sparkline_6m && it.sparkline_6m.length > 0) ? renderSparkline(it.sparkline_6m) : '';
+      return `
+        <div class="top-row">
+          <div class="top-rank ${rankClass}">#${rank}</div>
+          <div class="top-name">${esc(it.dim)}</div>
+          <div class="top-bar"><div class="top-bar-fill" style="width:${barWidth}%"></div></div>
+          <div class="top-value">${fmt(it.value)}€</div>
+          <div class="top-count">${it.count} fac</div>
+          ${sparkSvg ? `<div class="top-spark">${sparkSvg}</div>` : ''}
+        </div>
+      `;
+    }).join('') + '</div>';
+  } catch(e) {
+    wrap.innerHTML = '<div class="state error"><div class="title">Error</div><div class="desc">' + esc(e.message) + '</div></div>';
+  }
+}
+
+function renderSparkline(data) {
+  // data = [{month: 'YYYY-MM', eur: number}]
+  if (!data || data.length === 0) return '';
+  const w = 110, h = 24;
+  const max = Math.max(...data.map(d => d.eur), 1);
+  const min = Math.min(...data.map(d => d.eur), 0);
+  const range = max - min || 1;
+  const stepX = w / Math.max(data.length - 1, 1);
+  const points = data.map((d, i) => {
+    const x = i * stepX;
+    const y = h - ((d.eur - min) / range * (h - 4)) - 2;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  const lastPoint = data[data.length - 1];
+  const lastX = (data.length - 1) * stepX;
+  const lastY = h - ((lastPoint.eur - min) / range * (h - 4)) - 2;
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" style="vertical-align:middle">
+    <polyline points="${points}" fill="none" stroke="var(--accent,#3b82f6)" stroke-width="1.5" />
+    <circle cx="${lastX.toFixed(1)}" cy="${lastY.toFixed(1)}" r="2.5" fill="var(--accent,#3b82f6)" />
+  </svg>`;
+}
+
+function wireCalendarControls() {
+  const btn = $('#cal-apply');
+  if (!btn || btn._wired) return;
+  btn._wired = true;
+  btn.onclick = loadDesgloseCalendar;
+}
+
+async function loadDesgloseCalendar() {
+  const wrap = $('#cal-results');
+  if (!wrap) return;
+  wrap.innerHTML = '<div class="skeleton-card"></div>';
+  try {
+    const year = $('#cal-year')?.value || new Date().getFullYear();
+    const d = await getJSON(`/api/gastos/desglose/calendar?year=${year}`);
+    const fmt = (n) => Number(n||0).toLocaleString('es-ES', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    const grid = d.grid || {};
+    const allValues = Object.values(grid).flatMap(m => Object.values(m).map(c => c.eur || 0)).filter(v => v > 0);
+    const maxVal = Math.max(...allValues, 1);
+
+    const intensityLevel = (v) => {
+      if (!v || v <= 0) return 0;
+      const r = v / maxVal;
+      if (r < 0.1) return 1;
+      if (r < 0.25) return 2;
+      if (r < 0.5) return 3;
+      if (r < 0.8) return 4;
+      return 5;
+    };
+
+    const months = ['01','02','03','04','05','06','07','08','09','10','11','12'];
+    const monthNames = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+    const daysInMonth = (m, y) => new Date(y, parseInt(m), 0).getDate();
+
+    let html = `<div class="cal-summary">
+      <div><div class="cal-stat-label">Año</div><div class="cal-stat-value">${year}</div></div>
+      <div><div class="cal-stat-label">Total facturas</div><div class="cal-stat-value">${d.total_count || 0}</div></div>
+      <div><div class="cal-stat-label">Total €</div><div class="cal-stat-value">${fmt(d.total_eur)}€</div></div>
+      <div><div class="cal-stat-label">Día pico</div><div class="cal-stat-value">${fmt(maxVal)}€</div></div>
+      <div><div class="cal-stat-label">Celdas censuradas (n<3)</div><div class="cal-stat-value">${d.censored_cells || 0}</div></div>
+    </div>`;
+
+    html += '<div class="cal-grid">';
+    // Header
+    html += '<div class="cal-cell cal-header"></div>';
+    for (let d = 1; d <= 31; d++) html += `<div class="cal-cell cal-header">${d}</div>`;
+    // Meses
+    months.forEach((m, mi) => {
+      html += `<div class="cal-cell cal-row">${monthNames[mi]}</div>`;
+      const daysM = daysInMonth(m, year);
+      for (let d = 1; d <= 31; d++) {
+        if (d > daysM) {
+          html += '<div class="cal-cell cal-day-empty"></div>';
+        } else {
+          const cell = grid[m]?.[String(d).padStart(2, '0')];
+          if (!cell) {
+            html += '<div class="cal-cell cal-data" style="opacity:.2"></div>';
+          } else if (cell.censored) {
+            html += `<div class="cal-cell cal-data cal-censored" title="${d}/${m}/${year}: ${cell.count} fac (censurado)">n=${cell.count}</div>`;
+          } else {
+            const lvl = intensityLevel(cell.eur);
+            const display = cell.eur > 1000 ? Math.round(cell.eur / 100) / 10 + 'k' : Math.round(cell.eur);
+            html += `<div class="cal-cell cal-data cal-level-${lvl}" title="${d}/${m}/${year}: ${fmt(cell.eur)}€ (${cell.count} fac)">${display}</div>`;
+          }
+        }
+      }
+    });
+    html += '</div>';
+    wrap.innerHTML = html;
+  } catch(e) {
+    wrap.innerHTML = '<div class="state error"><div class="title">Error</div><div class="desc">' + esc(e.message) + '</div></div>';
+  }
+}
+
+function wireCompareControls() {
+  const btn = $('#cmp-apply');
+  if (!btn || btn._wired) return;
+  btn._wired = true;
+  btn.onclick = loadDesgloseCompare;
+  // Presets
+  $$('[data-cmp-preset]').forEach(b => {
+    if (b._wired) return;
+    b._wired = true;
+    b.onclick = () => applyComparePreset(b.getAttribute('data-cmp-preset'));
+  });
+}
+
+function applyComparePreset(preset) {
+  const today = new Date();
+  const p1To = $('#cmp-p1-to');
+  const p1From = $('#cmp-p1-from');
+  const p2From = $('#cmp-p2-from');
+  const p2To = $('#cmp-p2-to');
+  if (!p1From || !p1To || !p2From || !p2To) return;
+  if (preset === 'prev-month') {
+    const d = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+    const lastPrev = new Date(today.getFullYear(), today.getMonth(), 0);
+    const d2f = new Date(today.getFullYear(), today.getMonth() - 2, 1);
+    const d2t = new Date(today.getFullYear(), today.getMonth() - 1, 0);
+    p1From.value = formatYMD(d);
+    p1To.value = formatYMD(lastPrev);
+    p2From.value = formatYMD(d2f);
+    p2To.value = formatYMD(d2t);
+  } else if (preset === 'same-last-year') {
+    const d = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+    const lastPrev = new Date(today.getFullYear(), today.getMonth(), 0);
+    p1From.value = formatYMD(d);
+    p1To.value = formatYMD(lastPrev);
+    const d2 = new Date(today.getFullYear() - 1, today.getMonth() - 1, 1);
+    const d2t = new Date(today.getFullYear() - 1, today.getMonth(), 0);
+    p2From.value = formatYMD(d2);
+    p2To.value = formatYMD(d2t);
+  }
+}
+
+function formatYMD(d) {
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+async function loadDesgloseCompare() {
+  const wrap = $('#cmp-results');
+  if (!wrap) return;
+  wrap.innerHTML = '<div class="skeleton-card"></div>';
+  try {
+    const params = new URLSearchParams();
+    params.set('by', $('#cmp-by')?.value || 'vendor');
+    params.set('p1_from', $('#cmp-p1-from')?.value || '');
+    params.set('p1_to', $('#cmp-p1-to')?.value || '');
+    params.set('p2_from', $('#cmp-p2-from')?.value || '');
+    params.set('p2_to', $('#cmp-p2-to')?.value || '');
+    const d = await getJSON('/api/gastos/desglose/compare?' + params.toString());
+
+    if (!d.items || d.items.length === 0) {
+      wrap.innerHTML = '<div class="excel-empty"><div class="ico">⚖️</div><h3>Sin datos comparables</h3><p>Ajusta los rangos de fechas.</p></div>';
+      return;
+    }
+
+    const fmt = (n) => Number(n||0).toLocaleString('es-ES', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+
+    wrap.innerHTML = `
+      <div style="margin-bottom:var(--s-2);font-size:var(--fz-xs);color:var(--fg-3)">
+        P1: <b>${esc(d.p1_from)} → ${esc(d.p1_to)}</b> vs P2: <b>${esc(d.p2_from)} → ${esc(d.p2_to)}</b>
+      </div>
+      <div style="overflow:auto"><table class="cmp-table">
+        <thead><tr>
+          <th>${esc(d.by)}</th>
+          <th class="num">P1 (${esc(d.p1_from)}/${esc(d.p1_to)})</th>
+          <th class="num">P2 (${esc(d.p2_from)}/${esc(d.p2_to)})</th>
+          <th class="num">Δ</th>
+          <th class="num">Δ%</th>
+          <th class="num">Δ facturas</th>
+        </tr></thead>
+        <tbody>
+          ${d.items.map(it => {
+            const pct = it.delta_pct;
+            const pctClass = pct == null ? 'cmp-delta-zero' : (pct > 0 ? 'cmp-delta-pos' : (pct < 0 ? 'cmp-delta-neg' : 'cmp-delta-zero'));
+            const pctStr = pct == null ? '—' : (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%';
+            const deltaClass = it.delta > 0 ? 'cmp-delta-pos' : (it.delta < 0 ? 'cmp-delta-neg' : 'cmp-delta-zero');
+            const deltaStr = (it.delta >= 0 ? '+' : '') + fmt(it.delta) + '€';
+            const cntDelta = it.p1_count - it.p2_count;
+            const cntStr = (cntDelta >= 0 ? '+' : '') + cntDelta;
+            return `<tr>
+              <td>${esc(it.dim)}</td>
+              <td class="num">${fmt(it.p1_total)}€<br><small>${it.p1_count} fac</small></td>
+              <td class="num">${fmt(it.p2_total)}€<br><small>${it.p2_count} fac</small></td>
+              <td class="num ${deltaClass}">${deltaStr}</td>
+              <td class="num ${pctClass}">${pctStr}</td>
+              <td class="num">${cntStr}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table></div>
+    `;
+  } catch(e) {
+    wrap.innerHTML = '<div class="state error"><div class="title">Error</div><div class="desc">' + esc(e.message) + '</div></div>';
+  }
+}
+
+async function exportDesgloseCsv() {
+  const params = new URLSearchParams();
+  // Export según pestaña activa
+  let by = 'vendor';
+  if (DG.activeTab === 'analisis' || DG.activeTab === 'top') by = $('#' + (DG.activeTab === 'analisis' ? 'mtx-cols' : 'top-by'))?.value || 'vendor';
+  if (DG.activeTab === 'comparar') by = $('#cmp-by')?.value || 'vendor';
+  params.set('by', by);
+  Object.entries(DG.filters).forEach(([k,v]) => v && params.set(k, v));
+  try {
+    const r = await _fetchAuth('/api/gastos/desglose/export.csv?' + params.toString());
+    if (!r.ok) { toast('Error exportando CSV', 'error'); return; }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `desglose_${by}_${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    toast('CSV descargado', 'success');
+  } catch(e) {
+    toast('Error: ' + e.message, 'error');
+  }
 }

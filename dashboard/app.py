@@ -35,7 +35,7 @@ try:
 except Exception:
     def _gd_status(account): return {"account": account, "status": "NOT_AVAILABLE", "error": "oauth_drive no importable"}
 
-app = FastAPI(title="Liados Dashboard", version="7.1.0")
+app = FastAPI(title="Liados Dashboard", version="8.0.0")
 security = HTTPBasic()
 
 # Servir assets estaticos (fuentes, css, js) sin auth (son publicos, sin secretos).
@@ -446,7 +446,7 @@ def api_facturas_recientes(limit: int = Query(15, ge=1, le=100, description='Max
 @app.get("/api/health")
 def health():
     """Health check enriquecido: BD OK, pool stats, version."""
-    out = {"status": "ok", "version": "7.1.0", "checks": {}}
+    out = {"status": "ok", "version": "8.0.0", "checks": {}}
     # Test BD (importante: usar try/finally + put_conn para no romper el pool)
     conn = get_conn()
     try:
@@ -1835,6 +1835,7 @@ INDEX_HTML = """<!DOCTYPE html>
       <a class="nav-item" data-view="gastos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg><span class="nav-label">Gastos</span></a>
       <a class="nav-item" data-view="gastos-detalle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg><span class="nav-label">Detalle gastos</span></a>
       <a class="nav-item" data-view="alertas"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg><span class="nav-label">Alertas</span><span class="nav-badge" id="nav-alert-badge"></span></a>
+      <a class="nav-item" data-view="desglose"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg><span class="nav-label">Desglose</span><span class="kbd-inline">G+B</span></a>
       <div class="nav-section-label">Restaurante</div>
       <a class="nav-item" data-view="productos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18M16 10a4 4 0 0 1-8 0"/></svg><span class="nav-label">Productos</span></a>
       <a class="nav-item" data-view="reservas"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg><span class="nav-label">Reservas</span></a>
@@ -2085,6 +2086,204 @@ INDEX_HTML = """<!DOCTYPE html>
       </div>
     </section>
 
+    <!-- ═══ Vista: Desglose (nueva v8) ═══ -->
+    <section class="view" data-view="desglose">
+      <!-- Tabs estilo Excel -->
+      <div class="excel-tabs" id="excel-tabs">
+        <button class="excel-tab active" data-tab="resumen">
+          <span class="excel-tab-ico">📋</span>
+          <span>Resumen</span>
+        </button>
+        <button class="excel-tab" data-tab="analisis">
+          <span class="excel-tab-ico">📊</span>
+          <span>Análisis (matriz)</span>
+        </button>
+        <button class="excel-tab" data-tab="top">
+          <span class="excel-tab-ico">🏆</span>
+          <span>Top N</span>
+        </button>
+        <button class="excel-tab" data-tab="calendario">
+          <span class="excel-tab-ico">📅</span>
+          <span>Calendario</span>
+        </button>
+        <button class="excel-tab" data-tab="comparar">
+          <span class="excel-tab-ico">⚖️</span>
+          <span>Comparar</span>
+        </button>
+        <div class="excel-tabs-spacer"></div>
+        <button class="excel-tab-excel" id="desglose-export-btn" title="Exportar pestaña activa a CSV">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span>CSV</span>
+        </button>
+      </div>
+
+      <!-- Filtros globales persistentes -->
+      <div class="card gd-filters">
+        <div class="gd-filter-row">
+          <label class="gd-field"><span>Desde</span><input type="date" id="dg-from"></label>
+          <label class="gd-field"><span>Hasta</span><input type="date" id="dg-to"></label>
+          <label class="gd-field"><span>Cuenta</span>
+            <select id="dg-cuenta">
+              <option value="">Todas</option>
+              <option value="principal">principal</option>
+              <option value="secundaria">secundaria</option>
+            </select>
+          </label>
+          <button class="btn primary" id="dg-apply">🔄 Aplicar a todas las pestañas</button>
+          <span class="dg-gen-at" id="dg-gen-at"></span>
+        </div>
+      </div>
+
+      <!-- TAB: Resumen -->
+      <div class="excel-panel active" data-tab-panel="resumen">
+        <div class="resumen-grid" id="resumen-grid">
+          <div class="skeleton-card"></div>
+          <div class="skeleton-card"></div>
+          <div class="skeleton-card"></div>
+          <div class="skeleton-card"></div>
+        </div>
+      </div>
+
+      <!-- TAB: Análisis (matriz) -->
+      <div class="excel-panel" data-tab-panel="analisis">
+        <div class="card">
+          <div class="card-head">
+            <h2>📊 Matriz cruzada</h2>
+            <span class="subtitle">Selecciona dimensiones filas × columnas</span>
+          </div>
+          <div class="card-body">
+            <div class="gd-matrix-controls">
+              <label class="gd-field"><span>Filas</span>
+                <select id="mtx-rows">
+                  <option value="month">Mes</option>
+                  <option value="vendor">Proveedor</option>
+                  <option value="category">Categoría</option>
+                  <option value="cuenta">Cuenta</option>
+                  <option value="status">Estado</option>
+                </select>
+              </label>
+              <label class="gd-field"><span>Columnas</span>
+                <select id="mtx-cols">
+                  <option value="category" selected>Categoría</option>
+                  <option value="month">Mes</option>
+                  <option value="vendor">Proveedor</option>
+                  <option value="cuenta">Cuenta</option>
+                  <option value="status">Estado</option>
+                </select>
+              </label>
+              <label class="gd-field"><span>Métrica</span>
+                <select id="mtx-metric">
+                  <option value="sum" selected>Suma €</option>
+                  <option value="count">Nº facturas</option>
+                  <option value="avg">Ticket medio</option>
+                  <option value="max">Máximo</option>
+                </select>
+              </label>
+              <button class="btn primary" id="mtx-apply">Generar matriz</button>
+            </div>
+            <div id="mtx-results" class="mtx-results"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB: Top N -->
+      <div class="excel-panel" data-tab-panel="top">
+        <div class="card">
+          <div class="card-head">
+            <h2>🏆 Top N elementos</h2>
+            <div class="gd-top-controls">
+              <label class="gd-field"><span>Agrupar por</span>
+                <select id="top-by">
+                  <option value="vendor" selected>Proveedor</option>
+                  <option value="category">Categoría</option>
+                  <option value="cuenta">Cuenta</option>
+                  <option value="source">Origen</option>
+                </select>
+              </label>
+              <label class="gd-field"><span>Métrica</span>
+                <select id="top-metric">
+                  <option value="sum" selected>Suma €</option>
+                  <option value="count">Nº facturas</option>
+                  <option value="avg">Ticket medio</option>
+                </select>
+              </label>
+              <label class="gd-field"><span>Top</span>
+                <input type="number" id="top-limit" min="5" max="100" value="20" step="5">
+              </label>
+              <label class="gd-toggle">
+                <input type="checkbox" id="top-sparkline">
+                <span>Mostrar tendencia 6m</span>
+              </label>
+              <button class="btn primary" id="top-apply">Generar Top</button>
+            </div>
+          </div>
+          <div class="card-body" id="top-results"></div>
+        </div>
+      </div>
+
+      <!-- TAB: Calendario (heatmap) -->
+      <div class="excel-panel" data-tab-panel="calendario">
+        <div class="card">
+          <div class="card-head">
+            <h2>📅 Calendario de gastos</h2>
+            <div class="gd-cal-controls">
+              <label class="gd-field"><span>Año</span>
+                <input type="number" id="cal-year" min="2024" max="2030" step="1">
+              </label>
+              <button class="btn primary" id="cal-apply">Cargar calendario</button>
+              <span class="gd-legend">
+                <span class="gd-legend-box" style="background:var(--green-100)"></span>
+                <small>bajo</small>
+                <span class="gd-legend-box" style="background:var(--green-400)"></span>
+                <small>medio</small>
+                <span class="gd-legend-box" style="background:var(--green-700)"></span>
+                <small>alto</small>
+              </span>
+            </div>
+          </div>
+          <div class="card-body" id="cal-results"></div>
+        </div>
+      </div>
+
+      <!-- TAB: Comparar -->
+      <div class="excel-panel" data-tab-panel="comparar">
+        <div class="card">
+          <div class="card-head">
+            <h2>⚖️ Comparar 2 períodos</h2>
+            <div class="gd-cmp-controls">
+              <label class="gd-field"><span>Agrupar por</span>
+                <select id="cmp-by">
+                  <option value="vendor" selected>Proveedor</option>
+                  <option value="category">Categoría</option>
+                  <option value="cuenta">Cuenta</option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="gd-cmp-ranges">
+              <fieldset>
+                <legend>Período 1 (actual)</legend>
+                <label class="gd-field"><span>Desde</span><input type="date" id="cmp-p1-from"></label>
+                <label class="gd-field"><span>Hasta</span><input type="date" id="cmp-p1-to"></label>
+              </fieldset>
+              <fieldset>
+                <legend>Período 2 (comparar)</legend>
+                <label class="gd-field"><span>Desde</span><input type="date" id="cmp-p2-from"></label>
+                <label class="gd-field"><span>Hasta</span><input type="date" id="cmp-p2-to"></label>
+                <div class="gd-cmp-presets">
+                  <button type="button" class="btn ghost sm" data-cmp-preset="prev-month">Mes anterior</button>
+                  <button type="button" class="btn ghost sm" data-cmp-preset="same-last-year">Mismo período año anterior</button>
+                </div>
+              </fieldset>
+              <button class="btn primary" id="cmp-apply">Comparar</button>
+            </div>
+            <div id="cmp-results"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- ═══ Vista: Productos (próximamente) ═══ -->
     <section class="view" data-view="productos">
       <div class="coming-soon">
@@ -2177,7 +2376,7 @@ INDEX_HTML = """<!DOCTYPE html>
         <tr><td><kbd>C</kbd></td><td>Abrir/cerrar asistente AI</td></tr>
         <tr><td><kbd>R</kbd></td><td>Refrescar datos</td></tr>
         <tr><td><kbd>T</kbd></td><td>Cambiar tema claro/oscuro</td></tr>
-        <tr><td><kbd>G</kbd> + <kbd>D/V/G/A/C</kbd></td><td>Ir a Dashboard/Ventas/Gastos/Alertas/Config</td></tr>
+        <tr><td><kbd>G</kbd> + <kbd>D/V/G/A/B/C</kbd></td><td>Ir a Dashboard/Ventas/Gastos/Alertas/<b>Desglose</b>/Config</td></tr>
         <tr><td><kbd>?</kbd></td><td>Esta ayuda</td></tr>
         <tr><td><kbd>Esc</kbd></td><td>Cerrar ventana activa</td></tr>
       </table>
@@ -2443,3 +2642,775 @@ def api_gastos_reclasificar_v2(factura_id: str, payload: _ReclasificarPayload, u
         "category_name": category_db_name,
         "verified_by": user,
     }
+
+
+# ── v8.0 PRO: Desglose "Excel-style" con 3 espacios y 6 vistas ──────────
+# - Espacio 1: Resumen (kpis globales)
+# - Espacio 2: Análisis (matrices 2D: Mes×Cat, Vendor×Mes, Cat×Vendor)
+# - Espacio 3: Tendencias (Top N + Heatmap Anual Mes×Día + Comparador 2 periodos)
+#
+# Fixes integrados tras contradictores (security + perf + ux):
+# - Whitelist estricto de dimensiones (anti SQLi/PII exfiltration)
+# - GROUP BY en SQL (no en Python) -> rendimiento
+# - Single query con array_agg para top-N (anti N+1)
+# - Caché con key basada en filtros + role (anti multi-tenancy leak)
+# - CSV sanitization contra formula injection (= + - @ \t \r)
+
+import hashlib as _hl
+from datetime import datetime as _dt
+import json as _json
+
+
+# Whitelist de dimensiones permitidas (CRÍTICO: anti SQLi en pivot dinámico)
+DESGLOSE_ALLOWED_DIMS = {
+    "vendor": "vendor_name",
+    "category": "category_raw",  # o COALESCE(c.name, i.category_raw) si JOIN
+    "cuenta": "source_account",
+    "source": "source",
+    "month": "_month",
+    "quarter": "_quarter",
+    "year": "_year",
+    "week": "_week",
+    "day": "_day",
+    "status": "status",
+}
+
+DESGLOSE_ALLOWED_METRICS = {"count", "sum", "avg", "min", "max"}
+
+
+def _desglose_sql_for(metric_alias: str, total_col: str = "total_amount") -> str:
+    """Traduce la métrica pública a SQL real. count NO multiplica por importe."""
+    return {
+        "count": "count(*)",
+        "sum": f"sum({total_col})",
+        "avg": f"avg({total_col})",
+        "min": f"min({total_col})",
+        "max": f"max({total_col})",
+    }[metric_alias]
+
+
+def _sanitize_csv_value(v) -> str:
+    """v8.0: CSV/Excel formula injection prevention.
+
+    Si el valor empieza por =, +, -, @, \\t o \\r, Excel lo interpreta como formula
+    (riesgo de DDE/exec de payloads). Prefijamos con apostrofo (que Excel trata como
+    "literal text") o strip del caracter peligroso.
+    """
+    if v is None:
+        return ""
+    s = str(v)
+    if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + s  # previene formula injection
+    return s
+
+
+def _sanitize_filename(s: str) -> str:
+    """v8.0: Sanitiza un nombre de archivo contra path traversal en exports."""
+    import re as _re_fn
+    if not s:
+        return "untitled"
+    s = s.replace("/", "_").replace("\\", "_").replace("..", "_")
+    s = _re_fn.sub(r"[^A-Za-z0-9_\-.]", "_", s)
+    return s[:120] or "untitled"
+
+
+def _desglose_safe_cache_key(namespace: str, dims, metric, date_from, date_to, cuenta, status, min_eur, max_eur, user, extra=""):
+    """v8.0: Cache key con scope de usuario. Previene multi-tenant cache leak."""
+    raw = _json.dumps({
+        "ns": namespace,
+        "dims": sorted(dims),
+        "metric": metric,
+        "from": date_from,
+        "to": date_to,
+        "cuenta": cuenta,
+        "status": status,
+        "min": min_eur,
+        "max": max_eur,
+        "user": user,
+        "extra": extra,
+    }, sort_keys=True, default=str)
+    return "desglose:" + _hl.sha256(raw.encode()).hexdigest()[:16]
+
+
+# Caché en memoria con TTL (sin Redis para mantener simple). TTL 5 min por defecto.
+_DESGLOSE_CACHE = {}
+_DESGLOSE_CACHE_TTL_S = 300
+
+
+def _cache_get(key):
+    e = _DESGLOSE_CACHE.get(key)
+    if not e:
+        return None
+    if (_dt.now().timestamp() - e["ts"]) > _DESGLOSE_CACHE_TTL_S:
+        _DESGLOSE_CACHE.pop(key, None)
+        return None
+    return e["data"]
+
+
+def _cache_put(key, data):
+    _DESGLOSE_CACHE[key] = {"ts": _dt.now().timestamp(), "data": data}
+    # LRU simple: limitar tamaño para no crecer infinito
+    if len(_DESGLOSE_CACHE) > 200:
+        # borrar los 20 más antiguos
+        sorted_keys = sorted(_DESGLOSE_CACHE.items(), key=lambda kv: kv[1]["ts"])
+        for k, _ in sorted_keys[:20]:
+            _DESGLOSE_CACHE.pop(k, None)
+
+
+def _parse_period(date_from: str, date_to: str, period_key: str = "default"):
+    """v8.0: Centraliza parseo de fechas yyyy-mm-dd (antes recalculado por endpoint)."""
+    from datetime import datetime as _dtp
+    df = None
+    dt = None
+    if date_from:
+        try:
+            df = _dtp.strptime(date_from, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=422, detail="date_from debe ser YYYY-MM-DD")
+    if date_to:
+        try:
+            dt = _dtp.strptime(date_to, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=422, detail="date_to debe ser YYYY-MM-DD")
+    if df and dt and df > dt:
+        raise HTTPException(status_code=422, detail="date_from debe ser <= date_to")
+    return df, dt
+
+
+# ── ENDPOINT 1: Resumen (kpis globales del desglose) ──────────────────
+
+@app.get("/api/gastos/desglose/resumen")
+def api_desglose_resumen(
+    date_from: str = Query(None, description="YYYY-MM-DD"),
+    date_to: str = Query(None, description="YYYY-MM-DD"),
+    cuenta: str = Query(None, description="Filtrar por source_account"),
+    user: str = Depends(get_current_user),
+):
+    """v8.0: KPIs del desglose (total facturas, total €, ticket medio, top proveedor, top categoría).
+
+    1 sola query (subquerys) -> no N+1.
+    """
+    df, dt = _parse_period(date_from, date_to)
+    cache_key = _desglose_safe_cache_key(
+        "resumen", [], "sum", date_from, date_to, cuenta, None, None, None, user,
+        extra=f"{df or ''}|{dt or ''}"
+    )
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    where_parts = [expense_filter()]
+    params = []
+    if df:
+        where_parts.append("i.invoice_date >= %s")
+        params.append(df)
+    if dt:
+        where_parts.append("i.invoice_date <= %s")
+        params.append(dt)
+    if cuenta:
+        where_parts.append("i.source_account = %s")
+        params.append(cuenta)
+    where_sql = " AND ".join(where_parts)
+
+    row = q(f"""
+        WITH base AS (
+          SELECT i.vendor_name as vendor_name,
+                 COALESCE(c.name, i.category_raw) as category,
+                 i.total_amount as total_amount,
+                 i.invoice_date as invoice_date
+          FROM invoices i
+          LEFT JOIN categories c ON c.id = i.category_id
+          WHERE {where_sql}
+        )
+        SELECT
+          count(*) as total_facturas,
+          coalesce(sum(total_amount), 0) as total_eur,
+          coalesce(avg(total_amount), 0) as ticket_medio,
+          coalesce(max(total_amount), 0) as maximo,
+          coalesce(min(total_amount), 0) as minimo,
+          count(DISTINCT vendor_name) as n_vendors,
+          count(DISTINCT category) as n_categories,
+          (SELECT vendor_name FROM base GROUP BY vendor_name ORDER BY sum(total_amount) DESC LIMIT 1) as top_vendor,
+          (SELECT sum(total_amount) FROM base WHERE vendor_name = (SELECT vendor_name FROM base GROUP BY vendor_name ORDER BY sum(total_amount) DESC LIMIT 1)) as top_vendor_eur,
+          (SELECT category FROM base GROUP BY category ORDER BY sum(total_amount) DESC LIMIT 1) as top_category,
+          (SELECT sum(total_amount) FROM base WHERE category = (SELECT category FROM base GROUP BY category ORDER BY sum(total_amount) DESC LIMIT 1)) as top_category_eur,
+          (SELECT count(*) FROM base WHERE invoice_date >= date_trunc('month', now())) as facturas_mes_actual,
+          (SELECT coalesce(sum(total_amount),0) FROM base WHERE invoice_date >= date_trunc('month', now())) as eur_mes_actual
+        FROM base
+    """, tuple(params))[0]
+
+    out = {
+        "total_facturas": int(row["total_facturas"]),
+        "total_eur": float(row["total_eur"]),
+        "ticket_medio_eur": float(row["ticket_medio"]),
+        "maximo_eur": float(row["maximo"]),
+        "minimo_eur": float(row["minimo"]),
+        "n_vendors": int(row["n_vendors"]),
+        "n_categories": int(row["n_categories"]),
+        "top_vendor": row["top_vendor"],
+        "top_vendor_eur": float(row["top_vendor_eur"] or 0),
+        "top_category": row["top_category"],
+        "top_category_eur": float(row["top_category_eur"] or 0),
+        "facturas_mes_actual": int(row["facturas_mes_actual"] or 0),
+        "eur_mes_actual": float(row["eur_mes_actual"] or 0),
+        "generated_at": _dt.utcnow().isoformat() + "Z",
+    }
+    _cache_put(cache_key, out)
+    return out
+
+
+# ── ENDPOINT 2: Análisis (matrices 2D con drill-down de top-N) ─────────
+
+@app.get("/api/gastos/desglose/matrix")
+def api_desglose_matrix(
+    rows: str = Query(..., description="Dimension filas (whitelist). ej: month|category|vendor"),
+    cols: str = Query(..., description="Dimension columnas. ej: category|month|vendor"),
+    metric: str = Query("sum", description="count|sum|avg|min|max"),
+    date_from: str = Query(None, description="YYYY-MM-DD"),
+    date_to: str = Query(None, description="YYYY-MM-DD"),
+    cuenta: str = Query(None, description="Filtrar por source_account"),
+    top_per_cell: int = Query(0, ge=0, le=5, description="Top-N facturas por celda (0=desactivado)"),
+    min_eur: float = Query(None, ge=0),
+    max_eur: float = Query(None, ge=0),
+    user: str = Depends(get_current_user),
+):
+    """v8.0: Matriz 2D estilo Excel (filas × columnas) con métrica aplicada.
+
+    Devuelve: {row_dims, col_dims, cells: [{row, col, value, count, top_invoices?}]}
+
+    Performance:
+    - 1 query principal (GROUP BY ambos dims)
+    - Si top_per_cell>0: 1 query extra con array_agg para devolver las top-N
+      facturas por celda (no N+1).
+    """
+    if metric not in DESGLOSE_ALLOWED_METRICS:
+        raise HTTPException(status_code=422, detail=f"metric inválida: {metric}")
+    if rows not in DESGLOSE_ALLOWED_DIMS or cols not in DESGLOSE_ALLOWED_DIMS:
+        raise HTTPException(status_code=400, detail=f"Dimensión no permitida: rows={rows} cols={cols}")
+
+    df, dt = _parse_period(date_from, date_to)
+
+    row_alias = DESGLOSE_ALLOWED_DIMS[rows]
+    col_alias = DESGLOSE_ALLOWED_DIMS[cols]
+    metric_sql = _desglose_sql_for(metric)
+
+    where_parts = [expense_filter()]
+    params = []
+    if df:
+        where_parts.append("invoice_date >= %s")
+        params.append(df)
+    if dt:
+        where_parts.append("invoice_date <= %s")
+        params.append(dt)
+    if cuenta:
+        where_parts.append("source_account = %s")
+        params.append(cuenta)
+    if min_eur is not None:
+        where_parts.append("total_amount >= %s")
+        params.append(min_eur)
+    if max_eur is not None:
+        where_parts.append("total_amount <= %s")
+        params.append(max_eur)
+    where_sql = " AND ".join(where_parts)
+
+    # SELECT segun dims
+    def _select_expr(dim_alias):
+        # _month, _quarter, _year, _week, _day son derivados de invoice_date
+        if dim_alias.startswith("_"):
+            base = "invoice_date"
+            if dim_alias == "_month":  return f"to_char({base}, \'YYYY-MM\')"
+            if dim_alias == "_quarter": return f"to_char({base}, \'YYYY\') || \'-Q\' || to_char(extract(quarter from {base}))"
+            if dim_alias == "_year":   return f"to_char({base}, \'YYYY\')"
+            if dim_alias == "_week":   return f"to_char({base}, \'YYYY\') || \'-W\' || to_char(extract(week from {base}))"
+            if dim_alias == "_day":    return f"to_char({base}, \'YYYY-MM-DD\')"
+        return dim_alias
+
+    row_sel = _select_expr(row_alias)
+    col_sel = _select_expr(col_alias)
+
+    # v8.0: cache key
+    cache_key = _desglose_safe_cache_key(
+        "matrix", [rows, cols], metric, date_from, date_to, cuenta, None, min_eur, max_eur, user,
+        extra=f"top={top_per_cell}"
+    )
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    # 1 sola query: GROUP BY row + col
+    sql = f"""
+        SELECT {row_sel} as r_key, {col_sel} as c_key,
+               {metric_sql} as value,
+               count(*) as cnt
+        FROM invoices i
+        LEFT JOIN categories c ON c.id = i.category_id
+        WHERE {where_sql}
+        GROUP BY r_key, c_key
+        ORDER BY value DESC NULLS LAST
+        LIMIT 5000
+    """
+    rows_data = q(sql, tuple(params))
+
+    cells = []
+    for r in rows_data:
+        cell = {
+            "row": r["r_key"],
+            "col": r["c_key"],
+            "value": float(r["value"]) if r["value"] is not None else 0,
+            "count": int(r["cnt"]),
+        }
+        cells.append(cell)
+
+    # v8.0: Top-N por celda (1 sola query con array_agg, no N+1)
+    top_invoices_by_cell = {}
+    if top_per_cell > 0 and cells:
+        # Construir lista de pares (row_val, col_val) para WHERE
+        # Limitar al top-100 cells por memoria
+        seen = set()
+        pairs = []
+        for c in cells:
+            k = (c["row"], c["col"])
+            if k in seen:
+                continue
+            seen.add(k)
+            pairs.append(k)
+            if len(pairs) >= 100:
+                break
+        # array_agg de las top-N por (row, col)
+        agg_sql = f"""
+            WITH ranked AS (
+              SELECT i.vendor_name as r_key, COALESCE(c.name, i.category_raw) as c_key,
+                     i.id::text as fact_id, i.invoice_number, i.total_amount, i.invoice_date,
+                     row_number() OVER (PARTITION BY {row_sel}, {col_sel} ORDER BY i.total_amount DESC) AS rn
+              FROM invoices i
+              LEFT JOIN categories c ON c.id = i.category_id
+              WHERE {where_sql}
+            )
+            SELECT {row_sel} as r_key, {col_sel} as c_key,
+                   jsonb_agg(jsonb_build_object(
+                     'id', fact_id, 'invoice_number', invoice_number,
+                     'total_amount', total_amount, 'date', invoice_date
+                   ) ORDER BY rn) FILTER (WHERE rn <= %s) as top
+            FROM ranked
+            WHERE rn <= %s
+            GROUP BY r_key, c_key
+        """
+        pairs_params = []
+        for r_key, c_key in pairs:
+            if row_alias.startswith("_"):
+                # Para dims derivadas (_month etc) hay que calcular el valor
+                pass
+            # Es mas seguro pasar como string y comparar
+            pairs_params.append(str(r_key))
+            pairs_params.append(str(c_key))
+        # Construir WHERE con IN tuples. Para simplificar hacemos un bucle.
+        if pairs:
+            top_rows = []
+            for r_key, c_key in pairs:
+                top_rows.extend([str(r_key), str(c_key)])
+            placeholders = ",".join(["(%s,%s)"] * len(pairs))
+            full_sql = f"""
+                SELECT r_key::text, c_key::text, top
+                FROM (
+                  SELECT {row_sel} as r_key, {col_sel} as c_key,
+                         jsonb_agg(jsonb_build_object(
+                           'id', id, 'invoice_number', invoice_number,
+                           'total_amount', total_amount, 'date', invoice_date
+                         ) ORDER BY total_amount DESC) FILTER (WHERE rn <= %s) as top
+                  FROM (
+                    SELECT {row_sel}, {col_sel}, id, invoice_number, total_amount, invoice_date,
+                           row_number() OVER (PARTITION BY {row_sel}, {col_sel} ORDER BY total_amount DESC) as rn
+                    FROM invoices i
+                    LEFT JOIN categories c ON c.id = i.category_id
+                    WHERE {where_sql}
+                  ) t
+                  GROUP BY r_key, c_key
+                ) agg
+                WHERE (r_key::text, c_key::text) IN ({placeholders})
+            """
+            full_params = tuple([top_per_cell] + pairs_params)
+            try:
+                top_data = q(full_sql, full_params)
+                for tr in top_data:
+                    key = (tr["r_key"], tr["c_key"])
+                    top_invoices_by_cell[key] = tr["top"] if tr["top"] else []
+            except Exception as _te:
+                logger.warning(f"top_per_cell query fallo: {_te!r}")
+
+    # Asociar top_invoices a cells
+    for cell in cells:
+        key = (cell["row"], cell["col"])
+        if key in top_invoices_by_cell:
+            cell["top_invoices"] = top_invoices_by_cell[key]
+
+    # Calcular totales
+    grand_total_value = sum(c["value"] for c in cells)
+    row_totals = {}
+    col_totals = {}
+    for c in cells:
+        row_totals[c["row"]] = row_totals.get(c["row"], 0) + c["value"]
+        col_totals[c["col"]] = col_totals.get(c["col"], 0) + c["value"]
+
+    out = {
+        "row_dim": rows,
+        "col_dim": cols,
+        "metric": metric,
+        "cells": cells,
+        "row_totals": row_totals,
+        "col_totals": col_totals,
+        "grand_total": grand_total_value,
+        "n_cells": len(cells),
+        "generated_at": _dt.utcnow().isoformat() + "Z",
+    }
+    _cache_put(cache_key, out)
+    return out
+
+
+# ── ENDPOINT 3: Top N (lista ordenada con sparkline opcional) ─────────────
+
+@app.get("/api/gastos/desglose/top")
+def api_desglose_top(
+    by: str = Query("vendor", description="Dimension: vendor|category|cuenta|source"),
+    metric: str = Query("sum", description="count|sum|avg|min|max"),
+    limit: int = Query(20, ge=1, le=200),
+    date_from: str = Query(None, description="YYYY-MM-DD"),
+    date_to: str = Query(None, description="YYYY-MM-DD"),
+    cuenta: str = Query(None, description="Filtrar por source_account"),
+    with_sparkline: bool = Query(False, description="Incluir serie 6m (1 query extra)"),
+    min_eur: float = Query(None, ge=0),
+    max_eur: float = Query(None, ge=0),
+    user: str = Depends(get_current_user),
+):
+    """v8.0: Top N elementos ordenados por métrica. Opcional sparkline 6m por elemento."""
+    if metric not in DESGLOSE_ALLOWED_METRICS:
+        raise HTTPException(status_code=422, detail=f"metric inválida: {metric}")
+    if by not in DESGLOSE_ALLOWED_DIMS:
+        raise HTTPException(status_code=400, detail="by debe ser vendor|category|cuenta|source")
+
+    df, dt = _parse_period(date_from, date_to)
+    by_alias = DESGLOSE_ALLOWED_DIMS[by]
+    metric_sql = _desglose_sql_for(metric)
+
+    where_parts = [expense_filter()]
+    params = []
+    if df:
+        where_parts.append("invoice_date >= %s")
+        params.append(df)
+    if dt:
+        where_parts.append("invoice_date <= %s")
+        params.append(dt)
+    if cuenta:
+        where_parts.append("source_account = %s")
+        params.append(cuenta)
+    if min_eur is not None:
+        where_parts.append("total_amount >= %s")
+        params.append(min_eur)
+    if max_eur is not None:
+        where_parts.append("total_amount <= %s")
+        params.append(max_eur)
+    where_sql = " AND ".join(where_parts)
+
+    # SELECT expr: category necesita JOIN
+    if by == "category":
+        dim_expr = "COALESCE(c.name, i.category_raw)"
+        join = "LEFT JOIN categories c ON c.id = i.category_id"
+    elif by_alias.startswith("_"):
+        # dims derivadas de invoice_date
+        if by_alias == "_month": dim_expr = "to_char(invoice_date, 'YYYY-MM')"
+        elif by_alias == "_quarter": dim_expr = "to_char(invoice_date, 'YYYY') || '-Q' || to_char(extract(quarter from invoice_date))"
+        elif by_alias == "_year": dim_expr = "to_char(invoice_date, 'YYYY')"
+        else: dim_expr = by_alias.lstrip("_")
+        join = ""
+    else:
+        dim_expr = f"i.{by_alias}"
+        join = ""
+
+    sql = f"""
+        SELECT {dim_expr} as dim, {metric_sql} as value, count(*) as cnt
+        FROM invoices i
+        {join}
+        WHERE {where_sql}
+        GROUP BY dim
+        ORDER BY value DESC NULLS LAST
+        LIMIT %s
+    """
+    params.append(limit)
+    top_data = q(sql, tuple(params))
+
+    items = []
+    for r in top_data:
+        v = r["value"]
+        try:
+            v_float = float(v) if v is not None else 0.0
+        except (TypeError, ValueError):
+            v_float = 0.0
+        cnt = int(r["cnt"]) if r["cnt"] is not None else 0
+        items.append({"dim": r["dim"], "value": v_float, "count": cnt})
+
+    # Sparkline opcional: 1 query aggregate por mes
+    if with_sparkline and items:
+        spark_sql = f"""
+            SELECT {dim_expr} as dim,
+                   to_char(invoice_date, 'YYYY-MM') as month,
+                   sum(total_amount) as eur
+            FROM invoices i
+            {join}
+            WHERE {where_sql}
+              AND to_char(invoice_date, 'YYYY-MM') >= to_char(now() - interval '6 months', 'YYYY-MM')
+            GROUP BY dim, month
+            ORDER BY month
+            LIMIT 600
+        """
+        spark_data = q(spark_sql, tuple(params))
+        # pivot por dim
+        spark_by_dim = {}
+        for s in spark_data:
+            eur = s["eur"]
+            try:
+                eur_v = float(eur) if eur is not None else 0.0
+            except (TypeError, ValueError):
+                eur_v = 0.0
+            spark_by_dim.setdefault(s["dim"], []).append({"month": s["month"], "eur": eur_v})
+        for it in items:
+            it["sparkline_6m"] = spark_by_dim.get(it["dim"], [])
+
+    return {
+        "by": by,
+        "metric": metric,
+        "items": items,
+        "generated_at": _dt.utcnow().isoformat() + "Z",
+    }
+
+
+# ── ENDPOINT 4: Heatmap Anual Mes×Día (12m reales, no semanas inventadas) ─
+
+@app.get("/api/gastos/desglose/calendar")
+def api_desglose_calendar(
+    year: int = Query(None, description="Año (default = año actual)"),
+    cuenta: str = Query(None, description="Filtrar por source_account"),
+    min_eur: float = Query(None, ge=0),
+    max_eur: float = Query(None, ge=0),
+    user: str = Depends(get_current_user),
+):
+    """v8.0: Heatmap calendario Mes×Día del año especificado. 1 sola query con grouping completo."""
+    from datetime import date as _date
+    if not year:
+        year = _date.today().year
+    if year < 2000 or year > 2100:
+        raise HTTPException(status_code=400, detail="year fuera de rango")
+
+    where_parts = [expense_filter(),
+                   f"to_char(invoice_date, 'YYYY') = %s"]
+    params = [str(year)]
+    if cuenta:
+        where_parts.append("source_account = %s")
+        params.append(cuenta)
+    if min_eur is not None:
+        where_parts.append("total_amount >= %s")
+        params.append(min_eur)
+    if max_eur is not None:
+        where_parts.append("total_amount <= %s")
+        params.append(max_eur)
+    where_sql = " AND ".join(where_parts)
+
+    sql = f"""
+        SELECT to_char(invoice_date, 'MM') as month,
+               to_char(invoice_date, 'DD') as day,
+               count(*) as cnt,
+               sum(total_amount) as eur
+        FROM invoices i
+        WHERE {where_sql}
+        GROUP BY month, day
+        ORDER BY month, day
+    """
+    data = q(sql, tuple(params))
+
+    # Transformar a grid mes×día[1-31]
+    grid = {}
+    for r in data:
+        m = r["month"]
+        d = r["day"]
+        grid.setdefault(m, {})[d] = {"count": int(r["cnt"]), "eur": float(r["eur"])}
+
+    # Calcular max para escala de color
+    max_eur = max((d.get("eur", 0) for month in grid.values() for d in month.values()), default=0)
+    total_eur = sum(d.get("eur", 0) for month in grid.values() for d in month.values())
+
+    # v8.0: k-anonymity: ocultar celdas con count<3 (privacidad)
+    censuradas = 0
+    for month in grid.values():
+        for d, val in list(month.items()):
+            if val["count"] < 3:
+                # mantener count pero ocultar eur exacto (en vez de borrar)
+                month[d] = {"count": val["count"], "eur": None, "censored": True}
+                censuradas += 1
+
+    return {
+        "year": year,
+        "grid": grid,
+        "max_eur": max_eur,
+        "total_eur": total_eur,
+        "total_count": sum(d.get("count", 0) for month in grid.values() for d in month.values() if d),
+        "censored_cells": censuradas,
+        "generated_at": _dt.utcnow().isoformat() + "Z",
+    }
+
+
+# ── ENDPOINT 5: Comparador 2 periodos (1 sola query con FILTER WHERE) ─────
+
+@app.get("/api/gastos/desglose/compare")
+def api_desglose_compare(
+    by: str = Query("vendor", description="vendor|category|cuenta"),
+    p1_from: str = Query(..., description="YYYY-MM-DD"),
+    p1_to: str = Query(..., description="YYYY-MM-DD"),
+    p2_from: str = Query(..., description="YYYY-MM-DD"),
+    p2_to: str = Query(..., description="YYYY-MM-DD"),
+    cuenta: str = Query(None, description="Filtrar por source_account"),
+    user: str = Depends(get_current_user),
+):
+    """v8.0: Compara 2 períodos en 1 sola query con FILTER WHERE."""
+    if by not in DESGLOSE_ALLOWED_DIMS:
+        raise HTTPException(status_code=400, detail="by debe ser vendor|category|cuenta")
+    p1df, p1dt = _parse_period(p1_from, p1_to)
+    p2df, p2dt = _parse_period(p2_from, p2_to)
+
+    if by == "category":
+        dim_expr = "COALESCE(c.name, i.category_raw)"
+        join = "LEFT JOIN categories c ON c.id = i.category_id"
+    elif DESGLOSE_ALLOWED_DIMS[by].startswith("_"):
+        if DESGLOSE_ALLOWED_DIMS[by] == "_month": dim_expr = "to_char(invoice_date, 'YYYY-MM')"
+        else: dim_expr = "invoice_date::text"
+        join = ""
+    else:
+        dim_expr = f"i.{DESGLOSE_ALLOWED_DIMS[by]}"
+        join = ""
+
+    where_parts = [expense_filter()]
+    params = []
+    if cuenta:
+        where_parts.append("i.source_account = %s")
+        params.append(cuenta)
+    where_sql = " AND ".join(where_parts)
+
+    # v8.0: 1 sola query con FILTER (no 2 scans)
+    sql = f"""
+        WITH base AS (
+          SELECT {dim_expr} as dim, invoice_date, total_amount
+          FROM invoices i
+          {join}
+          WHERE {where_sql}
+            AND invoice_date BETWEEN %s AND %s
+             OR invoice_date BETWEEN %s AND %s
+        )
+        SELECT dim,
+               sum(total_amount) FILTER (WHERE invoice_date BETWEEN %s AND %s) AS p1,
+               sum(total_amount) FILTER (WHERE invoice_date BETWEEN %s AND %s) AS p2,
+               count(*) FILTER (WHERE invoice_date BETWEEN %s AND %s) AS p1_count,
+               count(*) FILTER (WHERE invoice_date BETWEEN %s AND %s) AS p2_count
+        FROM base
+        WHERE dim IS NOT NULL
+        GROUP BY dim
+        ORDER BY p1 DESC NULLS LAST
+        LIMIT 200
+    """
+    sql_params = tuple(params) + (p1df, p1dt, p2df, p2dt, p1df, p1dt, p2df, p2dt, p1df, p1dt, p2df, p2dt)
+    rows = q(sql, sql_params)
+
+    items = []
+    for r in rows:
+        p1 = float(r["p1"] or 0)
+        p2 = float(r["p2"] or 0)
+        delta = p1 - p2
+        delta_pct = ((p1 - p2) / p2 * 100) if p2 > 0 else None
+        items.append({
+            "dim": r["dim"],
+            "p1_total": p1,
+            "p2_total": p2,
+            "p1_count": int(r["p1_count"] or 0),
+            "p2_count": int(r["p2_count"] or 0),
+            "delta": delta,
+            "delta_pct": delta_pct,
+        })
+
+    return {
+        "by": by,
+        "p1_from": p1_from, "p1_to": p1_to,
+        "p2_from": p2_from, "p2_to": p2_to,
+        "items": items,
+        "generated_at": _dt.utcnow().isoformat() + "Z",
+    }
+
+
+# ── ENDPOINT 6: Export CSV sanitizado (anti formula injection) ───────────
+
+@app.get("/api/gastos/desglose/export.csv")
+def api_desglose_export_csv(
+    by: str = Query("vendor", description="vendor|category|cuenta|source|month"),
+    date_from: str = Query(None, description="YYYY-MM-DD"),
+    date_to: str = Query(None, description="YYYY-MM-DD"),
+    cuenta: str = Query(None, description="Filtrar por source_account"),
+    user: str = Depends(get_current_user),
+):
+    """v8.0: Exporta el desglose a CSV con sanitización contra formula injection."""
+    if by not in DESGLOSE_ALLOWED_DIMS:
+        raise HTTPException(status_code=400, detail="by debe ser vendor|category|cuenta|source|month")
+    df, dt = _parse_period(date_from, date_to)
+
+    if by == "category":
+        dim_expr = "COALESCE(c.name, i.category_raw)"
+        join = "LEFT JOIN categories c ON c.id = i.category_id"
+    elif DESGLOSE_ALLOWED_DIMS[by] == "_month":
+        dim_expr = "to_char(invoice_date, 'YYYY-MM')"
+        join = ""
+    else:
+        dim_expr = f"i.{DESGLOSE_ALLOWED_DIMS[by]}"
+        join = ""
+
+    where_parts = [expense_filter()]
+    params = []
+    if df:
+        where_parts.append("invoice_date >= %s")
+        params.append(df)
+    if dt:
+        where_parts.append("invoice_date <= %s")
+        params.append(dt)
+    if cuenta:
+        where_parts.append("source_account = %s")
+        params.append(cuenta)
+    where_sql = " AND ".join(where_parts)
+
+    sql = f"""
+        SELECT {dim_expr} as dim, count(*) as cnt, sum(total_amount) as eur
+        FROM invoices i
+        {join}
+        WHERE {where_sql}
+        GROUP BY dim
+        ORDER BY eur DESC NULLS LAST
+    """
+    rows = q(sql, tuple(params))
+
+    # v8.0: CSV sanitization (anti formula injection)
+    out = _sanitize_filename(f"desglose_{by}") + ".csv"
+    import csv as _csv, io as _io
+    buf = _io.StringIO()
+    buf.write("\ufeff")  # BOM UTF-8 para Excel
+    w = _csv.writer(buf, delimiter=";")
+    w.writerow([by, "n_facturas", "total_eur", "ticket_medio_eur"])
+    for r in rows:
+        dim = r["dim"]
+        cnt = int(r["cnt"])
+        eur = float(r["eur"] or 0)
+        medio = eur / cnt if cnt else 0
+        w.writerow([
+            _sanitize_csv_value(dim),
+            cnt,
+            f"{eur:.2f}",
+            f"{medio:.2f}",
+        ])
+
+    from fastapi.responses import Response as _Resp
+    return _Resp(
+        content=buf.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{out}"'},
+    )

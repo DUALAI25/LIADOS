@@ -44,9 +44,7 @@ section("Salud")
 r = requests.get(f"{HOST}/api/health", timeout=TIMEOUT)
 check("GET /api/health", r.ok and r.json().get("version", "").startswith("8"),
       f"status={r.status_code} body={r.text[:100]}")
-check("version 8.x", "8." in r.json().get("version", ""), r.json().get("version"))
-
-# ── 2. KPIs y charts ───────────────────────────────────────────
+check("version 8.x", "8." in r.json().get("version", ""), r.json().get("version"))# ── 2. KPIs y charts ───────────────────────────────────────────
 section("KPIs y charts")
 endpoints = [
     ("/api/kpis", "ventas_mes"),

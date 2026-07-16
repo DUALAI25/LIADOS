@@ -35,7 +35,7 @@ try:
 except Exception:
     def _gd_status(account): return {"account": account, "status": "NOT_AVAILABLE", "error": "oauth_drive no importable"}
 
-app = FastAPI(title="Liados Dashboard", version="8.0.0")
+app = FastAPI(title="Liados Dashboard", version="8.1.0")
 security = HTTPBasic()
 
 # Servir assets estaticos (fuentes, css, js) sin auth (son publicos, sin secretos).
@@ -264,7 +264,9 @@ def expense_filter(alias: str = "") -> str:
     return (
         f"{p('type')} = 'expense' AND {p('status')} != 'rejected' "
         f"AND {p('is_invoice')} = true "
-        f"AND COALESCE({p('category_raw')}, '') NOT IN ('nomina', 'administrativo', 'basura')"
+        f"AND COALESCE({p('category_raw')}, '') NOT IN ('nomina', 'administrativo', 'basura') "
+        f"AND {p('invoice_date')} IS NOT NULL "
+        f"AND {p('vendor_name')} IS NOT NULL"
     )
 
 
@@ -446,7 +448,7 @@ def api_facturas_recientes(limit: int = Query(15, ge=1, le=100, description='Max
 @app.get("/api/health")
 def health():
     """Health check enriquecido: BD OK, pool stats, version."""
-    out = {"status": "ok", "version": "8.0.0", "checks": {}}
+    out = {"status": "ok", "version": "8.1.0", "checks": {}}
     # Test BD (importante: usar try/finally + put_conn para no romper el pool)
     conn = get_conn()
     try:
@@ -1218,11 +1220,6 @@ def api_gastos_reclasificar(
         elif col:
             update_parts.append(f"{col} = %s")
             update_params.append(payload[key])
-    # Alias: total_amount (euros) -> total_amount (cents)
-    if "total_amount" in payload:
-        update_parts.append("total_amount = %s")
-        update_params.append(int(float(payload["total_amount"]) * 100))
-
     if not update_parts:
         raise HTTPException(status_code=422, detail="No hay campos para actualizar")
 
@@ -1483,8 +1480,8 @@ def api_alertas(user: str = Depends(get_current_user)):
                     "accion_sugerida": "Revisar si el sync de Last.app está al día o si hay días sin actividad registrada.",
                     "cta": {"label": "Analizar en chat", "prefill": f"¿Por qué cayeron las ventas un {abs(delta):.0f}% este mes?"},
                 })
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning(f"detector #1 fallo: " + repr(_e))
 
     # 2. canal_ausente: canal con ventas hace 7d pero 0 en últimos 3d
     try:
@@ -1518,8 +1515,8 @@ def api_alertas(user: str = Depends(get_current_user)):
                 "accion_sugerida": "Verificar si hay incidencia con el proveedor de delivery o si es estacionalidad.",
                 "cta": {"label": "Ver ventas por canal", "prefill": f"¿Cómo van las ventas del canal {r['canal']} esta semana?"},
             })
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning(f"detector #2 fallo: " + repr(_e))
 
     # 3. gasto_pico: gasto diario > 2.5× media últimos 30d
     try:
@@ -1557,8 +1554,8 @@ def api_alertas(user: str = Depends(get_current_user)):
                 "accion_sugerida": "Revisar si es un gasto puntual esperado (compra mensual) o un error de categorización.",
                 "cta": {"label": "Ver facturas del día", "prefill": f"Muéstrame las facturas de gasto del {r['dia']}"},
             })
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning(f"detector #3 fallo: " + repr(_e))
 
     # 4. factura_sin_categoria: facturas nuevas (7d) sin categorizar
     try:
@@ -1579,8 +1576,8 @@ def api_alertas(user: str = Depends(get_current_user)):
                 "accion_sugerida": "Revisar y asignar categoría desde la vista de Gastos.",
                 "cta": {"label": "Ver facturas sin categoría", "prefill": "Muéstrame las facturas sin categoría de los últimos 7 días"},
             })
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning(f"detector #4 fallo: " + repr(_e))
 
     # 5. sync_stale: sync_control con status != ok o muy antiguo
     try:
@@ -1601,8 +1598,8 @@ def api_alertas(user: str = Depends(get_current_user)):
                 "accion_sugerida": "Ejecutar manualmente el collector correspondiente y revisar los logs.",
                 "cta": {"label": "Ver logs", "prefill": f"¿Qué errores hay en el sync de {r['source']}?"},
             })
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning(f"detector #5 fallo: " + repr(_e))
 
     # 6. facturas_sin_pdf: ratio de facturas sin PDF
     try:
@@ -1624,8 +1621,8 @@ def api_alertas(user: str = Depends(get_current_user)):
                 "accion_sugerida": "Informativo. No bloquea la operativa.",
                 "cta": None,
             })
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning(f"detector #6 fallo: " + repr(_e))
 
     # 7. locales_huerfanos: bills sin location_id (post-migración debería ser 0)
     try:
@@ -1642,8 +1639,8 @@ def api_alertas(user: str = Depends(get_current_user)):
                 "accion_sugerida": "Revisar y ejecutar db/migrations/005_fix_sin_local.sql si procede.",
                 "cta": None,
             })
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning(f"detector #7 fallo: " + repr(_e))
 
     # 8. duplicado_potencial: facturas con mismo vendor+total±3d
     # v7.1 PRO: GROUP BY + EXISTS (no self-join cuadrático)
@@ -1678,8 +1675,8 @@ def api_alertas(user: str = Depends(get_current_user)):
                 "accion_sugerida": "Revisar y marcar como 'duplicate' las que correspondan.",
                 "cta": {"label": "Ver posibles duplicados", "prefill": "Muéstrame las facturas que podrían estar duplicadas"},
             })
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning(f"detector #8 fallo: " + repr(_e))
 
     # 9. ticket_anomalo: facturas con importe > 5× la mediana histórica (últimos 6m).
     #    Detecta outliers como LS1-8242 (13.913€ vs mediana ~22€).
@@ -1718,8 +1715,8 @@ def api_alertas(user: str = Depends(get_current_user)):
                 "accion_sugerida": "Comprobar en Last.app que la factura es real. Si es backfill de datos históricos, marcar como verificada. Si es error, corregir el importe.",
                 "cta": {"label": "Ver factura", "prefill": f"Analiza la factura {r['number']} de {float(r['eur']):.0f}€ del {r['creation_time'].strftime('%d/%m/%Y')}"},
             })
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning(f"detector #9 fallo: " + repr(_e))
 
     items.sort(key=lambda x: sev_rank(x["severity"]))
     resumen = {"high": 0, "medium": 0, "low": 0, "info": 0}
@@ -1796,8 +1793,7 @@ def api_alertas_ack_list(user: str = Depends(get_current_user)):
             "total": len(rows),
         }
     except Exception as e:
-        import traceback as _tb
-        print('[api_alertas_ack_list] ERROR:', repr(e))
+        logger.exception(f"alertas ack list fallo: {e!r}")
         _tb.print_exc()
         raise HTTPException(status_code=500, detail=f"Error listando acks: {e}")
 
@@ -1835,7 +1831,7 @@ INDEX_HTML = """<!DOCTYPE html>
       <a class="nav-item" data-view="gastos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg><span class="nav-label">Gastos</span></a>
       <a class="nav-item" data-view="gastos-detalle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg><span class="nav-label">Detalle gastos</span></a>
       <a class="nav-item" data-view="alertas"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg><span class="nav-label">Alertas</span><span class="nav-badge" id="nav-alert-badge"></span></a>
-      <a class="nav-item" data-view="desglose"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg><span class="nav-label">Desglose</span><span class="kbd-inline">G+B</span></a>
+      <a class="nav-item" data-view="desglose"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg><span class="nav-label">Desglose</span><span class="kbd-inline">g → b</span></a>
       <div class="nav-section-label">Restaurante</div>
       <a class="nav-item" data-view="productos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18M16 10a4 4 0 0 1-8 0"/></svg><span class="nav-label">Productos</span></a>
       <a class="nav-item" data-view="reservas"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg><span class="nav-label">Reservas</span></a>
@@ -1858,16 +1854,16 @@ INDEX_HTML = """<!DOCTYPE html>
     <button class="icon-btn" id="themeToggle" title="Cambiar tema"></button>
   </header>
 
-  <!-- ── Main ── -->
-  <main class="main">
-  <div id="last-invoice-card" data-loading="1">Cargando ultima factura extraida...</div>
-  <script>
-    // B3: Cargar la card server-rendered. Fallback silencioso si falla.
-    fetch("/api/invoices/last-invoice-card", {credentials:"include"})
-      .then(r => r.text())
+   <!-- ── Main ── -->
+   <main class="main">
+   <div id="last-invoice-card" data-loading="1">Cargando última factura extraída...</div>
+   <script>
+    // B3: Cargar la card server-rendered. Usa misma auth que el resto de la app.
+    _fetchAuth("/api/invoices/last-invoice-card")
+      .then(r => r.ok ? r.text() : Promise.reject(new Error("HTTP "+r.status)))
       .then(html => { const el = document.getElementById("last-invoice-card"); if (el) el.innerHTML = html; })
       .catch(() => { const el = document.getElementById("last-invoice-card"); if (el) el.innerHTML = ""; });
-  </script>
+   </script>
 
     <!-- ═══ Vista: Dashboard ═══ -->
     <section class="view active" data-view="dashboard">
@@ -2042,7 +2038,7 @@ INDEX_HTML = """<!DOCTYPE html>
           <datalist id="gd-vendors-list"></datalist>
           <label class="gd-field"><span>Categoría</span><input type="text" id="gd-cat" placeholder="ej. Suministros"></label>
           <label class="gd-field"><span>Cuenta</span><select id="gd-cuenta"><option value="">Todas</option><option value="principal">principal</option><option value="secundaria">secundaria</option></select></label>
-          <label class="gd-field"><span>Status</span><select id="gd-status"><option value="">Todos</option><option value="verified">verified</option><option value="classified">classified</option><option value="pending">pending</option><option value="paid">paid</option></select></label>
+          <label class="gd-field"><span>Status</span><select id="gd-status"><option value="">Todos</option><option value="verified">Verificada</option><option value="classified">Clasificada</option><option value="pending">Pendiente</option><option value="paid">Pagada</option></select></label>
           <label class="gd-field"><span>Importe ≥</span><input type="number" id="gd-min" min="0" step="0.01" placeholder="0"></label>
           <label class="gd-field"><span>Importe ≤</span><input type="number" id="gd-max" min="0" step="0.01" placeholder="∞"></label>
         </div>
@@ -2425,7 +2421,7 @@ if ('serviceWorker' in navigator) {
 
 @app.get("/api/invoices/last-invoice")
 def last_invoice(account: str = "", user: str = Depends(get_current_user)):
-    """Ultima factura extraida. ?account=principal filtra por cuenta.
+    """Última factura extraída. ?account=principal filtra por cuenta.
     200 con {last_invoice: null} si no hay facturas.
     B3: usa created_at (timestamp with time zone) como received_at fallback.
     Campos reales del esquema: invoice_number, vendor_name, raw_file_url, total_amount."""
@@ -2511,7 +2507,7 @@ def invoices_by_date_range(
 
 @app.get("/api/invoices/last-invoice-card", response_class=HTMLResponse)
 def last_invoice_card(account: str = "", user: str = Depends(get_current_user)):
-    """Fragmento HTML server-rendered con la ultima factura extraida.
+    """Fragmento HTML server-rendered con la última factura extraída.
     Usado por la card UI del dashboard (B3). Patron: server-side render
     para que funcione aunque app.js este deshabilitado."""
     payload = last_invoice(account=account, user=user)
@@ -2519,8 +2515,8 @@ def last_invoice_card(account: str = "", user: str = Depends(get_current_user)):
     if not li:
         html = (
             '<div class="card last-invoice empty">'
-            '<h3>Ultima factura extraida</h3>'
-            '<p>Aun no hay facturas extraidas.</p>'
+            '<h3>Última factura extraída</h3>'
+            '<p>Aún no hay facturas extraídas.</p>'
             '</div>'
         )
         return HTMLResponse(html)
@@ -2532,7 +2528,7 @@ def last_invoice_card(account: str = "", user: str = Depends(get_current_user)):
     # evitar XSS almacenado si una factura trae payload con HTML/JS.
     html = (
         '<div class="card last-invoice">'
-        '<h3>Ultima factura extraida</h3>'
+        '<h3>Última factura extraída</h3>'
         f'<div class="li-row"><span class="li-label">Numero</span><b>{_h(str(li["invoice_number"]))}</b></div>'
         f'<div class="li-row"><span class="li-label">Vendor</span><b>{_h(str(li["vendor"] or "-"))}</b></div>'
         f'<div class="li-row"><span class="li-label">Importe</span><b>{_h(amount_str)}</b></div>'
@@ -3293,14 +3289,16 @@ def api_desglose_compare(
     where_sql = " AND ".join(where_parts)
 
     # v8.0: 1 sola query con FILTER (no 2 scans)
+    # v8.0.1: fix precedencia SQL — WHERE x AND p1 OR p2 != WHERE x AND (p1 OR p2)
+    # Sin parentesis, Postgres interpreta como (x AND p1) OR p2. Añadir parentesis.
     sql = f"""
         WITH base AS (
           SELECT {dim_expr} as dim, invoice_date, total_amount
           FROM invoices i
           {join}
           WHERE {where_sql}
-            AND invoice_date BETWEEN %s AND %s
-             OR invoice_date BETWEEN %s AND %s
+            AND (invoice_date BETWEEN %s AND %s
+              OR invoice_date BETWEEN %s AND %s)
         )
         SELECT dim,
                sum(total_amount) FILTER (WHERE invoice_date BETWEEN %s AND %s) AS p1,
@@ -3389,12 +3387,13 @@ def api_desglose_export_csv(
     """
     rows = q(sql, tuple(params))
 
-    # v8.0: CSV sanitization (anti formula injection)
+    # v8.0: CSV sanitization (anti formula injection + delimiter safe)
     out = _sanitize_filename(f"desglose_{by}") + ".csv"
     import csv as _csv, io as _io
     buf = _io.StringIO()
     buf.write("\ufeff")  # BOM UTF-8 para Excel
-    w = _csv.writer(buf, delimiter=";")
+    # v8.0.1: usar QUOTE_MINIMAL con quoting automatico para proteger ; y "
+    w = _csv.writer(buf, delimiter=";", quoting=_csv.QUOTE_MINIMAL)
     w.writerow([by, "n_facturas", "total_eur", "ticket_medio_eur"])
     for r in rows:
         dim = r["dim"]

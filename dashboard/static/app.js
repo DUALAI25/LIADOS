@@ -248,11 +248,11 @@ async function renderGastosDetalle() {
   const desgloseBtn = $('#gd-desglose-apply');
   if (desgloseBtn && !desgloseBtn._wired) {
     desgloseBtn._wired = true;
-    desgloseBtn.onclick = renderDesglose;
+    desgloseBtn.onclick = renderDesgloseLegacy;
   }
   loadGastos();
   // Auto-cargar desglose inicial
-  if (desgloseBtn) renderDesglose();
+  if (desgloseBtn) renderDesgloseLegacy();
 }
 
 async function refreshGastosDetalle() {
@@ -261,7 +261,7 @@ async function refreshGastosDetalle() {
 }
 
 // ── v7: Desglose multidimensional ──────────────────────────────────────
-async function renderDesglose() {
+async function renderDesgloseLegacy() {
   const wrap = $('#gd-desglose-results');
   if (!wrap) return;
   const dims = $('#gd-desglose-dims')?.value || 'category';
@@ -365,7 +365,7 @@ async function loadGastos() {
           <td><b>${esc(r.vendor_name||'Sin nombre')}</b></td>
           <td>${r.category_raw ? `<span class="pill">${esc(r.category_raw)}</span>` : '<span class="muted">—</span>'}</td>
           <td>${r.source_account ? esc(r.source_account) : '<span class="muted">—</span>'}</td>
-          <td><span class="status status-${esc(r.status||'pending')}">${esc(r.status||'pending')}</span></td>
+          <td><span class="status status-${esc(r.status||'pending')}">${esc(statusLabel(r.status||'pending'))}</span></td>
           <td class="num"><b>${eur(r.total_amount||0)}</b></td>
           <td>${r.raw_file_url ? '<span class="pdf-yes" title="PDF disponible">📎</span>' : '<span class="muted" title="Sin PDF">—</span>'}</td>
         </tr>
@@ -429,7 +429,7 @@ async function openFacturaModal(id) {
         <div><span class="factura-label">Nº factura</span><b><code>${esc(f.invoice_number||'-')}</code></b></div>
         <div><span class="factura-label">Fecha factura</span><b>${esc(f.invoice_date||'-')}</b></div>
         <div><span class="factura-label">Vencimiento</span><b>${esc(f.due_date||'-')}</b></div>
-        <div><span class="factura-label">Status</span><span class="status status-${esc(f.status||'pending')}">${esc(f.status||'pending')}</span></div>
+        <div><span class="factura-label">Status</span><span class="status status-${esc(f.status||'pending')}">${esc(statusLabel(f.status||'pending'))}</span></div>
         <div><span class="factura-label">Categoría</span>${cat}</div>
         <div><span class="factura-label">Cuenta</span><b>${esc(f.source_account||'-')}</b> <span class="muted">(${esc(f.source||'-')})</span></div>
         <div><span class="factura-label">Vendor tax ID</span><b>${esc(f.vendor_tax_id||'-')}</b></div>
@@ -665,9 +665,23 @@ async function _postJSON(url, body) {
   return r.json();
 }
 
-function sevLabel(s) {
-  return { high: '🔴 ALTA', medium: '🟡 MEDIA', low: '🔵 BAJA', info: '⚪ INFO' }[s] || s;
-}
+const STATUS_LABELS = {
+  'pending': 'Pendiente',
+  'classified': 'Clasificada',
+  'verified': 'Verificada',
+  'paid': 'Pagada',
+  'rejected': 'Rechazada',
+  'duplicate': 'Duplicada',
+};
+function statusLabel(s) { return STATUS_LABELS[s] || s; }
+
+const SEV_LABELS = {
+  high: '🔴 ALTA',
+  medium: '🟡 MEDIA',
+  low: '🔵 BAJA',
+  info: '⚪ INFO',
+};
+function sevLabel(s) { return SEV_LABELS[s] || s; }
 
 // ── v6: Configuración (vista real) ──────────────────────────────────────
 async function renderConfig() {
@@ -1097,8 +1111,8 @@ function renderRest() {
   // Por local
   renderBars('#local-mes', DATA.localesMes, r=>css('--cyan'), r=>(r.nombre||'Local').slice(0,16), r=>r.total_eur, r=>`${r.facturas} fact.`);
   // Margen por mes
-  const mmax = Math.max(...DATA.margen.map(m=>Math.max(m.ingresos,m.gastos)), 1);
-  $('#margen').innerHTML = DATA.margen.map(m => `
+  const mmax = Math.max(...((DATA.margen||[]).map(m=>Math.max(m.ingresos,m.gastos))), 1);
+  $('#margen').innerHTML = (DATA.margen||[]).map(m => `
     <div style="margin-bottom:var(--s-3)">
       <div style="font-size:var(--fz-sm);color:var(--fg-3);margin-bottom:4px;display:flex;justify-content:space-between"><span>${m.mes}</span><span class="${m.margen>=0?'delta good':'delta bad'}" style="padding:1px 7px">Margen ${eur(m.margen)}</span></div>
       <div class="bar-row">
@@ -1532,7 +1546,7 @@ function init() {
       $('#syncTime').textContent = 'ahora';
     } catch(e) {
       console.warn('[auto-refresh] fallo:', e.message);
-      $('#syncTime').textContent = 'actualizacion fallida';
+      $('#syncTime').textContent = 'actualización fallida';
       $('.live-dot').style.background = '#ef4444';  // rojo = degradado
     }
   }, 5 * 60 * 1000);

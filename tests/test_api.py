@@ -490,7 +490,7 @@ check("/api/kpis Vary: Authorization", "Authorization" in vary, f"vary={vary}")
 # ── 19. v7.1 PRO: Version 7.1.0 ────────────────────────────────────────
 section("v7.1 PRO: Versioning")
 r = requests.get(f"{HOST}/api/health", timeout=TIMEOUT)
-check("version 8.0.x", r.json().get("version", "").startswith("8.0"), r.json().get("version"))
+check("version 8.1.x", r.json().get("version", "").startswith("8.1"), r.json().get("version"))
 
 
 # ── 20. v7.1 PRO: q_exec_returning helper (reclasificar fix) ──────────

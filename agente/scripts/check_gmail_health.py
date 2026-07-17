@@ -11,6 +11,8 @@ DISENO:
     - Para cada cuenta, prueba un refresh de su token
     - Si INVALID_GRANT: lo purga, deja el log agente impactado y devuelve exit 1
     - Si OK: actualiza el token en disco con el access nuevo
+    - Si hay incidencias (REVOKED, MISSING_TOKEN, MISSING_CREDS, MALFORMED):
+      avisa por Telegram al jefe con detalle accionable
     - Pensado para correr 1 vez al dia (cron a las 5:55 AM, antes del sync 6:00)
 
 PATRON operativo:
@@ -37,6 +39,37 @@ logging.basicConfig(
 logger = logging.getLogger('gmail-health')
 
 WORKSPACE = Path('/root/liados')
+
+# --- Telegram notify (capa 2 hardening 2026-07-17) ---
+TELEGRAM_API = 'https://api.telegram.org/bot{token}/{method}'
+
+
+def send_telegram(env, message, silent=False):
+    """Envía alerta al Telegram del jefe. Silencioso si falla el wiring."""
+    token = env.get('TELEGRAM_BOT_TOKEN', '').strip()
+    chat_id = env.get('TELEGRAM_CHAT_ID', '').strip()
+    if not token or not chat_id:
+        logger.debug('TELEGRAM_BOT_TOKEN/CHAT_ID no configurados; no se notifica')
+        return False
+    url = TELEGRAM_API.format(token=token, method='sendMessage')
+    payload = urllib.parse.urlencode({
+        'chat_id': chat_id,
+        'text': message,
+        'disable_notification': 'true' if silent else 'false',
+    }).encode()
+    try:
+        req = urllib.request.Request(url, data=payload,
+                                     headers={'Content-Type': 'application/x-www-form-urlencoded'})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = json.loads(resp.read().decode())
+            if not body.get('ok'):
+                logger.warning('Telegram devolvió ok=false: %s', body)
+                return False
+            return True
+    except Exception as e:
+        logger.warning('Telegram notify falló (no crítico): %s', e)
+        return False
+
 
 def load_env():
     env = {}
@@ -176,16 +209,27 @@ def main():
         for msg in issues:
             print(f'        {msg}')
         if status in ('REVOKED', 'MISSING_TOKEN', 'MISSING_CREDS', 'MALFORMED'):
-            attention.append((account, status))
+            attention.append((account, status, issues))
 
     print('=' * 60)
     if attention:
         print(f'🔴 ATENCIÓN: {len(attention)} cuenta(s) requieren ACCIÓN:')
-        for acc, st in attention:
+        for acc, st, _ in attention:
             print(f'     - {acc}: {st}')
         print()
         print('   Ejecutar para cada cuenta:')
         print('     python3 -m agente.scripts.gmail_auth --account <cuenta> --force')
+
+        # --- Telegram notify (capa 2 hardening 2026-07-17) ---
+        lines = [f'🔴 Liados Gmail health — {len(attention)} cuenta(s) con token muerto:']
+        for acc, st, msgs in attention:
+            lines.append(f'• {acc}: {st}')
+            for m in msgs[:2]:
+                lines.append(f'  → {m}')
+        lines.append('')
+        lines.append('Reautorizar: python3 -m agente.scripts.gmail_auth --account <cuenta> --force')
+        send_telegram(env, '\n'.join(lines))
+
         return 1
     print('Estado OK. Tokens pueden hacer refresh.')
     return 0

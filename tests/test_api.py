@@ -490,7 +490,7 @@ check("/api/kpis Vary: Authorization", "Authorization" in vary, f"vary={vary}")
 # ── 19. v7.1 PRO: Version 7.1.0 ────────────────────────────────────────
 section("v7.1 PRO: Versioning")
 r = requests.get(f"{HOST}/api/health", timeout=TIMEOUT)
-check("version 8.1.x", r.json().get("version", "").startswith("8.1"), r.json().get("version"))
+check("version 8.2.x", r.json().get("version", "").startswith("8.2"), r.json().get("version"))
 
 
 # ── 20. v7.1 PRO: q_exec_returning helper (reclasificar fix) ──────────
@@ -597,6 +597,61 @@ r = requests.get(f"{HOST}/api/gastos/desglose/resumen", timeout=5)
 check("resumen sin auth -> 401", r.status_code == 401, f"{r.status_code}")
 r = requests.get(f"{HOST}/api/gastos/desglose/export.csv?by=vendor", timeout=5)
 check("export.csv sin auth -> 401", r.status_code == 401, f"{r.status_code}")
+# ── 22. v8.1 PRO: Bugs reportados por audit QA ───────────────────────
+section("v8.1 PRO: Calendar 2025 (no debe dar 500)")
+r = requests.get(f"{HOST}/api/gastos/desglose/calendar?year=2025", auth=AUTH, timeout=10)
+check("calendar year=2025 OK", r.ok, f"{r.status_code}")
+if r.ok:
+    d = r.json()
+    check("calendar 2025 tiene grid", isinstance(d.get("grid"), dict), "")
+    check("calendar 2025 total_eur > 0 o 0 (sin facturas)", d.get("total_eur", 0) >= 0, "")
+
+r = requests.get(f"{HOST}/api/gastos/desglose/calendar?year=2024", auth=AUTH, timeout=10)
+check("calendar year=2024 OK", r.ok, f"{r.status_code}")
+
+r = requests.get(f"{HOST}/api/gastos/desglose/calendar?year=1990", auth=AUTH, timeout=10)
+check("calendar year=1990 fuera de rango -> 400", r.status_code == 400, f"{r.status_code}")
+r = requests.get(f"{HOST}/api/gastos/desglose/calendar?year=2200", auth=AUTH, timeout=10)
+check("calendar year=2200 fuera de rango -> 400", r.status_code == 400, f"{r.status_code}")
+
+
+# ── 23. v8.1 PRO: Resumen coherente (top_vendor + 0€) ────────────────
+section("v8.1 PRO: Resumen con top_vendor coherente")
+r = requests.get(f"{HOST}/api/gastos/desglose/resumen", auth=AUTH, timeout=10)
+if r.ok:
+    d = r.json()
+    tv = d.get("top_vendor")
+    tve = d.get("top_vendor_eur", 0)
+    check("top_vendor NO es null", tv is not None, f"top_vendor={tv!r}")
+    if tv:
+        check("top_vendor_eur > 0 si top_vendor existe", tve > 0, f"top_vendor={tv}, top_vendor_eur={tve}")
+    # Coherencia entre endpoints
+    r2 = requests.get(f"{HOST}/api/gastos-por-proveedor?limit=1", auth=AUTH, timeout=10)
+    if r2.ok and r2.json():
+        top_api = r2.json()[0]
+        check(f"top_vendor resumen coincide con /gastos-por-proveedor",
+              tv == top_api["proveedor"],
+              f"resumen={tv!r} vs proveedor={top_api['proveedor']!r}")
+
+
+# ── 24. v8.1 PRO: Type labels en español via JS (smoke test) ────────
+section("v8.1 PRO: TIPO_LABELS existe en JS")
+r = requests.get(f"{HOST}/static/app.js", auth=AUTH, timeout=5)
+if r.ok:
+    js = r.text
+    check("JS contiene TIPO_LABELS", "TIPO_LABELS" in js, "")
+    check("JS contiene timeZone Europe/Madrid", "Europe/Madrid" in js, "")
+    check("JS contiene tipoLabel()", "function tipoLabel" in js, "")
+
+
+# ── 25. v8.1 PRO: CSS especifico (no transition: all) ───────────────
+section("v8.1 PRO: CSS transition especifica")
+r = requests.get(f"{HOST}/static/app.css", auth=AUTH, timeout=5)
+if r.ok:
+    css = r.text
+    check("CSS no tiene 'transition: all' global", "transition: all .15s ease" not in css, "")
+    check("CSS tiene transition especifica", "transition: transform .12s ease" in css, "")
+    check("CSS responsive calendar tiene 32px", "32px repeat(31, 16px)" in css, "")
 
 
 # ── Resumen FINAL (movido al final) ────────────────────────────
@@ -610,3 +665,5 @@ if ERRORS:
 else:
     print("OK -- todos los tests pasan")
     sys.exit(0)
+
+

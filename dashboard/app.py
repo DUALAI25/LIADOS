@@ -35,7 +35,7 @@ try:
 except Exception:
     def _gd_status(account): return {"account": account, "status": "NOT_AVAILABLE", "error": "oauth_drive no importable"}
 
-app = FastAPI(title="Liados Dashboard", version="8.1.0")
+app = FastAPI(title="Liados Dashboard", version="8.2.0")
 security = HTTPBasic()
 
 # Servir assets estaticos (fuentes, css, js) sin auth (son publicos, sin secretos).
@@ -448,7 +448,7 @@ def api_facturas_recientes(limit: int = Query(15, ge=1, le=100, description='Max
 @app.get("/api/health")
 def health():
     """Health check enriquecido: BD OK, pool stats, version."""
-    out = {"status": "ok", "version": "8.1.0", "checks": {}}
+    out = {"status": "ok", "version": "8.2.0", "checks": {}}
     # Test BD (importante: usar try/finally + put_conn para no romper el pool)
     conn = get_conn()
     try:
@@ -2826,10 +2826,10 @@ def api_desglose_resumen(
           coalesce(min(total_amount), 0) as minimo,
           count(DISTINCT vendor_name) as n_vendors,
           count(DISTINCT category) as n_categories,
-          (SELECT vendor_name FROM base GROUP BY vendor_name ORDER BY sum(total_amount) DESC LIMIT 1) as top_vendor,
-          (SELECT sum(total_amount) FROM base WHERE vendor_name = (SELECT vendor_name FROM base GROUP BY vendor_name ORDER BY sum(total_amount) DESC LIMIT 1)) as top_vendor_eur,
-          (SELECT category FROM base GROUP BY category ORDER BY sum(total_amount) DESC LIMIT 1) as top_category,
-          (SELECT sum(total_amount) FROM base WHERE category = (SELECT category FROM base GROUP BY category ORDER BY sum(total_amount) DESC LIMIT 1)) as top_category_eur,
+          (SELECT vendor_name FROM base WHERE vendor_name IS NOT NULL GROUP BY vendor_name ORDER BY sum(total_amount) DESC NULLS LAST LIMIT 1) as top_vendor,
+          COALESCE((SELECT sum(total_amount) FROM base WHERE vendor_name IS NOT NULL GROUP BY vendor_name ORDER BY sum(total_amount) DESC NULLS LAST LIMIT 1), 0) as top_vendor_eur,
+          (SELECT category FROM base WHERE category IS NOT NULL GROUP BY category ORDER BY sum(total_amount) DESC LIMIT 1) as top_category,
+          COALESCE((SELECT sum(total_amount) FROM base WHERE category IS NOT NULL GROUP BY category ORDER BY sum(total_amount) DESC LIMIT 1), 0) as top_category_eur,
           (SELECT count(*) FROM base WHERE invoice_date >= date_trunc('month', now())) as facturas_mes_actual,
           (SELECT coalesce(sum(total_amount),0) FROM base WHERE invoice_date >= date_trunc('month', now())) as eur_mes_actual
         FROM base
@@ -3226,7 +3226,7 @@ def api_desglose_calendar(
     for r in data:
         m = r["month"]
         d = r["day"]
-        grid.setdefault(m, {})[d] = {"count": int(r["cnt"]), "eur": float(r["eur"])}
+        grid.setdefault(m, {})[d] = {"count": int(r["cnt"]) if r["cnt"] else 0, "eur": float(r["eur"] or 0)}
 
     # Calcular max para escala de color
     max_eur = max((d.get("eur", 0) for month in grid.values() for d in month.values()), default=0)

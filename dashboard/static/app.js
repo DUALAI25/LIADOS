@@ -594,7 +594,7 @@ async function loadAlertas() {
         <div class="al-body">
           <div class="al-head">
             <span class="al-sev al-sev-${esc(a.severity)}">${sevLabel(a.severity)}</span>
-            <span class="al-tipo">${esc(a.tipo)}</span>
+            <span class="al-tipo">${esc(tipoLabel(a.tipo))}</span>
             <h3>${esc(a.titulo)}</h3>
             ${dismissBtn}
           </div>
@@ -1138,7 +1138,7 @@ function renderRest() {
   // Facturas recientes
   $('#facturas').innerHTML = `<div class="table-wrap"><table>
     <thead><tr><th>Nº</th><th>Fecha</th><th>Cliente</th><th>Canales</th><th class="num">Total</th></tr></thead>
-    <tbody>${DATA.facturas.map(f=>{const tags=(f.canales||'').split(',').map(x=>x.trim()).filter(Boolean).map(x=>`<span class="tag tag-${x}">${ICONS[x]||''} ${x}</span>`).join(' ');return `<tr><td>${f.number}</td><td>${f.fecha}</td><td>${esc(f.cliente)}</td><td>${tags}</td><td class="num"><b>${eur(f.total_eur)}</b></td></tr>`;}).join('')}</tbody>
+    <tbody>${DATA.facturas.map(f=>{const tags=(f.canales||'').split(',').map(x=>x.trim()).filter(Boolean).map(x=>`<span class="tag tag-${x}">${ICONS[x]||''} ${x}</span>`).join(' ');return `<tr><td>${esc(f.number||'')}</td><td>${esc(f.fecha||'')}</td><td>${esc(f.cliente||'')}</td><td>${tags}</td><td class="num"><b>${eur(f.total_eur)}</b></td></tr>`;}).join('')}</tbody>
   </table></div>`;
 }
 
@@ -1358,7 +1358,20 @@ function showConfirm(p){
 }
 
 // ── Reloj ────────────────────────────────────────────────────────────────
-function tick(){ const d=new Date(); $('#clock').textContent=d.toLocaleString('es-ES',{weekday:'short',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}); }
+const TIPO_LABELS = {
+  venta_caida: 'Caída de ventas',
+  canal_ausente: 'Canal sin actividad',
+  gasto_pico: 'Pico de gasto',
+  factura_sin_categoria: 'Sin categorizar',
+  sync_stale: 'Sync obsoleto',
+  facturas_sin_pdf: 'Sin PDF',
+  locales_huerfanos: 'Sin local',
+  duplicado_potencial: 'Posible duplicado',
+  ticket_anomalo: 'Ticket anómalo',
+};
+function tipoLabel(t) { return TIPO_LABELS[t] || t; }
+
+function tick(){ const d=new Date(); $('#clock').textContent=d.toLocaleString('es-ES',{weekday:'short',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit',timeZone:'Europe/Madrid'}); }
 
 // ── Modales + búsqueda + drill-down + atajos (Capa 6) ────────────────────
 function openModal(id){ $('#'+id).classList.add('open'); }

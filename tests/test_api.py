@@ -490,7 +490,7 @@ check("/api/kpis Vary: Authorization", "Authorization" in vary, f"vary={vary}")
 # ── 19. v7.1 PRO: Version 7.1.0 ────────────────────────────────────────
 section("v7.1 PRO: Versioning")
 r = requests.get(f"{HOST}/api/health", timeout=TIMEOUT)
-check("version 8.2.x", r.json().get("version", "").startswith("8.2"), r.json().get("version"))
+check("version 8.3.x", r.json().get("version", "").startswith("8.3"), r.json().get("version"))
 
 
 # ── 20. v7.1 PRO: q_exec_returning helper (reclasificar fix) ──────────
@@ -654,6 +654,91 @@ if r.ok:
     check("CSS responsive calendar tiene 32px", "32px repeat(31, 16px)" in css, "")
 
 
+
+
+
+# ── 26. v8.3 PRO: Endpoints de Productos (MCP Last.app) ──────────────
+section("v8.3 PRO: /api/productos/*")
+r = requests.get(f"{HOST}/api/productos/catalogo?limit=5", auth=AUTH, timeout=15)
+check("GET /api/productos/catalogo?limit=5", r.ok, f"{r.status_code}")
+if r.ok:
+    d = r.json()
+    check("catalogo tiene items", isinstance(d.get("items"), list), "")
+    check("catalogo tiene total", "total" in d, "")
+    check("catalogo tiene totalCount", "totalCount" in d, "")
+    check("catalogo tiene source", "source" in d, "")
+    if d.get("items"):
+        p = d["items"][0]
+        check("item tiene id", "id" in p, "")
+        check("item tiene name", "name" in p, "")
+        check("item tiene price (puede ser null)", "price" in p, "")
+        check("item tiene enabled", "enabled" in p, "")
+
+# Limite > 50 debe rechazar (422)
+r = requests.get(f"{HOST}/api/productos/catalogo?limit=100", auth=AUTH, timeout=5)
+check("limit=100 -> 422 (MCP max=50)", r.status_code == 422, f"{r.status_code}")
+
+# available_only
+r = requests.get(f"{HOST}/api/productos/catalogo?available_only=true&limit=10", auth=AUTH, timeout=10)
+check("available_only=true", r.ok, f"{r.status_code}")
+
+# Busqueda
+r = requests.get(f"{HOST}/api/productos/catalogo?search=BBQ&limit=50", auth=AUTH, timeout=10)
+check("search=BBQ", r.ok, f"{r.status_code}")
+if r.ok and r.json().get("items"):
+    found_bbq = any("bbq" in (p.get("name","") or "").lower() for p in r.json()["items"])
+    check("search BBQ devuelve resultados relevantes", found_bbq, "")
+
+# Sin auth
+r = requests.get(f"{HOST}/api/productos/catalogo", timeout=5)
+check("/api/productos/catalogo sin auth -> 401", r.status_code == 401, f"{r.status_code}")
+
+# Stats
+r = requests.get(f"{HOST}/api/productos/stats/resumen", auth=AUTH, timeout=15)
+check("GET /api/productos/stats/resumen", r.ok, f"{r.status_code}")
+if r.ok:
+    d = r.json()
+    check("stats.total es int", isinstance(d.get("total"), int), "")
+    check("stats.disponibles es int", isinstance(d.get("disponibles"), int), "")
+    check("stats.precio_medio es numero", isinstance(d.get("precio_medio"), (int, float)), "")
+    check("stats.mas_baratos es lista", isinstance(d.get("mas_baratos"), list), "")
+
+# Detail
+r = requests.get(f"{HOST}/api/productos/catalogo?limit=1", auth=AUTH, timeout=10)
+if r.ok and r.json().get("items"):
+    pid = r.json()["items"][0]["id"]
+    r = requests.get(f"{HOST}/api/productos/{pid}", auth=AUTH, timeout=10)
+    check(f"GET /api/productos/{{id}} ({pid[:8]})", r.ok, f"{r.status_code}")
+    if r.ok:
+        d = r.json()
+        check("detail.id coincide", d.get("id") == pid, f"{d.get('id')} != {pid}")
+        check("detail.name presente", bool(d.get("name")), "")
+else:
+    # sin productos: skip
+    pass
+
+# Detail UUID invalido -> 400
+r = requests.get(f"{HOST}/api/productos/notauuid", auth=AUTH, timeout=5)
+check("detail UUID invalido -> 400", r.status_code == 400, f"{r.status_code}")
+
+# Sin auth en detail
+r = requests.get(f"{HOST}/api/productos/2c5c5cdc-1b02-437d-b9f3-c86f42c1f98f", timeout=5)
+check("/api/productos/{id} sin auth -> 401", r.status_code == 401, f"{r.status_code}")
+
+# Disponibilidad: solo user=jefe puede cambiar (403 con user no-jefe)
+# (No testeamos cambio real para no modificar Last.app)
+
+
+# ── 27. v8.3 PRO: Sidebar sin Reservas, con Productos ────────────────
+section("v8.3 PRO: Sidebar navegacion")
+r = requests.get(f"{HOST}/", auth=AUTH, timeout=5)
+if r.ok:
+    html = r.text
+    check("sidebar contiene 'productos'", 'data-view="productos"' in html, "")
+    check("sidebar NO contiene 'reservas'", 'data-view="reservas"' not in html, "")
+    check("HTML contiene vista productos", 'data-view="productos"' in html, "")
+    check("HTML NO contiene vista reservas", 'data-view="reservas"' not in html, "")
+
 # ── Resumen FINAL (movido al final) ────────────────────────────
 print(f"\n{'='*60}")
 print(f"Tests: {PASS + FAIL} | PASS: {PASS} | FAIL: {FAIL}")
@@ -665,5 +750,3 @@ if ERRORS:
 else:
     print("OK -- todos los tests pasan")
     sys.exit(0)
-
-

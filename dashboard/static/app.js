@@ -123,6 +123,7 @@ function initNav() {
         if (v === 'gastos-detalle') renderGastosDetalle();
         if (v === 'alertas') renderAlertas();
         if (v === 'desglose') renderDesglose();
+        if (v === 'productos') renderProductos();
         if (v === 'config') renderConfig();
         VIEWS_RENDERED.add(v);
       } else {
@@ -2087,6 +2088,190 @@ async function exportDesgloseCsv() {
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
     toast('CSV descargado', 'success');
+  } catch(e) {
+    toast('Error: ' + e.message, 'error');
+  }
+}
+
+
+// ── v8.3 PRO: Vista Productos ─────────────────────────────────────
+
+const PR = {
+  items: [],
+  stats: null,
+  detail: null,
+};
+
+async function renderProductos() {
+  // Stats
+  await loadProductosStats();
+  // Lista
+  await loadProductosList();
+  // Wire controles
+  const search = $('#pr-search');
+  if (search && !search._wired) {
+    search._wired = true;
+    let to;
+    search.oninput = () => { clearTimeout(to); to = setTimeout(() => loadProductosList(), 250); };
+  }
+  const av = $('#pr-available-only');
+  if (av && !av._wired) {
+    av._wired = true;
+    av.onchange = loadProductosList;
+  }
+  const sort = $('#pr-sort');
+  if (sort && !sort._wired) {
+    sort._wired = true;
+    sort.onchange = loadProductosList;
+  }
+}
+
+async function loadProductosStats() {
+  const grid = $('#pr-stats');
+  if (!grid) return;
+  try {
+    const d = await getJSON('/api/productos/stats/resumen');
+    PR.stats = d;
+    const fmt = (n) => Number(n||0).toLocaleString('es-ES', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    const fmt0 = (n) => Number(n||0).toLocaleString('es-ES', {maximumFractionDigits: 0});
+    grid.innerHTML = `
+      <div class="pr-stat success">
+        <div class="pr-stat-label">Total productos</div>
+        <div class="pr-stat-value">${fmt0(d.total)}</div>
+        <div class="pr-stat-meta">${fmt0(d.disponibles)} disponibles</div>
+      </div>
+      <div class="pr-stat">
+        <div class="pr-stat-label">Precio mínimo</div>
+        <div class="pr-stat-value">${fmt(d.precio_min/100)}€</div>
+        <div class="pr-stat-meta">el más barato</div>
+      </div>
+      <div class="pr-stat">
+        <div class="pr-stat-label">Precio máximo</div>
+        <div class="pr-stat-value">${fmt(d.precio_max/100)}€</div>
+        <div class="pr-stat-meta">el más caro</div>
+      </div>
+      <div class="pr-stat warn">
+        <div class="pr-stat-label">Precio medio</div>
+        <div class="pr-stat-value">${fmt(d.precio_medio/100)}€</div>
+        <div class="pr-stat-meta">media del catálogo</div>
+      </div>
+    `;
+  } catch(e) {
+    grid.innerHTML = `<div class="pr-error"><h3>⚠️ No se pudo cargar estadísticas</h3><p>${esc(e.message)}</p></div>`;
+  }
+}
+
+async function loadProductosList() {
+  const list = $('#pr-list');
+  if (!list) return;
+  list.innerHTML = '<div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div>';
+  const params = new URLSearchParams();
+  const av = $('#pr-available-only')?.checked;
+  if (av) params.set('available_only', 'true');
+  const search = $('#pr-search')?.value?.trim();
+  if (search) params.set('search', search);
+  params.set('limit', '50');
+  try {
+    const d = await getJSON('/api/productos/catalogo?' + params.toString());
+    PR.items = d.items || [];
+    renderProductosList();
+    const el = $('#pr-gen-at');
+    if (el) el.textContent = `Última actualización: ${new Date().toLocaleString('es-ES')}`;
+  } catch(e) {
+    list.innerHTML = `<div class="pr-error"><h3>⚠️ Error cargando catálogo</h3><p>${esc(e.message)}</p></div>`;
+  }
+}
+
+function renderProductosList() {
+  const list = $('#pr-list');
+  if (!list) return;
+  let items = PR.items.slice();
+  const sort = $('#pr-sort')?.value || 'name';
+  if (sort === 'name') items.sort((a,b) => (a.name||'').localeCompare(b.name||''));
+  else if (sort === 'price-asc') items.sort((a,b) => (a.price||0) - (b.price||0));
+  else if (sort === 'price-desc') items.sort((a,b) => (b.price||0) - (a.price||0));
+  
+  if (items.length === 0) {
+    list.innerHTML = `<div class="pr-empty"><h3>📦 Sin productos</h3><p>No se encontraron productos que coincidan con los filtros.</p></div>`;
+    return;
+  }
+
+  list.innerHTML = items.map(p => {
+    const price_eur = p.price != null ? (p.price / 100).toFixed(2) : null;
+    const cents = p.price != null ? (' ' + (p.price % 100).toFixed(0).padStart(2, '0') + '€') : '';
+    const status = p.available ? 'available' : 'unavailable';
+    const statusText = p.available ? 'Disponible' : 'No disponible';
+    const disabledClass = p.available ? '' : 'disabled';
+    return `<div class="pr-card ${disabledClass}" data-product-id="${esc(p.id)}">
+      <div class="pr-card-category">${esc(p.category || 'Sin categoría')}</div>
+      <div class="pr-card-name">${esc(p.name || '(sin nombre)')}</div>
+      <div class="pr-card-price">${price_eur != null ? price_eur + '€' : '—'}<span class="pr-card-price-cents"></span></div>
+      <div class="pr-card-status ${status}">${statusText}</div>
+      <div class="pr-card-id">${esc((p.id||'').slice(0,8))}…</div>
+    </div>`;
+  }).join('');
+  
+  // Wire clicks
+  $$('.pr-card').forEach(card => {
+    if (card._wired) return;
+    card._wired = true;
+    card.onclick = () => openProductoDetail(card.getAttribute('data-product-id'));
+  });
+}
+
+async function openProductoDetail(productId) {
+  if (!productId) return;
+  try {
+    const p = await getJSON('/api/productos/' + encodeURIComponent(productId));
+    const price_eur = p.price != null ? (p.price / 100).toFixed(2) : null;
+    const status = p.available ? 'Disponible' : 'No disponible';
+    const statusClass = p.available ? 'available' : 'unavailable';
+    const html = `
+      <div class="pr-detail">
+        <h3 style="margin:0 0 var(--s-3) 0">${esc(p.name)}</h3>
+        <dl class="pr-detail-grid">
+          <dt>ID</dt><dd><code>${esc(p.id)}</code></dd>
+          <dt>Precio</dt><dd>${price_eur != null ? price_eur + '€' : '—'}</dd>
+          <dt>Categoría</dt><dd>${esc(p.category || 'Sin categoría')}</dd>
+          <dt>Estado</dt><dd><span class="pr-card-status ${statusClass}">${status}</span></dd>
+          ${p.description ? `<dt>Descripción</dt><dd>${esc(p.description)}</dd>` : ''}
+        </dl>
+        <div style="display:flex;gap:var(--s-2);margin-top:var(--s-3)">
+          <button class="pr-mini-btn success" onclick="toggleProducto('${esc(p.id)}', true)" ${p.available ? 'disabled style="opacity:.5"' : ''}>
+            ✓ Marcar disponible
+          </button>
+          <button class="pr-mini-btn danger" onclick="toggleProducto('${esc(p.id)}', false)" ${!p.available ? 'disabled style="opacity:.5"' : ''}>
+            ✕ Marcar no disponible
+          </button>
+          <button class="pr-mini-btn" onclick="chatPrefill('Analiza el producto ${esc(p.name.replace(/'/g, "\\'"))} con ID ${p.id}')">
+            💬 Preguntar al chat
+          </button>
+        </div>
+      </div>
+    `;
+    // Mostrar como toast persistente o reemplazar lista (modal sería ideal pero simple inline)
+    const old = $('#pr-detail');
+    if (old) old.remove();
+    const detail = document.createElement('div');
+    detail.id = 'pr-detail';
+    detail.innerHTML = html;
+    document.querySelector('[data-view="productos"]')?.appendChild(detail);
+    detail.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+  } catch(e) {
+    toast('Error cargando producto: ' + e.message, 'error');
+  }
+}
+
+async function toggleProducto(productId, available) {
+  if (!confirm(`¿Cambiar disponibilidad a ${available ? 'DISPONIBLE' : 'NO DISPONIBLE'}? Esta acción modifica tu catálogo en Last.app.`)) return;
+  try {
+    const r = await _postJSON(`/api/productos/${encodeURIComponent(productId)}/disponibilidad`, {available, reason: 'Cambiado desde dashboard'});
+    if (r.ok) {
+      toast(`✓ Disponibilidad actualizada`, 'success');
+      await loadProductosList();
+    } else {
+      toast('⚠️ La operación requiere confirmación', 'warn');
+    }
   } catch(e) {
     toast('Error: ' + e.message, 'error');
   }

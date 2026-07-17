@@ -35,7 +35,7 @@ try:
 except Exception:
     def _gd_status(account): return {"account": account, "status": "NOT_AVAILABLE", "error": "oauth_drive no importable"}
 
-app = FastAPI(title="Liados Dashboard", version="8.2.0")
+app = FastAPI(title="Liados Dashboard", version="8.3.0")
 security = HTTPBasic()
 
 # Servir assets estaticos (fuentes, css, js) sin auth (son publicos, sin secretos).
@@ -448,7 +448,7 @@ def api_facturas_recientes(limit: int = Query(15, ge=1, le=100, description='Max
 @app.get("/api/health")
 def health():
     """Health check enriquecido: BD OK, pool stats, version."""
-    out = {"status": "ok", "version": "8.2.0", "checks": {}}
+    out = {"status": "ok", "version": "8.3.0", "checks": {}}
     # Test BD (importante: usar try/finally + put_conn para no romper el pool)
     conn = get_conn()
     try:
@@ -1834,7 +1834,6 @@ INDEX_HTML = """<!DOCTYPE html>
       <a class="nav-item" data-view="desglose"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg><span class="nav-label">Desglose</span><span class="kbd-inline">g → b</span></a>
       <div class="nav-section-label">Restaurante</div>
       <a class="nav-item" data-view="productos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18M16 10a4 4 0 0 1-8 0"/></svg><span class="nav-label">Productos</span></a>
-      <a class="nav-item" data-view="reservas"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg><span class="nav-label">Reservas</span></a>
       <div class="nav-section-label">Sistema</div>
       <a class="nav-item" data-view="config"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span class="nav-label">Configuración</span></a>
     </nav>
@@ -2289,12 +2288,23 @@ INDEX_HTML = """<!DOCTYPE html>
       </div>
     </section>
 
-    <!-- ═══ Vista: Reservas (próximamente) ═══ -->
-    <section class="view" data-view="reservas">
-      <div class="coming-soon">
-        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
-        <h2>Reservas</h2>
-        <p>Próximamente: calendario de reservas, patrones de ocupación y cancelaciones. El <b>asistente AI</b> 💬 ya puede consultar tus reservas de mañana.</p>
+    <!-- ═══ Vista: Productos (nueva v8.3) ═══ -->
+    <section class="view" data-view="productos">
+      <div class="pr-stats" id="pr-stats">
+        <div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div>
+      </div>
+      <div class="pr-controls">
+        <input type="search" id="pr-search" placeholder="🔍 Buscar producto..." autocomplete="off">
+        <label class="pr-toggle"><input type="checkbox" id="pr-available-only"> <span>Solo disponibles</span></label>
+        <select id="pr-sort">
+          <option value="name">Nombre A-Z</option>
+          <option value="price-asc">Precio ↑</option>
+          <option value="price-desc">Precio ↓</option>
+        </select>
+        <span class="pr-gen-at" id="pr-gen-at"></span>
+      </div>
+      <div id="pr-list" class="pr-list">
+        <div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div>
       </div>
     </section>
 
@@ -3413,3 +3423,221 @@ def api_desglose_export_csv(
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{out}"'},
     )
+
+
+# ── v8.3 PRO: Endpoints de Productos (consume MCP Last.app) ───────────
+# Lee catalogo de productos via lastapp_server.list_products.
+# Cache en memoria 5 min para no martillear el MCP.
+
+import threading as _th_prod
+
+_PRODUCTOS_CACHE = {}
+_PRODUCTOS_CACHE_TTL_S = 300
+_PRODUCTOS_LOCK = _th_prod.Lock()
+
+
+def _productos_cache_get(key):
+    e = _PRODUCTOS_CACHE.get(key)
+    if not e:
+        return None
+    if (_dt.now().timestamp() - e["ts"]) > _PRODUCTOS_CACHE_TTL_S:
+        _PRODUCTOS_CACHE.pop(key, None)
+        return None
+    return e["data"]
+
+
+def _productos_cache_put(key, data):
+    _PRODUCTOS_CACHE[key] = {"ts": _dt.now().timestamp(), "data": data}
+
+
+def _llamar_mcp_tool(tool_name: str, args: dict, timeout_s: int = 30):
+    """Llama a una tool del MCP Last.app via dashboard.chat.execute_tool.
+
+    Devuelve dict parseado del MCP. Si falla, loguea y devuelve dict con 'error'.
+    """
+    try:
+        from dashboard.chat import execute_tool as _chat_exec_tool
+        import json as _jsonp
+        result = _chat_exec_tool(tool_name, args)
+        if not result:
+            return {"error": "MCP devolvio vacio", "items": []}
+        # El MCP devuelve un JSON stringificado dentro de content[0].text
+        try:
+            outer = _jsonp.loads(result)
+            if isinstance(outer, dict) and "content" in outer:
+                return _jsonp.loads(outer["content"][0]["text"])
+            return outer
+        except (_jsonp.JSONDecodeError, KeyError, IndexError, TypeError):
+            return {"raw": result, "items": []}
+    except Exception as e:
+        logger.warning(f"MCP call {tool_name} fallo: {e!r}")
+        return {"error": str(e), "items": []}
+
+
+@app.get("/api/productos/catalogo")
+def api_productos_catalogo(
+    available_only: bool = Query(False, description="Solo productos disponibles"),
+    limit: int = Query(100, ge=1, le=50, description="Maximo 50 (limite del MCP)"),
+    search: str = Query("", description="Filtro por nombre (case-insensitive)"),
+    user: str = Depends(get_current_user),
+):
+    """v8.3: Lista productos del catalogo desde Last.app via MCP."""
+    cache_key = f"catalogo:{available_only}:{limit}:{search.lower()}"
+    cached = _productos_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    raw = _llamar_mcp_tool("list_products", {"limit": min(limit, 50), "available_only": available_only})  # MCP limita a max=50
+
+    products = raw.get("products") or raw.get("items") or raw.get("data") or []
+    if not isinstance(products, list):
+        products = []
+
+    # Enriquecer con campos normalizados
+    enriched = []
+    for p in products:
+        if not isinstance(p, dict):
+            continue
+        enriched.append({
+            "id": p.get("id") or p.get("_id"),
+            "name": p.get("name") or p.get("title") or "",
+            "price": p.get("price"),
+            "enabled": p.get("enabled", True),
+            "available": p.get("available", p.get("enabled", True)),
+            "category": p.get("category") or p.get("categoryName") or "",
+            "description": p.get("description") or "",
+        })
+
+    # Filtrar por busqueda en cliente
+    if search:
+        s = search.lower()
+        enriched = [p for p in enriched if s in (p["name"] or "").lower() or s in (p["category"] or "").lower()]
+
+    out = {
+        "items": enriched,
+        "total": len(enriched),
+        "totalCount": raw.get("totalCount", len(enriched)),
+        "hasMore": raw.get("hasMore", False),
+        "source": "lastapp_mcp" if enriched else "empty",
+        "generated_at": _dt.utcnow().isoformat() + "Z",
+    }
+    # Solo cachear si tenemos datos (evitar cachear respuestas vacias)
+    if enriched:
+        _productos_cache_put(cache_key, out)
+    return out
+
+
+@app.get("/api/productos/{product_id}")
+def api_productos_detalle(product_id: str, user: str = Depends(get_current_user)):
+    """v8.3: Detalle completo de un producto (precio, disponibilidad)."""
+    import re as _re_p
+    if not _re_p.match(r'^[0-9a-f-]{8,}$', product_id, _re_p.I):
+        raise HTTPException(status_code=400, detail="product_id invalido (debe ser UUID)")
+
+    cache_key = f"detail:{product_id}"
+    cached = _productos_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    raw = _llamar_mcp_tool("get_product", {"product_id": product_id})
+    # Si la respuesta viene envuelta en {"products": [...]}, sacar el primero
+    if isinstance(raw, dict) and "products" in raw and isinstance(raw["products"], list) and raw["products"]:
+        raw = raw["products"][0]
+    # Normalizar respuesta
+    out = {
+        "id": raw.get("id") or product_id,
+        "name": raw.get("name") or "",
+        "price": raw.get("price"),
+        "enabled": raw.get("enabled", True),
+        "available": raw.get("available", raw.get("enabled", True)),
+        "category": raw.get("category") or "",
+        "description": raw.get("description") or "",
+        "raw": {k: v for k, v in raw.items() if k not in ("id","name","price","enabled","available","category","description")},
+        "generated_at": _dt.utcnow().isoformat() + "Z",
+    }
+    _productos_cache_put(cache_key, out)
+    return out
+
+
+@app.get("/api/productos/stats/resumen")
+def api_productos_stats(user: str = Depends(get_current_user)):
+    """v8.3: Estadisticas del catalogo (total, disponibles, rango de precios)."""
+    cache_key = "stats:resumen"
+    cached = _productos_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    raw = _llamar_mcp_tool("list_products", {"limit": 50})  # MCP Last.app limita a max=50
+    if "error" in raw and not raw.get("products"):
+        # Si fallo el MCP, devolver error explicito (sin cachear)
+        raise HTTPException(status_code=503, detail=f"MCP Last.app no disponible: {raw.get('error')}")
+    products = raw.get("products") or raw.get("items") or raw.get("data") or []
+
+    total = len(products)
+    disponibles = sum(1 for p in products if p.get("enabled", True))
+    no_disponibles = total - disponibles
+    precios = [p.get("price") for p in products if isinstance(p.get("price"), (int, float)) and p.get("price") > 0]
+    precio_min = min(precios) if precios else 0
+    precio_max = max(precios) if precios else 0
+    precio_medio = sum(precios) / len(precios) if precios else 0
+
+    # Top 5 mas baratos y mas caros
+    sorted_by_price = sorted([p for p in products if isinstance(p.get("price"), (int, float)) and p.get("price") > 0], key=lambda x: x["price"])
+    mas_baratos = [{"id": p.get("id"), "name": p.get("name"), "price": p.get("price")} for p in sorted_by_price[:5]]
+    mas_caros = [{"id": p.get("id"), "name": p.get("name"), "price": p.get("price")} for p in sorted_by_price[-5:][::-1]]
+
+    out = {
+        "total": total,
+        "disponibles": disponibles,
+        "no_disponibles": no_disponibles,
+        "precio_min": precio_min,
+        "precio_max": precio_max,
+        "precio_medio": round(precio_medio, 2),
+        "mas_baratos": mas_baratos,
+        "mas_caros": mas_caros,
+        "source": "lastapp_mcp",
+        "generated_at": _dt.utcnow().isoformat() + "Z",
+    }
+    _productos_cache_put(cache_key, out)
+    return out
+
+
+@app.post("/api/productos/{product_id}/disponibilidad")
+def api_productos_set_disponibilidad(
+    product_id: str,
+    payload: dict,
+    user: str = Depends(get_current_user),
+):
+    """v8.3: Cambia la disponibilidad de un producto (via chat AI MCP tool).
+
+    Body: {"available": true|false, "reason": "..."}
+    Requiere confirmacion previa via chat AI (devuelve confirmation_token).
+    Por seguridad, este endpoint requiere user=jefe y confirmation_token.
+    """
+    import re as _re_d
+    if not _re_d.match(r'^[0-9a-f-]{8,}$', product_id, _re_d.I):
+        raise HTTPException(status_code=400, detail="product_id invalido (debe ser UUID)")
+
+    available = payload.get("available")
+    if not isinstance(available, bool):
+        raise HTTPException(status_code=422, detail="'available' debe ser true o false")
+
+    # Por seguridad, solo el user jefe puede cambiar disponibilidad
+    if user != "jefe":
+        raise HTTPException(status_code=403, detail="Solo el usuario 'jefe' puede cambiar disponibilidad")
+
+    # Llamar al MCP tool (que requiere confirmation)
+    tool_name = "set_product_available" if available else "set_product_unavailable"
+    raw = _llamar_mcp_tool(tool_name, {
+        "product_id": product_id,
+        "location_id": "",
+    })
+    return {
+        "ok": "error" not in raw,
+        "product_id": product_id,
+        "available": available,
+        "tool_used": tool_name,
+        "mcp_response": raw,
+        "by": user,
+        "at": _dt.utcnow().isoformat() + "Z",
+    }

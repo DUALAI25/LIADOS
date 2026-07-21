@@ -1132,6 +1132,127 @@ def api_gastos_stats(user: str = Depends(get_current_user)):
     }
 
 
+@app.get("/api/gastos/pyg")
+def api_gastos_pyg(
+    date_from: str = Query(None, description="YYYY-MM-DD"),
+    date_to: str = Query(None, description="YYYY-MM-DD"),
+    cuenta: str = Query(None, description="Filtrar por source_account (principal|secundaria)"),
+    compare_from: str = Query(None, description="YYYY-MM-DD periodo anterior para comparador"),
+    compare_to: str = Query(None, description="YYYY-MM-DD periodo anterior para comparador"),
+    user: str = Depends(get_current_user),
+):
+    """v1 (2026-07-21): PYG jerárquico (waterfall).
+
+    Devuelve P&L completo con:
+    - lines: lista jerárquica (ventas, descuentos, ingresos, gastos por bucket, sub-cat, vendor)
+    - buckets: totales por bucket
+    - drilldown: estructura bucket → subcat → vendors (top-5)
+    - totals: ingresos, margen bruto, MC, EBITDA, beneficio
+    - issues: alertas (food_cost_alto, comision_alta, ebitda_negativo, ...)
+    - comparison: si compare_from/to, delta € y delta % por métrica
+    """
+    from datetime import timedelta
+    from dashboard.desglose_pyg import build_pyg, cross_check_subcat
+    from dashboard.desglose_pyg_rules import load_rules
+
+    df, dt = _parse_period(date_from, date_to)
+    # _parse_period devuelve date | None; build_pyg espera str
+    if not df:
+        df = date.today() - timedelta(days=30)
+    if not dt:
+        dt = date.today()
+    df = df.isoformat() if hasattr(df, "isoformat") else df
+    dt = dt.isoformat() if hasattr(dt, "isoformat") else dt
+
+    cache_key = _desglose_safe_cache_key(
+        "pyg", [], "sum", df, dt, cuenta, None, None, None, user,
+        extra=f"compare={compare_from}|{compare_to}"
+    )
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    rules = load_rules()
+
+    def _fetch_rows(p_from, p_to, p_cuenta):
+        sql = f"""
+            SELECT
+              i.invoice_date::text as invoice_date,
+              i.vendor_name as vendor_name,
+              COALESCE(c.name, i.category_raw) as category_raw,
+              i.source_account as source_account,
+              i.total_amount as total_amount,
+              i.status as status
+            FROM invoices i
+            LEFT JOIN categories c ON c.id = i.category_id
+            WHERE i.invoice_date >= %s AND i.invoice_date <= %s
+              {("AND i.source_account = %s" if p_cuenta else "")}
+              AND i.status != 'void'
+            ORDER BY i.invoice_date
+            LIMIT 20000
+        """
+        pp = [p_from, p_to] + ([p_cuenta] if p_cuenta else [])
+        return q(sql, tuple(pp))
+
+    raw_rows = _fetch_rows(df, dt, cuenta)
+    rows = [{
+        "invoice_date": r["invoice_date"],
+        "vendor_name": r["vendor_name"] or "",
+        "category_raw": r["category_raw"] or "",
+        "source_account": r["source_account"] or "",
+        "total_amount": r["total_amount"],
+    } for r in raw_rows]
+
+    pyg = build_pyg(rows, df, dt, cuenta=cuenta, rules=rules)
+
+    # Comparador de periodos
+    comparison = None
+    if compare_from and compare_to:
+        raw_rows2 = _fetch_rows(compare_from, compare_to, cuenta)
+        rows2 = [{
+            "invoice_date": r["invoice_date"],
+            "vendor_name": r["vendor_name"] or "",
+            "category_raw": r["category_raw"] or "",
+            "source_account": r["source_account"] or "",
+            "total_amount": r["total_amount"],
+        } for r in raw_rows2]
+        pyg_prev = build_pyg(rows2, compare_from, compare_to, cuenta=cuenta, rules=rules)
+
+        def _delta(key):
+            a = pyg["totals"].get(key, 0)
+            b = pyg_prev["totals"].get(key, 0)
+            return {
+                "current": a,
+                "previous": b,
+                "diff_eur": round(a - b, 2),
+                "diff_pct": round((a - b) / b, 4) if b else 0.0,
+            }
+        comparison = {
+            "period": {"from": compare_from, "to": compare_to},
+            "ingresos": _delta("ingresos"),
+            "total_gastos": _delta("total_gastos"),
+            "margen_bruto": _delta("margen_bruto"),
+            "mc": _delta("mc"),
+            "ebitda": _delta("ebitda"),
+            "beneficio": _delta("beneficio"),
+        }
+
+    out = {
+        "period": {"from": df, "to": dt},
+        "cuenta": cuenta,
+        "lines": pyg["lines"],
+        "buckets": pyg["buckets"],
+        "drilldown": pyg["drilldown"],
+        "totals": pyg["totals"],
+        "issues": pyg["issues"],
+        "rows_used": pyg["rows_used"],
+        "comparison": comparison,
+        "generated_at": _dt.utcnow().isoformat() + "Z",
+    }
+    _cache_put(cache_key, out)
+    return out
+
+
 @app.get("/api/gastos/{factura_id}")
 def api_gastos_detalle(factura_id: str, user: str = Depends(get_current_user)):
     """Detalle completo de una factura de gasto por id (UUID)."""
@@ -2886,125 +3007,6 @@ def api_desglose_matrix(
         "col_totals": col_totals,
         "grand_total": grand_total_value,
         "n_cells": len(cells),
-        "generated_at": _dt.utcnow().isoformat() + "Z",
-    }
-    _cache_put(cache_key, out)
-    return out
-
-
-# ── ENDPOINT 3: PYG (Profit & Loss jerárquico) ──────────────────────────
-
-@app.get("/api/gastos/pyg")
-def api_gastos_pyg(
-    date_from: str = Query(None, description="YYYY-MM-DD"),
-    date_to: str = Query(None, description="YYYY-MM-DD"),
-    cuenta: str = Query(None, description="Filtrar por source_account (principal|secundaria)"),
-    compare_from: str = Query(None, description="YYYY-MM-DD periodo anterior para comparador"),
-    compare_to: str = Query(None, description="YYYY-MM-DD periodo anterior para comparador"),
-    user: str = Depends(get_current_user),
-):
-    """v1 (2026-07-21): PYG jerárquico (waterfall).
-
-    Devuelve P&L completo con:
-    - lines: lista jerárquica (ventas, descuentos, ingresos, gastos por bucket, sub-cat, vendor)
-    - buckets: totales por bucket
-    - drilldown: estructura bucket → subcat → vendors (top-5)
-    - totals: ingresos, margen bruto, MC, EBITDA, beneficio
-    - issues: alertas (food_cost_alto, comision_alta, ebitda_negativo, ...)
-    - comparison: si compare_from/to, delta € y delta % por métrica
-    """
-    from dashboard.desglose_pyg import build_pyg, cross_check_subcat
-    from dashboard.desglose_pyg_rules import load_rules
-
-    df, dt = _parse_period(date_from, date_to)
-    if not df:
-        df = (date.today() - timedelta(days=30)).isoformat()
-    if not dt:
-        dt = date.today().isoformat()
-
-    cache_key = _desglose_safe_cache_key(
-        "pyg", [], "sum", df, dt, cuenta, None, None, None, user,
-        extra=f"compare={compare_from}|{compare_to}"
-    )
-    cached = _cache_get(cache_key)
-    if cached is not None:
-        return cached
-
-    rules = load_rules()
-
-    def _fetch_rows(p_from, p_to, p_cuenta):
-        sql = f"""
-            SELECT
-              i.invoice_date::text as invoice_date,
-              i.vendor_name as vendor_name,
-              COALESCE(c.name, i.category_raw) as category_raw,
-              i.source_account as source_account,
-              i.total_amount as total_amount,
-              i.status as status
-            FROM invoices i
-            LEFT JOIN categories c ON c.id = i.category_id
-            WHERE i.invoice_date >= %s AND i.invoice_date <= %s
-              {("AND i.source_account = %s" if p_cuenta else "")}
-              AND i.status != 'void'
-            ORDER BY i.invoice_date
-            LIMIT 20000
-        """
-        pp = [p_from, p_to] + ([p_cuenta] if p_cuenta else [])
-        return q(sql, tuple(pp))
-
-    raw_rows = _fetch_rows(df, dt, cuenta)
-    rows = [{
-        "invoice_date": r["invoice_date"],
-        "vendor_name": r["vendor_name"] or "",
-        "category_raw": r["category_raw"] or "",
-        "source_account": r["source_account"] or "",
-        "total_amount": r["total_amount"],
-    } for r in raw_rows]
-
-    pyg = build_pyg(rows, df, dt, cuenta=cuenta, rules=rules)
-
-    # Comparador de periodos
-    comparison = None
-    if compare_from and compare_to:
-        raw_rows2 = _fetch_rows(compare_from, compare_to, cuenta)
-        rows2 = [{
-            "invoice_date": r["invoice_date"],
-            "vendor_name": r["vendor_name"] or "",
-            "category_raw": r["category_raw"] or "",
-            "source_account": r["source_account"] or "",
-            "total_amount": r["total_amount"],
-        } for r in raw_rows2]
-        pyg_prev = build_pyg(rows2, compare_from, compare_to, cuenta=cuenta, rules=rules)
-
-        def _delta(key):
-            a = pyg["totals"].get(key, 0)
-            b = pyg_prev["totals"].get(key, 0)
-            return {
-                "current": a,
-                "previous": b,
-                "diff_eur": round(a - b, 2),
-                "diff_pct": round((a - b) / b, 4) if b else 0.0,
-            }
-        comparison = {
-            "period": {"from": compare_from, "to": compare_to},
-            "ingresos": _delta("ingresos"),
-            "total_gastos": _delta("total_gastos"),
-            "margen_bruto": _delta("margen_bruto"),
-            "mc": _delta("mc"),
-            "ebitda": _delta("ebitda"),
-            "beneficio": _delta("beneficio"),
-        }
-
-    out = {
-        "period": {"from": df, "to": dt},
-        "cuenta": cuenta,
-        "lines": pyg["lines"],
-        "buckets": pyg["buckets"],
-        "drilldown": pyg["drilldown"],
-        "totals": pyg["totals"],
-        "issues": pyg["issues"],
-        "rows_used": pyg["rows_used"],
-        "comparison": comparison,
         "generated_at": _dt.utcnow().isoformat() + "Z",
     }
     _cache_put(cache_key, out)

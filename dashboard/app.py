@@ -1866,6 +1866,10 @@ INDEX_HTML = """<!DOCTYPE html>
           <span class="excel-tab-ico">⚖️</span>
           <span>Comparar</span>
         </button>
+        <button class="excel-tab" data-tab="pyg">
+          <span class="excel-tab-ico">💰</span>
+          <span>PYG / Análisis</span>
+        </button>
         <div class="excel-tabs-spacer"></div>
         <button class="excel-tab-excel" id="desglose-export-btn" title="Exportar pestaña activa a CSV">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -2035,6 +2039,61 @@ INDEX_HTML = """<!DOCTYPE html>
               <button class="btn primary" id="cmp-apply">Comparar</button>
             </div>
             <div id="cmp-results"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB: PYG / Análisis (jerárquico) -->
+      <div class="excel-panel" data-tab-panel="pyg">
+        <div class="card">
+          <div class="card-head">
+            <h2>💰 PYG jerárquico (waterfall)</h2>
+            <span class="subtitle">P&L con totales, márgenes y EBITDA · Drill-down por sub-categoría y vendor</span>
+          </div>
+          <div class="card-body">
+            <div class="gd-pyg-controls">
+              <label class="gd-field"><span>Comparar con período</span>
+                <select id="pyg-cmp-mode">
+                  <option value="none">Sin comparador</option>
+                  <option value="prev">Período anterior (mismo nº días)</option>
+                  <option value="custom">Personalizado</option>
+                </select>
+              </label>
+              <label class="gd-field pyg-cmp-custom" style="display:none"><span>Desde</span><input type="date" id="pyg-cmp-from"></label>
+              <label class="gd-field pyg-cmp-custom" style="display:none"><span>Hasta</span><input type="date" id="pyg-cmp-to"></label>
+              <button class="btn primary" id="pyg-apply">Calcular PYG</button>
+            </div>
+
+            <div class="gd-pyg-issues" id="pyg-issues"></div>
+
+            <div class="gd-pyg-kpis" id="pyg-kpis">
+              <div class="kpi-card"><div class="kpi-label">Ingresos</div><div class="kpi-value" id="pyg-kpi-ingresos">—</div><div class="kpi-pct" id="pyg-kpi-ingresos-pct"></div></div>
+              <div class="kpi-card"><div class="kpi-label">Margen bruto</div><div class="kpi-value" id="pyg-kpi-margenbruto">—</div><div class="kpi-pct" id="pyg-kpi-margenbruto-pct"></div></div>
+              <div class="kpi-card"><div class="kpi-label">MC</div><div class="kpi-value" id="pyg-kpi-mc">—</div><div class="kpi-pct" id="pyg-kpi-mc-pct"></div></div>
+              <div class="kpi-card kpi-highlight"><div class="kpi-label">EBITDA</div><div class="kpi-value" id="pyg-kpi-ebitda">—</div><div class="kpi-pct" id="pyg-kpi-ebitda-pct"></div></div>
+            </div>
+
+            <div class="gd-pyg-comparison" id="pyg-comparison" style="display:none">
+              <h3>📊 Comparativa con período anterior</h3>
+              <div id="pyg-comparison-table"></div>
+            </div>
+
+            <h3>Líneas del P&L</h3>
+            <div class="gd-pyg-table-wrap">
+              <table class="gd-pyg-table" id="pyg-table">
+                <thead>
+                  <tr><th>Concepto</th><th class="num">Valor (€)</th><th class="num">% s/ingresos</th></tr>
+                </thead>
+                <tbody id="pyg-tbody">
+                  <tr><td colspan="3" class="muted">Pulsa "Calcular PYG" para cargar los datos</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="gd-pyg-drilldown" id="pyg-drilldown" style="display:none">
+              <h3>🔍 Drill-down por bucket</h3>
+              <div id="pyg-drilldown-content"></div>
+            </div>
           </div>
         </div>
       </div>
@@ -2833,7 +2892,126 @@ def api_desglose_matrix(
     return out
 
 
-# ── ENDPOINT 3: Top N (lista ordenada con sparkline opcional) ─────────────
+# ── ENDPOINT 3: PYG (Profit & Loss jerárquico) ──────────────────────────
+
+@app.get("/api/gastos/pyg")
+def api_gastos_pyg(
+    date_from: str = Query(None, description="YYYY-MM-DD"),
+    date_to: str = Query(None, description="YYYY-MM-DD"),
+    cuenta: str = Query(None, description="Filtrar por source_account (principal|secundaria)"),
+    compare_from: str = Query(None, description="YYYY-MM-DD periodo anterior para comparador"),
+    compare_to: str = Query(None, description="YYYY-MM-DD periodo anterior para comparador"),
+    user: str = Depends(get_current_user),
+):
+    """v1 (2026-07-21): PYG jerárquico (waterfall).
+
+    Devuelve P&L completo con:
+    - lines: lista jerárquica (ventas, descuentos, ingresos, gastos por bucket, sub-cat, vendor)
+    - buckets: totales por bucket
+    - drilldown: estructura bucket → subcat → vendors (top-5)
+    - totals: ingresos, margen bruto, MC, EBITDA, beneficio
+    - issues: alertas (food_cost_alto, comision_alta, ebitda_negativo, ...)
+    - comparison: si compare_from/to, delta € y delta % por métrica
+    """
+    from dashboard.desglose_pyg import build_pyg, cross_check_subcat
+    from dashboard.desglose_pyg_rules import load_rules
+
+    df, dt = _parse_period(date_from, date_to)
+    if not df:
+        df = (date.today() - timedelta(days=30)).isoformat()
+    if not dt:
+        dt = date.today().isoformat()
+
+    cache_key = _desglose_safe_cache_key(
+        "pyg", [], "sum", df, dt, cuenta, None, None, None, user,
+        extra=f"compare={compare_from}|{compare_to}"
+    )
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    rules = load_rules()
+
+    def _fetch_rows(p_from, p_to, p_cuenta):
+        sql = f"""
+            SELECT
+              i.invoice_date::text as invoice_date,
+              i.vendor_name as vendor_name,
+              COALESCE(c.name, i.category_raw) as category_raw,
+              i.source_account as source_account,
+              i.total_amount as total_amount,
+              i.status as status
+            FROM invoices i
+            LEFT JOIN categories c ON c.id = i.category_id
+            WHERE i.invoice_date >= %s AND i.invoice_date <= %s
+              {("AND i.source_account = %s" if p_cuenta else "")}
+              AND i.status != 'void'
+            ORDER BY i.invoice_date
+            LIMIT 20000
+        """
+        pp = [p_from, p_to] + ([p_cuenta] if p_cuenta else [])
+        return q(sql, tuple(pp))
+
+    raw_rows = _fetch_rows(df, dt, cuenta)
+    rows = [{
+        "invoice_date": r["invoice_date"],
+        "vendor_name": r["vendor_name"] or "",
+        "category_raw": r["category_raw"] or "",
+        "source_account": r["source_account"] or "",
+        "total_amount": r["total_amount"],
+    } for r in raw_rows]
+
+    pyg = build_pyg(rows, df, dt, cuenta=cuenta, rules=rules)
+
+    # Comparador de periodos
+    comparison = None
+    if compare_from and compare_to:
+        raw_rows2 = _fetch_rows(compare_from, compare_to, cuenta)
+        rows2 = [{
+            "invoice_date": r["invoice_date"],
+            "vendor_name": r["vendor_name"] or "",
+            "category_raw": r["category_raw"] or "",
+            "source_account": r["source_account"] or "",
+            "total_amount": r["total_amount"],
+        } for r in raw_rows2]
+        pyg_prev = build_pyg(rows2, compare_from, compare_to, cuenta=cuenta, rules=rules)
+
+        def _delta(key):
+            a = pyg["totals"].get(key, 0)
+            b = pyg_prev["totals"].get(key, 0)
+            return {
+                "current": a,
+                "previous": b,
+                "diff_eur": round(a - b, 2),
+                "diff_pct": round((a - b) / b, 4) if b else 0.0,
+            }
+        comparison = {
+            "period": {"from": compare_from, "to": compare_to},
+            "ingresos": _delta("ingresos"),
+            "total_gastos": _delta("total_gastos"),
+            "margen_bruto": _delta("margen_bruto"),
+            "mc": _delta("mc"),
+            "ebitda": _delta("ebitda"),
+            "beneficio": _delta("beneficio"),
+        }
+
+    out = {
+        "period": {"from": df, "to": dt},
+        "cuenta": cuenta,
+        "lines": pyg["lines"],
+        "buckets": pyg["buckets"],
+        "drilldown": pyg["drilldown"],
+        "totals": pyg["totals"],
+        "issues": pyg["issues"],
+        "rows_used": pyg["rows_used"],
+        "comparison": comparison,
+        "generated_at": _dt.utcnow().isoformat() + "Z",
+    }
+    _cache_put(cache_key, out)
+    return out
+
+
+# ── ENDPOINT 3b: Top N (lista ordenada con sparkline opcional) ──────────
 
 @app.get("/api/gastos/desglose/top")
 def api_desglose_top(

@@ -2276,3 +2276,212 @@ async function toggleProducto(productId, available) {
     toast('Error: ' + e.message, 'error');
   }
 }
+
+// ── PYG / Análisis (jerárquico) ──────────────────────────────────────
+
+function formatEuro(v) {
+  if (v == null || isNaN(v)) return '—';
+  const sign = v < 0 ? '-' : '';
+  return sign + new Intl.NumberFormat('es-ES', {minimumFractionDigits: 2, maximumFractionDigits: 2}).format(Math.abs(v)) + ' €';
+}
+
+function formatPct(v) {
+  if (v == null || isNaN(v)) return '';
+  return (v * 100).toFixed(1) + '%';
+}
+
+async function loadDesglosePyg() {
+  const fromVal = $('#dg-from').value;
+  const toVal = $('#dg-to').value;
+  const cuenta = $('#dg-cuenta').value;
+  const cmpMode = $('#pyg-cmp-mode').value;
+  const tbody = $('#pyg-tbody');
+  const issuesEl = $('#pyg-issues');
+  if (!fromVal || !toVal) {
+    toast('⚠️ Selecciona Desde y Hasta en los filtros globales', 'warn');
+    return;
+  }
+
+  // Determinar compare_from / compare_to
+  let compareFrom = null, compareTo = null;
+  if (cmpMode === 'prev') {
+    const d1 = new Date(fromVal);
+    const d2 = new Date(toVal);
+    const days = Math.round((d2 - d1) / 86400000);
+    const prevD2 = new Date(d1);
+    prevD2.setDate(prevD2.getDate() - 1);
+    const prevD1 = new Date(prevD2);
+    prevD1.setDate(prevD1.getDate() - days);
+    compareFrom = prevD1.toISOString().slice(0, 10);
+    compareTo = prevD2.toISOString().slice(0, 10);
+  } else if (cmpMode === 'custom') {
+    compareFrom = $('#pyg-cmp-from').value || null;
+    compareTo = $('#pyg-cmp-to').value || null;
+  }
+
+  tbody.innerHTML = '<tr><td colspan="3" class="muted">⏳ Calculando PYG...</td></tr>';
+  issuesEl.innerHTML = '';
+
+  try {
+    const params = new URLSearchParams({
+      date_from: fromVal,
+      date_to: toVal,
+    });
+    if (cuenta) params.set('cuenta', cuenta);
+    if (compareFrom) params.set('compare_from', compareFrom);
+    if (compareTo) params.set('compare_to', compareTo);
+    const r = await fetch('/api/gastos/pyg?' + params.toString(), {credentials: 'include'});
+    if (!r.ok) {
+      const errText = await r.text();
+      throw new Error(`HTTP ${r.status}: ${errText.slice(0, 200)}`);
+    }
+    const data = await r.json();
+    renderPygResults(data);
+  } catch(e) {
+    tbody.innerHTML = '<tr><td colspan="3" class="state error">' + esc(e.message) + '</td></tr>';
+    toast('Error PYG: ' + e.message, 'error');
+  }
+}
+
+function renderPygResults(data) {
+  const t = data.totals;
+  const buckets = data.buckets;
+  const lines = data.lines;
+  const issues = data.issues;
+  const comparison = data.comparison;
+
+  // KPIs
+  $('#pyg-kpi-ingresos').textContent = formatEuro(t.ingresos);
+  $('#pyg-kpi-ingresos-pct').textContent = '';
+  $('#pyg-kpi-margenbruto').textContent = formatEuro(t.margen_bruto);
+  $('#pyg-kpi-margenbruto-pct').textContent = formatPct(t.margen_bruto_pct) + ' s/ingresos';
+  $('#pyg-kpi-mc').textContent = formatEuro(t.mc);
+  $('#pyg-kpi-mc-pct').textContent = formatPct(t.mc_pct) + ' s/ingresos';
+  $('#pyg-kpi-ebitda').textContent = formatEuro(t.ebitda);
+  $('#pyg-kpi-ebitda-pct').textContent = formatPct(t.ebitda_pct) + ' s/ingresos';
+  // Color EBITDA
+  const ebitdaEl = $('#pyg-kpi-ebitda');
+  ebitdaEl.classList.remove('kpi-pos', 'kpi-neg');
+  if (t.ebitda > 0) ebitdaEl.classList.add('kpi-pos');
+  else if (t.ebitda < 0) ebitdaEl.classList.add('kpi-neg');
+
+  // Issues
+  const issuesEl = $('#pyg-issues');
+  if (!issues || issues.length === 0) {
+    issuesEl.innerHTML = '<div class="state ok">✓ Sin alertas en este período</div>';
+  } else {
+    issuesEl.innerHTML = issues.map(i =>
+      `<div class="state ${i.level === 'error' ? 'error' : 'warn'}">
+        <div class="title">${i.level === 'error' ? '🔴' : i.level === 'warn' ? '🟡' : '🔵'} ${esc(i.code)}</div>
+        <div class="desc">${esc(i.message)}</div>
+      </div>`
+    ).join('');
+  }
+
+  // Tabla de líneas
+  const tbody = $('#pyg-tbody');
+  tbody.innerHTML = lines.map(line => {
+    const indent = '— '.repeat(line.level || 0);
+    const isSubtotal = line.kind === 'subtotal' || line.kind === 'kpi';
+    const highlight = line.highlight ? ` class="pyg-line-${line.highlight}"` : '';
+    const valClass = line.value < 0 ? 'num neg' : 'num';
+    return `<tr${highlight}>
+      <td>${indent}${esc(line.label)}</td>
+      <td class="${valClass}">${formatEuro(line.value)}</td>
+      <td class="num">${line.pct != null ? formatPct(line.pct) : ''}</td>
+    </tr>`;
+  }).join('');
+
+  // Comparación
+  const cmpEl = $('#pyg-comparison');
+  const cmpTable = $('#pyg-comparison-table');
+  if (comparison) {
+    cmpEl.style.display = 'block';
+    const keys = ['ingresos', 'total_gastos', 'margen_bruto', 'mc', 'ebitda', 'beneficio'];
+    const labels = {
+      ingresos: 'Ingresos',
+      total_gastos: 'Total gastos',
+      margen_bruto: 'Margen bruto',
+      mc: 'MC',
+      ebitda: 'EBITDA',
+      beneficio: 'Beneficio neto',
+    };
+    let html = '<table class="gd-pyg-table"><thead><tr><th>Métrica</th><th class="num">Actual</th><th class="num">Anterior</th><th class="num">Δ €</th><th class="num">Δ %</th></tr></thead><tbody>';
+    keys.forEach(k => {
+      const c = comparison[k];
+      if (!c) return;
+      const pct = c.diff_pct;
+      const cls = c.diff_eur > 0 ? 'kpi-pos' : c.diff_eur < 0 ? 'kpi-neg' : '';
+      html += `<tr>
+        <td>${labels[k]}</td>
+        <td class="num">${formatEuro(c.current)}</td>
+        <td class="num">${formatEuro(c.previous)}</td>
+        <td class="num ${cls}">${(c.diff_eur > 0 ? '+' : '') + formatEuro(c.diff_eur)}</td>
+        <td class="num ${cls}">${pct > 0 ? '+' : ''}${formatPct(pct)}</td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+    html += `<p class="muted">Comparando con período ${esc(comparison.period.from)} → ${esc(comparison.period.to)}</p>`;
+    cmpTable.innerHTML = html;
+  } else {
+    cmpEl.style.display = 'none';
+  }
+
+  // Drill-down
+  const drillEl = $('#pyg-drilldown');
+  const drillContent = $('#pyg-drilldown-content');
+  const drill = data.drilldown || {};
+  if (Object.keys(drill).length > 0) {
+    drillEl.style.display = 'block';
+    let html = '';
+    Object.entries(drill).forEach(([bucket, subs]) => {
+      const bucketTotal = buckets[bucket] || 0;
+      html += `<div class="pyg-bucket"><h4>${esc(bucket)} · ${formatEuro(bucketTotal)}</h4>`;
+      Object.entries(subs).forEach(([sub, info]) => {
+        html += `<div class="pyg-subcat"><strong>${esc(sub)}</strong> · ${formatEuro(info.value)}<ul>`;
+        info.vendors.forEach(v => {
+          html += `<li>${esc(v.name)} — ${formatEuro(v.value)}</li>`;
+        });
+        html += '</ul></div>';
+      });
+      html += '</div>';
+    });
+    drillContent.innerHTML = html;
+  } else {
+    drillEl.style.display = 'none';
+  }
+}
+
+function wirePygControls() {
+  const apply = $('#pyg-apply');
+  if (apply && !apply._wired) {
+    apply._wired = true;
+    apply.onclick = loadDesglosePyg;
+  }
+  const mode = $('#pyg-cmp-mode');
+  if (mode && !mode._wired) {
+    mode._wired = true;
+    mode.onchange = () => {
+      const showCustom = mode.value === 'custom';
+      $$('.pyg-cmp-custom').forEach(el => { el.style.display = showCustom ? '' : 'none'; });
+    };
+  }
+  // Auto-cargar al activar la pestaña
+  const pygTab = $$('.excel-tab').find(t => t.getAttribute('data-tab') === 'pyg');
+  if (pygTab && !pygTab._pygWired) {
+    pygTab._pygWired = true;
+    pygTab.addEventListener('click', () => {
+      // Espera a que el panel esté visible
+      setTimeout(() => {
+        if ($('#pyg-tbody').children.length <= 1) {
+          loadDesglosePyg();
+        }
+      }, 100);
+    });
+  }
+}
+
+// Llamada inicial tras DOMContentLoaded
+document.addEventListener('DOMContentLoaded', () => {
+  setTimeout(wirePygControls, 200);
+});

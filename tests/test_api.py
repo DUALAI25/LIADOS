@@ -11,10 +11,43 @@ import os
 import sys
 import json
 import time
+import urllib3
 import requests
 from requests.auth import HTTPBasicAuth
 
-HOST = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:9121"
+urllib3.disable_warnings()
+_orig_get = requests.get
+_orig_post = requests.post
+_orig_put = requests.put
+_orig_delete = requests.delete
+
+
+def _get(url, **kw):
+    kw.setdefault("verify", False)
+    return _orig_get(url, **kw)
+
+
+def _post(url, **kw):
+    kw.setdefault("verify", False)
+    return _orig_post(url, **kw)
+
+
+def _put(url, **kw):
+    kw.setdefault("verify", False)
+    return _orig_put(url, **kw)
+
+
+def _delete(url, **kw):
+    kw.setdefault("verify", False)
+    return _orig_delete(url, **kw)
+
+
+requests.get = _get
+requests.post = _post
+requests.put = _put
+requests.delete = _delete
+
+HOST = sys.argv[1] if len(sys.argv) > 1 else "https://localhost:9121"
 AUTH = HTTPBasicAuth("jefe", "jefe2026")
 TIMEOUT = 10
 STREAM_TIMEOUT = 45
@@ -42,9 +75,9 @@ def section(title):
 # ── 1. Salud ────────────────────────────────────────────────────
 section("Salud")
 r = requests.get(f"{HOST}/api/health", timeout=TIMEOUT)
-check("GET /api/health", r.ok and r.json().get("version", "").startswith("8"),
+check("GET /api/health", r.ok and r.json().get("version", "").startswith("9"),
       f"status={r.status_code} body={r.text[:100]}")
-check("version 8.x", "8." in r.json().get("version", ""), r.json().get("version"))# ── 2. KPIs y charts ───────────────────────────────────────────
+check("version 9.x", "9." in r.json().get("version", ""), r.json().get("version"))# ── 2. KPIs y charts ───────────────────────────────────────────
 section("KPIs y charts")
 endpoints = [
     ("/api/kpis", "ventas_mes"),
@@ -490,7 +523,7 @@ check("/api/kpis Vary: Authorization", "Authorization" in vary, f"vary={vary}")
 # ── 19. v7.1 PRO: Version 7.1.0 ────────────────────────────────────────
 section("v7.1 PRO: Versioning")
 r = requests.get(f"{HOST}/api/health", timeout=TIMEOUT)
-check("version 8.3.x", r.json().get("version", "").startswith("8.3"), r.json().get("version"))
+check("version 9.0.x", r.json().get("version", "").startswith("9.0"), r.json().get("version"))
 
 
 # ── 20. v7.1 PRO: q_exec_returning helper (reclasificar fix) ──────────
@@ -739,6 +772,129 @@ if r.ok:
     check("HTML contiene vista productos", 'data-view="productos"' in html, "")
     check("HTML NO contiene vista reservas", 'data-view="reservas"' not in html, "")
 
+
+
+# ── 28. v9.0 PRO: Blindaje alertas_safe (nunca rompen) ───────────────
+section("v9.0 PRO: gmail-status blindado")
+r = requests.get(f"{HOST}/api/admin/gmail-status", auth=AUTH, timeout=5)
+check("gmail-status OK (nunca 500)", r.ok, f"{r.status_code}")
+if r.ok:
+    d = r.json()
+    check("gmail-status.accounts es lista", isinstance(d.get("accounts"), list), "")
+    check("gmail-status.creds_dir_resolved existe", "creds_dir_resolved" in d, "")
+    check("gmail-status.generated_at presente", "generated_at" in d, "")
+    # NO expone tokens
+    raw = r.text.lower()
+    check("NO expone access_token", "access_token" not in raw or "has_access_token" in raw, "")
+    check("NO expone refresh_token valor", '"refresh_token":' not in raw, "")
+    check("NO expone client_secret", "client_secret\":" not in raw, "")
+    # Si hay accounts, validar estructura
+    for a in d.get("accounts", [])[:3]:
+        check(f"account {a['account']} tiene status", "status" in a, "")
+        check(f"account {a['account']} NO expone secrets",
+              not any(s in str(a).lower() for s in ["secret", "token_value"]),
+              "")
+
+# gmail-status sin auth -> 401
+r = requests.get(f"{HOST}/api/admin/gmail-status", timeout=5)
+check("gmail-status sin auth -> 401", r.status_code == 401, f"{r.status_code}")
+
+
+# ── 29. v9.0 PRO: alertas/ack POST blindado ─────────────────────────
+section("v9.0 PRO: alertas/ack POST blindado")
+
+# Happy path
+r = requests.post(f"{HOST}/api/alertas/ack", auth=AUTH, json={
+    "alert_id": "ticket_anomalo_e2e_test",
+    "note": "smoke test v9.0"
+}, timeout=5)
+check("ack happy path OK", r.ok, f"{r.status_code}")
+if r.ok:
+    d = r.json()
+    check("ack.ok == True", d.get("ok") == True, f"ok={d.get('ok')}")
+    check("ack.ack_id es UUID", "ack_id" in d and len(d["ack_id"]) > 8, "")
+    check("ack.acked_by presente", "acked_by" in d, "")
+
+# anti-injection: alert_id con path traversal
+r = requests.post(f"{HOST}/api/alertas/ack", auth=AUTH, json={
+    "alert_id": "../../etc/passwd",
+    "note": "xss attempt"
+}, timeout=5)
+check("ack path traversal -> 422", r.status_code == 422, f"{r.status_code}")
+
+# anti-injection: alert_id con XSS
+r = requests.post(f"{HOST}/api/alertas/ack", auth=AUTH, json={
+    "alert_id": "<script>alert(1)</script>",
+    "note": "xss"
+}, timeout=5)
+check("ack XSS attempt -> 422", r.status_code == 422, f"{r.status_code}")
+
+# anti-injection: alert_id con SQL injection
+r = requests.post(f"{HOST}/api/alertas/ack", auth=AUTH, json={
+    "alert_id": "ticket_anomalo'; DROP TABLE agent_logs; --",
+    "note": "sqli"
+}, timeout=5)
+check("ack SQLi attempt -> 422", r.status_code == 422, f"{r.status_code}")
+
+# alert_id vacio -> 422
+r = requests.post(f"{HOST}/api/alertas/ack", auth=AUTH, json={
+    "alert_id": "",
+    "note": "empty"
+}, timeout=5)
+check("ack alert_id vacio -> 422", r.status_code == 422, f"{r.status_code}")
+
+# bulk-ack permitido
+r = requests.post(f"{HOST}/api/alertas/ack", auth=AUTH, json={
+    "alert_id": "bulk-ack",
+    "note": "bulk"
+}, timeout=5)
+check("ack bulk-ack OK", r.ok, f"{r.status_code}")
+
+# sin auth -> 401
+r = requests.post(f"{HOST}/api/alertas/ack", json={
+    "alert_id": "ticket_anomalo_x", "note": "x"
+}, timeout=5)
+check("ack sin auth -> 401", r.status_code == 401, f"{r.status_code}")
+
+
+# ── 30. v9.0 PRO: alertas/ack GET blindado ─────────────────────────
+section("v9.0 PRO: alertas/ack GET blindado")
+r = requests.get(f"{HOST}/api/alertas/ack", auth=AUTH, timeout=5)
+check("ack GET OK (nunca 500)", r.ok, f"{r.status_code}")
+if r.ok:
+    d = r.json()
+    check("ack GET tiene 'acks'", "acks" in d, "")
+    check("ack GET tiene 'total'", "total" in d, "")
+    check("ack GET.acks es lista", isinstance(d.get("acks"), list), "")
+    check("ack GET.total es int", isinstance(d.get("total"), int), "")
+    check("ack GET.total >= 5 (hemos hecho varios)", d.get("total", 0) >= 5, f"total={d.get('total')}")
+    if d.get("acks"):
+        a = d["acks"][0]
+        check("ack item tiene ack_id", "ack_id" in a, "")
+        check("ack item tiene alert_id", "alert_id" in a, "")
+        check("ack item NO expone secrets", "secret" not in str(a).lower(), "")
+
+# sin auth -> 401
+r = requests.get(f"{HOST}/api/alertas/ack", timeout=5)
+check("ack GET sin auth -> 401", r.status_code == 401, f"{r.status_code}")
+
+
+# ── 31. v9.0 PRO: /api/alertas NUNCA devuelve 500 ──────────────────
+section("v9.0 PRO: /api/alertas robusto")
+r = requests.get(f"{HOST}/api/alertas", auth=AUTH, timeout=10)
+check("/api/alertas OK", r.ok, f"{r.status_code}")
+if r.ok:
+    d = r.json()
+    check("alertas.total es int", isinstance(d.get("total"), int), "")
+    check("alertas.items es lista", isinstance(d.get("items"), list), "")
+    check("alertas.resumen tiene 4 niveles",
+          set(d.get("resumen", {}).keys()) >= {"high", "medium", "low", "info"}, "")
+    # Si hay items, validar estructura
+    for a in d.get("items", [])[:3]:
+        check(f"alerta {a.get('id','?')[:30]} tiene severity",
+              a.get("severity") in {"high", "medium", "low", "info"}, "")
+        check(f"alerta tiene titulo", bool(a.get("titulo")), "")
+        check(f"alerta NO expone SQL/tokens", "DROP" not in str(a).upper() and "secret" not in str(a).lower(), "")
 # ── Resumen FINAL (movido al final) ────────────────────────────
 print(f"\n{'='*60}")
 print(f"Tests: {PASS + FAIL} | PASS: {PASS} | FAIL: {FAIL}")

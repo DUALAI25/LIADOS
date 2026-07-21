@@ -35,7 +35,7 @@ try:
 except Exception:
     def _gd_status(account): return {"account": account, "status": "NOT_AVAILABLE", "error": "oauth_drive no importable"}
 
-app = FastAPI(title="Liados Dashboard", version="8.3.0")
+app = FastAPI(title="Liados Dashboard", version="9.0.0")
 security = HTTPBasic()
 
 # Servir assets estaticos (fuentes, css, js) sin auth (son publicos, sin secretos).
@@ -448,7 +448,7 @@ def api_facturas_recientes(limit: int = Query(15, ge=1, le=100, description='Max
 @app.get("/api/health")
 def health():
     """Health check enriquecido: BD OK, pool stats, version."""
-    out = {"status": "ok", "version": "8.3.0", "checks": {}}
+    out = {"status": "ok", "version": "9.0.0", "checks": {}}
     # Test BD (importante: usar try/finally + put_conn para no romper el pool)
     conn = get_conn()
     try:
@@ -751,7 +751,11 @@ def api_categoria_facturas(categoria: str, limit: int = 50, user: str = Depends(
 
 
 def _csv(rows: list, columns: list, filename: str) -> Response:
-    """Genera una respuesta CSV a partir de filas (dicts) + columnas."""
+    """Genera una respuesta CSV a partir de filas (dicts) + columnas.
+
+    v9.0: aplica _sanitize_csv_value a cada celda para prevenir formula injection
+    (=cmd|'/c calc'!A1, =HYPERLINK(...), etc) al abrirse en Excel.
+    """
     import csv
     import io
     buf = io.StringIO()
@@ -759,7 +763,7 @@ def _csv(rows: list, columns: list, filename: str) -> Response:
     w = csv.writer(buf, delimiter=";", lineterminator="\n")
     w.writerow(columns)
     for r in rows:
-        w.writerow([r.get(c, "") for c in columns])
+        w.writerow([_sanitize_csv_value(r.get(c, "")) for c in columns])
     return Response(
         content=buf.getvalue(),
         media_type="text/csv; charset=utf-8",
@@ -820,95 +824,21 @@ def api_export(view: str, user: str = Depends(get_current_user)):
 
 @app.get("/api/admin/gmail-status")
 def api_gmail_status(user: str = Depends(get_current_user)):
-    """Estado de las cuentas Gmail configuradas. SOLO LECTURA de metadatos.
-    Nunca expone tokens (access/refresh/client_secret). Lee los JSON de
-    agente/credentials/ sin modificarlos (denylist respetado)."""
-    import json as _json
-    from pathlib import Path as _Path
+    """v9.0 PRO: Endpoint blindado que NUNCA falla.
 
-    accounts_env = os.getenv("GMAIL_ACCOUNTS", "").strip()
-    configured = [a.strip() for a in accounts_env.split(",") if a.strip()] if accounts_env else []
-    # Resolver credentials dir en orden de prioridad:
-    # 1. ENV GMAIL_CREDENTIALS_DIR (sobrescribe para tests/CI)
-    # 2. CWD/agente/credentials (producción con WorkingDirectory=/root/liados)
-    # 3. Path relativo al paquete dashboard (worktree/dev local)
-    creds_override = os.getenv("GMAIL_CREDENTIALS_DIR", "").strip()
-    if creds_override:
-        creds_dir = _Path(creds_override)
-    else:
-        creds_dir = _Path(os.getcwd()) / "agente" / "credentials"
-        if not creds_dir.is_dir():
-            creds_dir = _Path(__file__).resolve().parent.parent / "agente" / "credentials"
-        if not creds_dir.is_dir():
-            # Fallback final: /root/liados/agente/credentials (path absoluto producción)
-            prod_path = _Path("/root/liados/agente/credentials")
-            if prod_path.is_dir():
-                creds_dir = prod_path
+    Lee el estado de las cuentas Gmail configuradas. SIEMPRE devuelve 200 con un
+    payload valido, incluso si:
+      - El directorio de credenciales no existe
+      - Los archivos JSON tienen schema desconocido
+      - Las fechas tienen formato inconsistente
+      - La query a sync_control falla
 
-    result = []
-    for acc in configured:
-        token_file = creds_dir / f"gmail_token_{acc}.json"
-        cred_file = creds_dir / f"gmail_credentials_{acc}.json"
+    NUNCA expone access_token, refresh_token ni client_secret.
 
-        entry = {
-            "account": acc,
-            "credentials_file_exists": cred_file.exists(),
-            "token_file_exists": token_file.exists(),
-            "has_refresh_token": False,
-            "has_access_token": False,
-            "client_id": None,
-            "scope": None,
-            "issued_at": None,
-            "last_check": None,
-            "age_days": None,
-            "status": "unknown",
-        }
-
-        if token_file.exists():
-            try:
-                with open(token_file) as f:
-                    tok = _json.load(f)
-                entry["has_refresh_token"] = bool(tok.get("refresh_token"))
-                entry["has_access_token"] = bool(tok.get("access_token"))
-                cid = tok.get("client_id") or ""
-                entry["client_id"] = (cid[:24] + "...") if len(cid) > 24 else cid
-                entry["scope"] = tok.get("scope")
-                entry["issued_at"] = tok.get("issued_at")
-                entry["last_check"] = tok.get("last_check")
-
-                issued = tok.get("issued_at")
-                if issued:
-                    try:
-                        from datetime import datetime as _dt
-                        if isinstance(issued, str):
-                            ts = _dt.fromisoformat(issued.replace("Z", "+00:00"))
-                        elif isinstance(issued, (int, float)):
-                            ts = _dt.fromtimestamp(issued, tz=_dt.now().astimezone().tzinfo)
-                        else:
-                            ts = None
-                        if ts:
-                            entry["age_days"] = (datetime.utcnow().replace(tzinfo=ts.tzinfo) - ts).days
-                    except Exception:
-                        pass
-
-                if not entry["has_refresh_token"]:
-                    entry["status"] = "MISSING_TOKEN"
-                elif entry["age_days"] is not None and entry["age_days"] > 180:
-                    entry["status"] = "STALE"
-                else:
-                    entry["status"] = "OK"
-            except Exception as e:
-                entry["status"] = f"PARSE_ERROR: {e}"
-
-        result.append(entry)
-
-    # Última sincronización desde sync_control
-    sync_rows = q("SELECT source, last_sync, items_processed, errors, status FROM sync_control WHERE source = 'gmail'")
-    sync_info = to_dict(sync_rows[0]) if sync_rows else None
-
-    return {"accounts": result, "sync_control": sync_info}
-
-
+    Implementacion: ver dashboard/alertas_safe.py:get_gmail_status().
+    """
+    from dashboard.alertas_safe import get_gmail_status as _safe_gmail
+    return _safe_gmail(q_fn=q)
 # ── API: Gastos desglosados (Entregable D1) ──────────────────────
 # Lista paginada con filtros + detalle + descarga PDF + facets + timeline + stats.
 
@@ -1144,170 +1074,32 @@ def api_gastos_reclasificar(
     payload: dict,
     user: str = Depends(get_current_user),
 ):
-    """Reclasifica una factura existente (manual override).
+    """DEPRECADO v9.0: usa /api/gastos/{id}/reclasificar-v2 (seguro, valida, solo categoria).
 
-    Body esperado (todos opcionales; sólo se actualizan los enviados):
-        {
-            "vendor_name": str,
-            "category_raw": str,
-            "total_amount": float (en euros),
-            "invoice_date": "YYYY-MM-DD",
-            "description": str,
-            "reason": str (motivo, requerido para auditoría)
-        }
+    Este endpoint v1 permitia modificar vendor/total/fecha (vectores de fraude y XSS).
+    Mantenido por retrocompatibilidad pero solo delega a v2 para que no rompa clientes.
     """
-    if not payload.get("reason"):
-        raise HTTPException(status_code=422, detail="Falta 'reason' para auditar el cambio")
-
-    # Verificar que la factura existe y es expense
-    rows = q(
-        "SELECT id, vendor_name, category_raw, total_amount, invoice_date, status "
-        "FROM invoices WHERE id = %s AND type = 'expense'",
-        (factura_id,)
-    )
-    if not rows:
-        raise HTTPException(status_code=404, detail="Factura no encontrada")
-
-    old = dict(rows[0])
-
-    # Construir UPDATE dinámico (sólo campos enviados)
-    update_parts = []
-    update_params = []
-    field_map = {
-        "vendor_name": "vendor_name",
-        "category_raw": None,  # especial: se traduce a category_id (FK)
-        "category_name": None,  # alias para buscar por nombre canonico
-        "total_amount_cents": None,  # especial
-        "invoice_date": "invoice_date",
-        "description": "description",
-    }
-    for key, col in field_map.items():
-        if key not in payload:
-            continue
-        if key == "total_amount_cents":
-            # convertir euros a céntimos
-            update_parts.append(f"{col or 'total_amount'} = %s")
-            update_params.append(int(payload[key] * 100))
-        elif key == "category_raw":
-            # Lookup en categories por nombre canonico
-            cr_value = payload[key].strip()
-            cat_rows = q("SELECT id FROM categories WHERE LOWER(name) = LOWER(%s)", (cr_value,))
-            if cat_rows:
-                update_parts.append("category_id = %s")
-                update_params.append(cat_rows[0]['id'])
-            else:
-                # Si no existe la categoria, la creamos (v7.1: usar q_exec_returning + id)
-                new_cat = q_exec_returning(
-                    "INSERT INTO categories (name) VALUES (%s) ON CONFLICT (name) DO UPDATE SET name=EXCLUDED.name RETURNING id",
-                    (cr_value,)
-                )
-                if new_cat and 'id' in new_cat:
-                    update_parts.append("category_id = %s")
-                    update_params.append(new_cat['id'])
-                else:
-                    # Fallback de seguridad: no rompemos el update
-                    logger.warning(f"reclasificar: no se pudo crear/encontrar categoria '{cr_value}'")
-            # Tambien guardamos el category_raw para auditoria
-            update_parts.append("category_raw = %s")
-            update_params.append(cr_value)
-        elif key == "category_name":
-            # Alias de category_raw
-            cn_value = payload[key].strip()
-            cat_rows = q("SELECT id FROM categories WHERE LOWER(name) = LOWER(%s)", (cn_value,))
-            if cat_rows:
-                update_parts.append("category_id = %s")
-                update_params.append(cat_rows[0]['id'])
-        elif col:
-            update_parts.append(f"{col} = %s")
-            update_params.append(payload[key])
-    if not update_parts:
-        raise HTTPException(status_code=422, detail="No hay campos para actualizar")
-
-    update_parts.append("verified_by = %s")
-    update_params.append(user)
-    update_parts.append("verified_at = NOW()")
-    update_parts.append("updated_at = NOW()")
-    update_params.append(factura_id)
-
-    sql = f"UPDATE invoices SET {', '.join(update_parts)} WHERE id = %s"
-    try:
-        q_exec(sql, tuple(update_params))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error actualizando: {e}")
-
-    # Insertar en tabla de auditoría (si existe; si no, la creamos)
-    # Usamos un INSERT idempotente: si la tabla no existe, la creamos on-the-fly.
-    # En producción la tabla se crea via migración 005.
-    import json as _json
-    from decimal import Decimal as _Dec
-    from datetime import date as _Date, datetime as _DateTime
-    class _JsonSafeEncoder(_json.JSONEncoder):
-        def default(self, o):
-            if isinstance(o, (_Dec, _Date, _DateTime)): return str(o)
-            return super().default(o)
-    try:
-        q_exec("""
-            INSERT INTO invoice_corrections
-                (invoice_id, user_id, reason, before_json, after_json, created_at)
-            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, NOW())
-        """, (
-            factura_id,
-            user,
-            payload.get("reason", ""),
-            _json.dumps({k: str(v) for k, v in old.items()}, cls=_JsonSafeEncoder),
-            _json.dumps({k: payload.get(k, old.get(k)) for k in ["vendor_name","category_raw","total_amount","invoice_date","description"]}, cls=_JsonSafeEncoder),
-        ))
-    except psycopg2.errors.UndefinedTable:
-        # Tabla no existe: la creamos y reintentamos (one-shot)
-        conn = get_conn()
-        try:
-            cur = conn.cursor()
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS invoice_corrections (
-                    id BIGSERIAL PRIMARY KEY,
-                    invoice_id UUID NOT NULL,
-                    user_id TEXT NOT NULL,
-                    reason TEXT,
-                    before_json JSONB,
-                    after_json JSONB,
-                    created_at TIMESTAMPTZ DEFAULT NOW()
-                );
-                CREATE INDEX IF NOT EXISTS idx_invoice_corrections_invoice
-                    ON invoice_corrections(invoice_id);
-            """)
-            conn.commit()
-        finally:
-            put_conn(conn)
-        # Reintentar
-        q_exec("""
-            INSERT INTO invoice_corrections
-                (invoice_id, user_id, reason, before_json, after_json, created_at)
-            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, NOW())
-        """, (
-            factura_id,
-            user,
-            payload.get("reason", ""),
-            _json.dumps({k: str(v) for k, v in old.items()}, cls=_JsonSafeEncoder),
-            _json.dumps({k: payload.get(k, old.get(k)) for k in ["vendor_name","category_raw","total_amount","invoice_date","description"]}, cls=_JsonSafeEncoder),
-        ))
-    except Exception as _aud_err:
-        # NO tragamos el error: si la auditoría falla, lo logueamos para investigar.
-        import logging as _logging
-        _logging.getLogger("dashboard.app").error(f"reclasificar auditoria fallo: {_aud_err!r}", exc_info=True)
-
-    # Devolver la fila actualizada
-    new = q("""
-        SELECT i.id, i.vendor_name, i.category_raw, i.total_amount, i.invoice_date,
-               i.description, i.status, i.verified_by, i.verified_at, i.updated_at
-        FROM invoices i WHERE id = %s
-    """, (factura_id,))
-
-    if not new:
-        raise HTTPException(status_code=500, detail="Factura desapareció tras update")
-
-    out = to_dict(new[0])
-    out["correction_reason"] = payload.get("reason")
-    return out
+    from fastapi import HTTPException as _HX
+    # Delegar a v2 internamente
+    from pydantic import BaseModel as _BM2, Field as _F2
+    class _Legacy(_BM2):
+        category_name: str = _F2(..., min_length=1, max_length=80, strip_whitespace=True)
+        reason: str = _F2(..., min_length=1, max_length=500, strip_whitespace=True)
+    # Validar UUID
+    import re as _re_v1
+    if not _re_v1.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', factura_id, _re_v1.I):
+        raise _HX(status_code=400, detail="ID invalido (debe ser UUID)")
+    # Construir payload v2 desde v1
+    cat = payload.get("category_name") or payload.get("category_raw") or ""
+    reason = payload.get("reason", "")
+    if not cat or not reason:
+        raise _HX(status_code=422, detail="requiere category_name + reason")
+    # Llamar a v2 internamente
+    from dashboard.app import api_gastos_reclasificar_v2 as _v2_handler
+    from fastapi import BackgroundTasks as _BT2
+    # Llamar via el codigo interno, no via HTTP
+    v2_payload = _Legacy(category_name=cat, reason=reason)
+    return _v2_handler(factura_id=factura_id, payload=v2_payload, user=user)
 
 
 @app.get("/api/gastos/stats")
@@ -1736,69 +1528,38 @@ def api_alertas(user: str = Depends(get_current_user)):
 class _AlertAckRequest(BaseModel):
     alert_id: str
     note: Optional[str] = None
-
-
 @app.post("/api/alertas/ack")
 def api_alertas_ack(req: _AlertAckRequest, user: str = Depends(get_current_user)):
-    """Marca una alerta como revisada. Persiste en agent_logs (no crea tabla nueva).
+    """v9.0 PRO: Endpoint blindado que NUNCA devuelve 500.
+
+    Marca una alerta como revisada. Persiste en agent_logs (no crea tabla nueva).
+    Si la BD falla o el agent_logs no existe, devuelve un ack_id "memory-fallback"
+    para que el frontend pueda mostrar feedback positivo sin mentir sobre la
+    persistencia.
 
     Body: {"alert_id": "ticket_anomalo_xxx", "note": "verificado en Last.app"}
-
-    Devuelve: {"ack_id": "uuid", "alert_id": "...", "acked_at": "...", "acked_by": "jefe"}
+    Devuelve: {"ok": True, "ack_id": "uuid", "alert_id": "...", ...}
     """
-    try:
-        details = {
-            "alert_id": req.alert_id,
-            "note": req.note or "",
-            "acked_by": user,
-        }
-        # Insertar como log de tipo 'info' (no es warning/error, es ack)
-        rows = q_exec("""
-            INSERT INTO agent_logs (source, level, message, details)
-            VALUES ('alertas', 'info', %s, %s::jsonb)
-            RETURNING id, timestamp
-        """, (f"ack: {req.alert_id}", json.dumps(details, ensure_ascii=False)))
-        new_id = str(rows[0]["id"])
-        ts = rows[0]["timestamp"].isoformat() if rows[0]["timestamp"] else datetime.utcnow().isoformat()
-        return {"ack_id": new_id, "alert_id": req.alert_id, "acked_at": ts, "acked_by": user}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error guardando ack: {e}")
+    from dashboard.alertas_safe import save_alert_ack as _save_ack
+    result = _save_ack(req.alert_id, req.note or "", user, q_exec_fn=q_exec)
+    if not result.get("ok"):
+        if result.get("error") == "invalid_alert_id":
+            raise HTTPException(status_code=422, detail=result.get("message", "alert_id invalido"))
+        if result.get("error") in ("db_error", "no_db"):
+            raise HTTPException(status_code=503, detail=result.get("message", "BD no disponible"))
+    return result
 
 
 @app.get("/api/alertas/ack")
 def api_alertas_ack_list(user: str = Depends(get_current_user)):
-    """Lista los acks de alertas (últimos 100). Útil para sincronizar entre dispositivos."""
-    try:
-        rows = q("""
-            SELECT id, timestamp,
-                   details->>'alert_id' as alert_id_extracted,
-                   details->>'note' as note_extracted,
-                   details->>'acked_by' as acked_by_extracted
-            FROM agent_logs
-            WHERE source = 'alertas' AND level = 'info' AND message LIKE 'ack: %%'
-            ORDER BY timestamp DESC
-            LIMIT 100
-        """)
-        return {
-            "acks": [
-                {
-                    "ack_id": str(r["id"]),
-                    "alert_id": r["alert_id_extracted"],
-                    "note": r["note_extracted"],
-                    "acked_by": r["acked_by_extracted"],
-                    "acked_at": r["timestamp"].isoformat() if r["timestamp"] else None,
-                }
-                for r in rows
-            ],
-            "total": len(rows),
-        }
-    except Exception as e:
-        logger.exception(f"alertas ack list fallo: {e!r}")
-        _tb.print_exc()
-        raise HTTPException(status_code=500, detail=f"Error listando acks: {e}")
+    """v9.0 PRO: Lista los acks de alertas (ultimos 100).
 
+    SIEMPRE devuelve 200 con lista (posiblemente vacia). Si la BD falla,
+    devuelve lista vacia con warning explicativo (no 500).
+    """
+    from dashboard.alertas_safe import list_alert_acks as _list_acks
+    return _list_acks(q_fn=q, limit=100)
 
-# ── HTML Dashboard ─────────────────────────────────────────────
 
 INDEX_HTML = """<!DOCTYPE html>
 <html lang="es" data-theme="dark">

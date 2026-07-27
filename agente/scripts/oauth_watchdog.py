@@ -51,11 +51,12 @@ WARN_SEC = WARN_DAYS * 24 * 3600
 CRITICAL_SEC = CRITICAL_DAYS * 24 * 3600
 
 # Lista exhaustiva de tokens a vigilar
+# Drive secundaria deshabilitada por decision del jefe (2026-07-27): Antonio indico que solo
+# existe Drive principal.
 TOKENS_TO_CHECK = [
     ("gmail", "principal"),
     ("gmail", "secundaria"),
     ("drive", "principal"),
-    ("drive", "secundaria"),
 ]
 
 
@@ -100,7 +101,9 @@ def send_telegram(env, message):
 
 def check_token(service, account):
     """Estado de un token: ('OK'|'MISSING'|'REVOKED'|'MALFORMED'|'WARN'|'CRITICAL', details_dict)."""
-    creds_file = CREDENTIALS_DIR / (service + "_credentials_" + account + ".json")
+    # Drive usa los mismos credentials que Gmail (mismo OAuth client)
+    creds_service = "gmail" if service == "drive" else service
+    creds_file = CREDENTIALS_DIR / (creds_service + "_credentials_" + account + ".json")
     token_file = CREDENTIALS_DIR / (service + "_token_" + account + ".json")
 
     if not creds_file.exists():

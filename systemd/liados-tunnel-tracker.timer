@@ -1,0 +1,11 @@
+[Unit]
+Description=Ejecuta tunnel_url_tracker cada 5 min
+Requires=liados-tunnel-tracker.service
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=5min
+Unit=liados-tunnel-tracker.service
+
+[Install]
+WantedBy=timers.target

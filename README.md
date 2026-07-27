@@ -345,3 +345,109 @@ print(vendor_summary(limit=5))
 - **13 pagos** asociados a facturas pagadas
 - **6 agent_logs** simulando actividad de los últimos 14 días
 - **Margen neto mensual** entre 19k€ y 30k€ (realista para 4 locales)
+---
+
+## 👤 Manual de uso (para el equipo)
+
+### Acceso al dashboard
+
+**URL pública (tunnel efímero Cloudflare):** ver `data/.current_tunnel_url` o el último mensaje de Telegram con etiqueta `🔗 Liados tunnel URL NUEVA`.
+
+> ⚠️ **Importante:** la URL cambia cada vez que el VPS se reinicia (quick-tunnel de Cloudflare). El bot de Telegram avisa automáticamente cuando esto pasa. Para tener un dominio fijo, configurar un *named tunnel* (ver sección "Setup avanzado" abajo).
+
+**Login:** usuario y contraseña definidos en `/root/liados/.env` (`DASHBOARD_USER` y `DASHBOARD_PASSWORD`).
+
+**Pantalla de login:** https://<URL>/login (formulario elegante, no diálogo del navegador).
+
+### Qué ves en el dashboard
+
+| Sección | Qué muestra |
+|---|---|
+| **KPIs** (arriba) | Ventas del mes, gastos del mes, margen neto, nº facturas |
+| **Ventas por canal** | Distribución: mostrador, Glovo, Uber Eats, Lastapp |
+| **Ventas por local** | 4 locales: Centro, Malasaña, La Latina, Chueca |
+| **Ingresos por mes** | Histórico 6 meses con tendencia |
+| **Gastos por proveedor** | Top proveedores del mes |
+| **Gastos por categoría** | Distribución por tipo de gasto |
+| **Margen por mes** | EBITDA mes a mes |
+| **Facturas recientes** | Últimas facturas parseadas |
+| **Comparativa MoM** | Mes actual vs mes anterior |
+| **Búsqueda** | Por texto, proveedor, categoría |
+
+### ¿Cómo llegan las facturas nuevas?
+
+**Automático, sin hacer nada:**
+1. Gmail revisa cada 30 min (`cron`)
+2. Drive revisa cada 30 min (`cron`)
+3. Cuando llega una factura → parseo con IA → guardado en BD
+4. Aparece en el dashboard sin tocar nada
+5. Si algo falla → alerta a Telegram
+
+### Comandos útiles
+
+```bash
+# Ver estado completo del sistema
+systemctl status liados-dashboard.service liados-proxy-9122.service liados-tunnel.service liados-tunnel-tracker.timer
+
+# Ver URL actual del tunnel (si se te olvidó)
+cat /root/liados/data/.current_tunnel_url | python3 -c "import json,sys;print(json.load(sys.stdin)['url'])"
+
+# Forzar re-parseo de facturas pendientes
+cd /root/liados && /root/liados/.venv/bin/python -m agente.scripts.reparse_pending
+
+# Ver logs del dashboard
+journalctl -u liados-dashboard.service -f
+
+# Backup manual
+/root/liados/ops/backup_wrapper.py
+
+# Watchdog OAuth
+PYTHONPATH=agente/scripts /root/liados/.venv/bin/python -m agente.scripts.oauth_watchdog
+```
+
+### ¿Qué pasa si...?
+
+| Si pasa esto... | Solución |
+|---|---|
+| **Tunnel URL cambió** | Bot Telegram lo notifica. Lee el último mensaje. |
+| **Token OAuth expirado** | Watchdog avisa por Telegram. Reautorizar siguiendo `oauth-troubleshooting`. |
+| **Factura no aparece** | Esperar 30 min (ciclo). Si >1h, ver `/var/log/liados-gmail.log`. |
+| **Dashboard no carga** | `systemctl status liados-dashboard.service`. Si está activo, ver logs. |
+| **Error 530 en tunnel** | `systemctl restart liados-tunnel.service`. URL cambiará, bot avisará. |
+
+---
+
+## 🔧 Setup avanzado: dominio fijo (named tunnel)
+
+La URL efímera sirve para piloto. Para producción con dominio fijo (`liados.tudominio.es`):
+
+1. Crear cuenta Cloudflare gratuita (https://dash.cloudflare.com/sign-up)
+2. Añadir dominio y migrar DNS a Cloudflare
+3. Crear *named tunnel* desde dashboard:
+   ```
+   Zero Trust > Networks > Tunnels > Create a tunnel
+   ```
+4. Instalar `cloudflared` y autenticar:
+   ```bash
+   cloudflared tunnel login
+   cloudflared tunnel create liados
+   ```
+5. Configurar ingress:
+   ```yaml
+   # ~/.cloudflared/config.yml
+   tunnel: <TUNNEL_ID>
+   credentials-file: ~/.cloudflared/<TUNNEL_ID>.json
+   ingress:
+     - hostname: liados.tudominio.es
+       service: http://127.0.0.1:9122
+     - service: http_status:404
+   ```
+6. DNS automático: crear CNAME en Cloudflare apuntando a `<TUNNEL_ID>.cfargotunnel.com`
+7. Sustituir `liados-tunnel.service` por:
+   ```
+   ExecStart=/usr/bin/cloudflared tunnel run liados
+   ```
+
+Tiempo total: 20 minutos. Sin coste.
+
+---

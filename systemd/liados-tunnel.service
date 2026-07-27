@@ -1,0 +1,22 @@
+[Unit]
+Description=Liados Cloudflare Quick Tunnel (HTTPS para dashboard)
+After=network-online.target liados-proxy-9122.service
+Wants=liados-proxy-9122.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/cloudflared tunnel --url http://127.0.0.1:9122 --no-autoupdate --no-tls-verify
+Restart=always
+RestartSec=15
+StandardOutput=append:/var/log/liados/cloudflared.log
+StandardError=append:/var/log/liados/cloudflared.log
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

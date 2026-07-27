@@ -32,6 +32,8 @@ import os
 import sys
 import json
 import hashlib
+import urllib.request
+import urllib.parse
 import logging
 import signal
 import time
@@ -429,14 +431,8 @@ def _process_single_file(f, account):
     name = f.get("name", "")
     file_id = f["id"]
 
-    try:
-        is_inv, reason = is_invoice_attachment(name, subject=None)
-    except Exception as e:
-        logger.warning(f"[drive:{account}] is_invoice_filter fallo {name}: {e}")
-        is_inv, reason = True, "filter_unavailable"
-    if not is_inv:
-        logger.debug(f"[drive:{account}] saltando {name} (no-factura: {reason})")
-        return
+    # Drive folder is curated by Antonio: skip heuristic filter, accept all PDFs/images.
+    is_inv, reason = True, "drive_curated"
 
     # Destino en disco: data/invoices/raw/<yyyy>/<mm>/<sha256>_<name>
     try:
@@ -599,6 +595,27 @@ def _insert_invoice(source, source_id, source_account, file_path, content_hash, 
         put_conn(conn)
 
 
+
+def send_telegram(message):
+    """Notifica al jefe via Telegram. No rompe si falta config o falla la red."""
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    if not token or not chat_id:
+        logger.debug("TELEGRAM_BOT_TOKEN/CHAT_ID no configurados; no se notifica")
+        return False
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = urllib.parse.urlencode({"chat_id": chat_id, "text": message}).encode()
+    try:
+        req = urllib.request.Request(url, data=payload,
+                                     headers={"Content-Type": "application/x-www-form-urlencoded"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = json.loads(resp.read().decode())
+            return bool(body.get("ok"))
+    except Exception as e:
+        logger.warning(f"telegram notify falló (no crítico): {e}")
+        return False
+
+
 def main(argv=None):
     import argparse
     parser = argparse.ArgumentParser()
@@ -645,6 +662,7 @@ def main(argv=None):
         except Exception as e:
             logger.error(f"[drive:{account}] Excepcion no controlada (no aborta batch): {e}")
             total_errors += 1
+            send_telegram("⚠️ Liados drive " + account + ": " + str(e) + "\n\nCollector sigue corriendo. Ver /var/log/liados-drive.log")
 
     if args.dry_run:
         out = {
@@ -663,6 +681,8 @@ def main(argv=None):
     # PATCH v2: cancelar alarma al terminar OK
     if args.once:
         signal.alarm(0)
+    if total_errors > 0:
+        send_telegram("🚨 Liados drive: " + str(total_errors) + " errores, " + str(total_processed) + " archivos OK. Ver /var/log/liados-drive.log")
     return 0 if total_errors == 0 else 1
 
 

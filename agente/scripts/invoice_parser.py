@@ -1,3 +1,4 @@
+import re
 import os
 import json
 import time
@@ -111,6 +112,49 @@ def _coerce_date(val):
     return val.strip()
 
 
+
+def _normalize_payload_to_schema(obj):
+    """Mapea campos con nombres no standard al esquema Liados."""
+    if not isinstance(obj, dict):
+        return obj
+    aliases_num = {
+        'NumeroFactura': 'invoice_number', 'N_Factura': 'invoice_number', 'NumFactura': 'invoice_number',
+        'FechaFactura': 'invoice_date', 'Fecha': 'invoice_date',
+        'FechaVencimiento': 'due_date',
+        'NombreCliente': 'vendor_name', 'Empresa': 'vendor_name', 'Proveedor': 'vendor_name',
+        'RazonSocial': 'vendor_name', 'Emisor': 'vendor_name',
+        'CIFEmpresa': 'vendor_tax_id', 'NIFEmpresa': 'vendor_tax_id', 'CIF': 'vendor_tax_id',
+        'NIF_CIFCliente': 'customer_tax_id', 'CIFCliente': 'customer_tax_id',
+        'DescripcionArticulo': 'description', 'Concepto': 'description', 'Descripcion': 'description',
+        'BaseImponible': 'base_amount', 'Subtotal': 'base_amount',
+        'ImporteIVA': 'tax_amount', 'IVA': 'tax_amount',
+        'TotalFactura': 'total_amount', 'ImporteTotal': 'total_amount', 'Total': 'total_amount',
+        'FormaDePago': 'payment_method',
+    }
+    out = {}
+    for k, v in obj.items():
+        if isinstance(v, list):
+            # Si es lista de artículos, resumir a string
+            if k in ('DescripcionArticulo', 'Articulos', 'Lineas', 'Items'):
+                try:
+                    nombres = [it.get('Articulo') or it.get('Descripcion') or it.get('description') or '' for it in v]
+                    out['description'] = ', '.join([n for n in nombres if n])[:200] or None
+                except Exception:
+                    pass
+                continue
+        key = aliases_num.get(k, k)
+        out[key] = v
+    if 'description' not in out:
+        out['description'] = None
+    if 'category' not in out:
+        out['category'] = 'otros'
+    if 'confidence' not in out:
+        out['confidence'] = 0.6
+    if 'currency' not in out:
+        out['currency'] = 'EUR'
+    return out
+
+
 def _normalize_parsed_data(parsed):
     """Limpia y normaliza el JSON devuelto por la IA.
 
@@ -166,7 +210,7 @@ def parse_invoice(file_path_or_content, mime_type, filename=""):
 
     client = OpenAI(
         api_key=os.getenv('OPENCODE_API_KEY'),
-        base_url=os.getenv('OPENCODE_BASE_URL', 'https://opencode.ai/zen/go/v1'),
+        base_url=os.getenv('OPENCODE_BASE_URL') or os.getenv('MINIMAX_BASE_URL') or 'https://api.minimax.io/v1',
     )
 
     # Si es una ruta, leer el contenido
@@ -248,6 +292,30 @@ def _extract_pdf_text(pdf_content):
     return None
 
 
+
+
+def _extract_json(raw: str):
+    if not raw:
+        return None
+    m = re.search(r"```json\s*(\{[\s\S]*?\})\s*```", raw, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    m = re.search(r"```[a-zA-Z0-9]*\s*(\{[\s\S]*?\})\s*```", raw)
+    if m:
+        return m.group(1)
+    start = raw.find("{")
+    while start != -1:
+        depth = 0
+        for end in range(start, len(raw)):
+            if raw[end] == "{":
+                depth += 1
+            elif raw[end] == "}":
+                depth -= 1
+                if depth == 0:
+                    return raw[start:end+1]
+        start = raw.find("{", start + 1)
+    return None
+
 def _call_with_retry(client, **kwargs):
     """Llama a la API con reintentos en caso de error transitorio.
 
@@ -288,15 +356,15 @@ def _parse_with_text(client, text):
     try:
         resp = _call_with_retry(
             client,
-            model=os.getenv('OPENCODE_MODEL', 'deepseek-v4-flash'),
+            model='MiniMax-Text-01',
             messages=[
                 {'role': 'system', 'content': 'Eres un extractor de datos de facturas. Devuelve JSON válido.'},
                 {'role': 'user', 'content': f'{PROMPT_PARSE}\n\nTexto de la factura:\n{text[:15000]}'}
             ],
             temperature=0.05,
-            response_format={'type': 'json_object'}
-        )
-        return json.loads(resp.choices[0].message.content)
+            )
+        payload=_extract_json(resp.choices[0].message.content or '')
+        return json.loads(payload) if payload else None
     except json.JSONDecodeError as e:
         logger.error(f"IA no devolvió JSON válido: {e}")
         return None
@@ -329,7 +397,8 @@ def _parse_with_vision(client, content, mime_type):
                 temperature=0.05,
                 max_tokens=1000,
             )
-            return json.loads(resp.choices[0].message.content)
+            payload = _extract_json(resp.choices[0].message.content or '')
+            return json.loads(payload) if payload else None
         except Exception as e:
             logger.warning("OpenAI vision fallo (%s), probando OpenCode...", e.__class__.__name__)
 
@@ -338,7 +407,7 @@ def _parse_with_vision(client, content, mime_type):
         b64 = base64.b64encode(content).decode()
         resp = _call_with_retry(
             client,
-            model=os.getenv('OPENCODE_MODEL', 'deepseek-v4-flash'),
+            model='MiniMax-Text-01',
             messages=[
                 {'role': 'system', 'content': 'Analiza esta imagen de factura y extrae los datos en JSON.'},
                 {'role': 'user', 'content': [
@@ -349,9 +418,9 @@ def _parse_with_vision(client, content, mime_type):
                 ]}
             ],
             temperature=0.05,
-            response_format={'type': 'json_object'}
-        )
-        return json.loads(resp.choices[0].message.content)
+            )
+        payload=_extract_json(resp.choices[0].message.content or '')
+        return json.loads(payload) if payload else None
     except json.JSONDecodeError as e:
         logger.error(f"IA no devolvió JSON válido: {e}")
         return None

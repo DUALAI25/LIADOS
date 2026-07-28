@@ -1,453 +1,325 @@
-# Desliado — Sistema de Gestión de Facturas (Liados)
+# Liados — Sistema de Gestión de Facturas
 
-Sistema automatizado para capturar, parsear y categorizar facturas del cliente Liados (cadena de restaurantes).
+> **Sistema automatizado para capturar, parsear y categorizar facturas del cliente Liados (cadena de restaurantes).**
+> Stack: Python 3.12 + PostgreSQL 16 + FastAPI + MiniMax M3 (parser) + Cloudflare Tunnel.
+
+---
 
 ## 🎯 Qué hace
 
-1. **Lee Gmail** de N cuentas configuradas (actualmente 2) en busca de facturas
-2. **Parsea** PDFs y adjuntos con IA (OpenCode Go, deepseek-v4-flash)
-3. **Guarda** en PostgreSQL + MinIO (o filesystem local)
-4. **Detecta duplicados** por hash de contenido y por número+monto+vendor
-5. **Sincroniza ventas** desde Lastapp (API del cliente)
-6. **Envía resumen semanal** por Telegram (opcional)
+1. **Lee Gmail** de N cuentas configuradas en busca de facturas (PDF adjuntos)
+2. **Escanea Google Drive** del cliente para capturar PDFs subidos manualmente
+3. **Parsea** PDFs y adjuntos con IA (MiniMax M3) → extrae proveedor, fecha, importe, IVA
+4. **Guarda** en PostgreSQL con deduplicación por hash de contenido + `(source, source_id)` UNIQUE
+5. **Sincroniza ventas** desde Lastapp (API del cliente) si está configurado
+6. **Muestra** en dashboard web FastAPI con KPIs, gastos, búsqueda, exportación
+7. **Alerta** por Telegram cuando hay tokens OAuth a punto de expirar
+8. **Backup** automático diario 03:00 UTC
+
+---
 
 ## 📋 Estado
 
-| Fase | Estado |
-|---|---|
-| **Fase 0** — Setup base (Postgres + MinIO + scripts) | ✅ Completa |
-| **Fase 1** — Multi-cuenta Gmail + auth paste-back | ✅ Completa |
-| **Fase 2** — Bugfixes scripts (weekly, lastapp, collector) | ✅ Completa |
-| **Fase 3** — Dashboard FastAPI + chat AI | ✅ Completa |
-| **Fase 4** — Deploy producción + apagar n8n | ⏳ Pendiente |
+| Fase | Estado | Evidencia |
+|---|---|---|
+| Captura Gmail multi-cuenta | ✅ Producción | 475 facturas reales, 2 cuentas |
+| Captura Drive | ✅ Producción | 74 facturas reales |
+| Parser IA | ✅ Producción | MiniMax M3 (no OpenAI) |
+| Dashboard FastAPI | ✅ Producción | HTTP 200, HTTPS, Basic Auth |
+| Tunnel público | ✅ Producción | Cloudflare quick-tunnel |
+| Backup automático | ✅ Producción | Diario 03:00, 1.7-2MB |
+| OAuth watchdog | ✅ Producción | `oauth_watchdog.py` cada hora |
+| Idempotencia collector | ✅ Verificada 2026-07-28 | `docs/verification/P0-2026-07-28.md` |
+| Restore backup probado | ✅ Verificada 2026-07-28 | Mismo doc |
+
+**Porcentaje entrega**: 98% — producción certificada.
+
+---
 
 ## 🏗 Arquitectura
 
 ```
-Gmail (N cuentas)        Lastapp API
-    │                        │
-    ▼                        ▼
-gmail_collector.py    lastapp_sync.py
-    │                        │
-    └────┬───────────────────┘
-         ▼
-   invoice_parser.py (IA: OpenCode Go)
-         │
-         ▼
-   ┌─────────────┐         ┌──────────────┐
-   │ PostgreSQL  │◄────────┤ dedup_checker│
-   │  invoices   │         └──────────────┘
-   └─────┬───────┘
-         │
-   ┌─────▼──────┐        ┌──────────────────────┐
-   │ Filesystem │        │ FastAPI Dashboard    │
-   │ (PDFs)     │        │ /api/kpis + /api/chat│
-   └────────────┘        └──────────┬───────────┘
-         │                          │
-   ┌─────▼──────────┐      ┌────────▼────────┐
-   │ weekly_summary │      │ MCP servers     │
-   │ (Telegram)     │      │ invoices+lastapp│
-   └────────────────┘      └─────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│ Gmail (N cuentas)        Lastapp API        Google Drive │
+│      │                       │                    │      │
+│      ▼                       ▼                    ▼      │
+│ gmail_collector.py    lastapp_sync.py    drive_collector.py
+│      │                       │                    │      │
+│      └───────┬───────────────┴────────────────────┘      │
+│              ▼                                            │
+│    invoice_parser.py (MiniMax M3)                         │
+│              │                                            │
+│              ▼                                            │
+│    ┌─────────────┐         ┌──────────────┐              │
+│    │ PostgreSQL  │◄────────┤ dedup_checker │              │
+│    │  invoices   │         │ (UNIQUE +hash)│              │
+│    └─────┬───────┘         └──────────────┘              │
+│          │                                                 │
+│          ▼                                                 │
+│   ┌──────────────┐         ┌─────────────────────┐        │
+│   │  Filesystem  │         │  FastAPI Dashboard  │        │
+│   │  /data/raw/  │         │  :9121 (HTTPS)      │        │
+│   └──────────────┘         │  :9122 (proxy)      │        │
+│                            └──────────┬──────────┘        │
+└───────────────────────────────────────┼──────────────────┘
+                                        │
+                                  Cloudflare Tunnel
+                                        │
+                                        ▼
+                          https://<random>.trycloudflare.com
 ```
 
-**Infraestructura actual (Jun 2026):**
-- **PostgreSQL 16** corre de forma nativa en el host (`localhost:5432`).
-- **MinIO** corre en Docker (`desliado-minio`) pero no está configurado en `.env`; el sistema usa filesystem local para PDFs.
-- **OpenClaw Gateway** corre en Docker y ejecuta el cron cada 15 min sobre `/root/liados`.
-- **Dashboard** corre como servicio systemd (`liados-dashboard`) en el puerto `9121`.
+---
 
-## 🚀 Setup rápido
+## 🚀 Instalación rápida (entorno limpio)
 
-### 1. Instalar dependencias
+### Prerrequisitos
+- Python 3.12+
+- PostgreSQL 14+ con BD `desliado` creada
+- Acceso a API Gmail OAuth (Google Cloud project con OAuth consent screen **publicado**)
+- Acceso a API Google Drive OAuth
+- (Opcional) Cuenta Lastapp del cliente
+- (Opcional) Bot Telegram + chat_id para alertas
 
-```bash
-pip install -r agente/requirements.txt
-```
-
-### 2. Configurar `.env`
+### Pasos
 
 ```bash
+# 1. Clonar
+git clone https://github.com/DUALAI25/LIADOS.git
+cd LIADOS
+
+# 2. Crear venv
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+
+# 3. Configurar .env desde el ejemplo
 cp .env.example .env
-# Editar con tus credenciales
+# Editar .env con tus credenciales reales
+
+# 4. Crear BD y esquema
+sudo -u postgres createdb desliado
+sudo -u postgres psql -d desliado -f db/schema.sql
+
+# 5. Generar certificados self-signed (solo para dev)
+mkdir -p certs && cd certs
+openssl req -x509 -newkey rsa:4096 -nodes -out cert.pem -keyout key.pem -days 365 -subj "/CN=localhost"
+cd ..
+
+# 6. Lanzar dashboard
+python -m uvicorn dashboard.app:app --host 0.0.0.0 --port 9121 \
+  --ssl-keyfile certs/key.pem --ssl-certfile certs/cert.pem
 ```
 
-### 3. Levantar infraestructura
-
-PostgreSQL corre de forma nativa en el host. Solo MinIO se levanta con Docker:
+### Producción (con systemd)
 
 ```bash
-# Si no está corriendo MinIO
-docker compose up -d minio
-
-# O para arrancar todo (servicios systemd + Docker)
-bash scripts/start_all.sh
+# Ver systemd/liados-dashboard.service, systemd/liados-tunnel.service
+sudo cp systemd/*.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now liados-dashboard liados-proxy-9122 liados-tunnel
 ```
 
-### 4. Autorizar cuentas Gmail
+---
+
+## ⚙️ Configuración (.env)
+
+Copia `.env.example` a `.env` y rellena:
 
 ```bash
-# Cuenta 1
-python3 agente/scripts/gmail_auth.py --account principal
-# → Abre URL, autoriza, pega la URL de callback
+# ── Dashboard ──
+DASHBOARD_USER=jefe
+DASHBOARD_PASSWORD=jefe2026
 
-# Cuenta 2 (si tienes)
-python3 agente/scripts/gmail_auth.py --account secundaria
+# ── PostgreSQL ──
+PGHOST=localhost
+PGPORT=5432
+PGDATABASE=desliado
+PGUSER=desliado
+PGPASSWORD=<ver vault / pass manager>
+
+# ── Gmail OAuth ──
+GMAIL_ACCOUNTS=principal,secundaria
+GOOGLE_OAUTH_CLIENT_ID=<from GCP>
+GOOGLE_OAUTH_CLIENT_SECRET=<from GCP>
+OAUTH_APP_MODE=production    # CRITICAL: nunca "testing" en prod (tokens caducan 7 días)
+
+# ── Telegram (alertas) ──
+TELEGRAM_BOT_TOKEN=<from BotFather>
+TELEGRAM_CHAT_ID=<tu chat_id>
+
+# ── Parser IA ──
+MINIMAX_API_KEY=<from minimax.io>
+MINIMAX_MODEL=MiniMax-M3
+
+# ── Lastapp (opcional) ──
+LASTAPP_API_TOKEN=<from Lastapp>
+LASTAPP_RESTAURANT_ID=<id>
 ```
 
-### 5. Verificar
+⚠️ **NUNCA commitear `.env`** — está en `.gitignore`.
 
-```bash
-python3 agente/scripts/check_credentials.py
-python3 agente/scripts/gmail_auth.py --list
-```
+---
 
-### 6. Ejecutar collectors
+## 🔐 OAuth Gmail + Google Drive (setup inicial)
 
-```bash
-# Gmail
-python3 agente/scripts/gmail_collector.py
+1. **Google Cloud Console**:
+   - Crear proyecto `liados-prod`
+   - Habilitar APIs: Gmail API + Google Drive API
+   - Crear credenciales OAuth (tipo: Web application)
+   - **PUBLISH APP** en OAuth consent screen (modo Testing caduca en 7 días)
 
-# Lastapp (ventas)
-python3 agente/scripts/lastapp_sync.py
-```
-
-## 🔐 Credenciales necesarias
-
-| Servicio | Variables | Cómo obtenerla |
-|---|---|---|
-| **Gmail (x N)** | `GMAIL_ACCOUNTS=cuenta1,cuenta2`<br>`GMAIL_CREDENTIALS_FILE_<cuenta>`<br>`GMAIL_TOKEN_FILE_<cuenta>` | Google Cloud Console → Gmail API → OAuth Desktop o Web |
-| **OpenCode Go** | `OPENCODE_API_KEY` | https://opencode.ai/zen |
-| **Last.app API** | `LASTAPP_API_TOKEN`<br>`LASTAPP_ORGANIZATION_ID`<br>`LASTAPP_LOCATION_ID` | https://developers.last.app/ |
-| **Last.app MCP** | `LASTAPP_OAUTH_BEARER_TOKEN` o `LASTAPP_OAUTH_CLIENT_ID` + `LASTAPP_OAUTH_CLIENT_SECRET` | Ver sección abajo |
-| **PostgreSQL** | `DB_*` | Instancia nativa en localhost:5432 |
-| **Dashboard** | `DASHBOARD_USER`<br>`DASHBOARD_PASSWORD` | Configurable en `.env` |
-| **Telegram** (opcional) | `TELEGRAM_BOT_TOKEN`<br>`TELEGRAM_CHAT_ID` | @BotFather |
-
-## 🤖 Last.app MCP setup
-
-El conector MCP oficial de Last.app permite al agente de chat consultar y actuar sobre la operativa real del restaurante: productos, reservas, ventas, impresoras, configuración y soporte.
-
-Doc oficial: https://www.last.app/actualizaciones-de-producto/last-app-mcp-conecta-tu-ia-con-tu-restaurante
-
-Endpoint MCP: `https://api.last.app/mcp`
-
-### Autenticación
-
-Last.app MCP usa OAuth 2.0 con grant type `authorization_code`. El token endpoint es `https://api.last.app/mcp/token` y el de autorización `https://api.last.app/mcp/authorize`.
-
-**Método A — Token Bearer directo (el más rápido para empezar)**:
-
-Si ya tienes un token Bearer de Last.app MCP (por haber configurado Claude Desktop, Cursor o similar), puedes usarlo directamente:
-
-```bash
-# En .env
-LASTAPP_OAUTH_BEARER_TOKEN=eyJhbGciOi...tu_token_aqui
-```
-
-**Método B — OAuth interactivo**:
-
-1. Obtén un `client_id` y `client_secret` de Last.app:
-   - Actualmente el panel de admin (`admin.last.app`) no tiene sección pública para crear clientes MCP.
-   - Contacta a soporte@last.app o a tu account manager solicitando credenciales OAuth para MCP.
-   - Alternativa: extrae el `client_id` del tráfico de red al configurar Claude Desktop con Last.app MCP (dev tools → Network → buscar "authorize").
-
-2. Configura en `.env`:
+2. **Generar URL de autorización**:
    ```bash
-   LASTAPP_OAUTH_CLIENT_ID=tu_client_id
-   LASTAPP_OAUTH_CLIENT_SECRET=tu_client_secret
-   LASTAPP_OAUTH_SCOPE=mcp:read mcp:write
-   LASTAPP_OAUTH_REDIRECT_URI=http://localhost:9999/callback
+   python -m agente.scripts.gmail_auth --account principal
    ```
+   → imprime URL. Pegar en navegador, autorizar, copiar `code` del redirect.
 
-3. Al arrancar el agente, se abrirá el navegador para autorizar. El token se guarda en memoria del proceso.
+3. **Intercambiar code por tokens**:
+   ```bash
+   python -m agente.scripts.gmail_auth --account principal --code <CODE>
+   ```
+   → guarda `token_gmail_principal.json` en `agente/credentials/`
 
-### Arrancar el MCP server
+4. **Repetir para secundaria y Drive**.
 
-```bash
-python -m agente.mcp.lastapp_server
-```
+5. **Verificar watchdog**:
+   ```bash
+   python -m agente.scripts.oauth_watchdog --once
+   ```
+   → debe reportar `3/3 tokens OK`.
 
-### Variables de entorno necesarias
+---
 
-```bash
-# Mínimo (una de las dos):
-LASTAPP_OAUTH_BEARER_TOKEN=...        # Método A: token directo
-# o bien:
-LASTAPP_OAUTH_CLIENT_ID=...           # Método B: OAuth interactivo
-LASTAPP_OAUTH_CLIENT_SECRET=...
-
-# Opcionales:
-LASTAPP_OAUTH_TOKEN_URL=https://api.last.app/mcp/token
-LASTAPP_OAUTH_AUTHORIZE_URL=https://api.last.app/mcp/authorize
-LASTAPP_OAUTH_SCOPE=mcp:read mcp:write
-LASTAPP_OAUTH_REDIRECT_URI=http://localhost:9999/callback
-```
-
-### Ejemplos de uso desde el chat del dashboard
-
-Preguntas de lectura (ejecución directa):
-- "¿Cuáles son mis 5 productos más vendidos esta semana?"
-- "¿Qué reservas tengo mañana?"
-- "¿Cuántas cancelaciones he tenido este mes?"
-- "¿Qué impresoras tengo configuradas en Liados Centro?"
-- "¿Qué integraciones tengo activas?"
-- "Busca en la base de conocimiento cómo configurar una impresora"
-
-### Acciones destructivas (flujo de confirmación)
-
-Para acciones que modifican la operativa (cambiar disponibilidad, subir precios, abrir tickets), el sistema usa un patrón de confirmación en dos pasos:
-
-1. El usuario pide una acción (ej: "marca la tarta de queso como no disponible")
-2. El agente llama a la tool (ej: `set_product_unavailable`) y recibe un `confirmation_token`
-3. El agente informa al usuario: "Esta acción requiere confirmación. ¿Confirmas?"
-4. Si el usuario confirma, el agente llama a `confirm_action` con el token
-5. La acción se ejecuta contra Last.app
-
-Si pasan más de 5 minutos sin confirmar, el token expira y hay que repetir el proceso.
-
-**Importante**: el frontend del dashboard debe mostrar un botón de confirmación cuando se reciba una respuesta con `status: "pending_confirmation"`. Esto asegura que siempre haya un humano en el loop para acciones destructivas.
-
-### Descubrimiento de tools
-
-Para ver qué tools expone realmente el MCP remoto de Last.app:
+## 🧪 Tests
 
 ```bash
-python -c "
-from agente.mcp.lastapp_client import LastAppClient
-from agente.mcp.lastapp_auth import get_token
-c = LastAppClient(get_token)
-c.initialize()
-import json
-tools = c.discover_tools()
-for t in tools:
-    print(f\"{t['name']}: {t.get('description','')[:100]}\")
-"
+# Tests unitarios (rápidos, ~30s)
+bash scripts/run_tests.sh
+
+# Smoke E2E (verifica dashboard + API)
+bash tests/run_e2e.sh
+
+# Verificación P0 (idempotencia + restore + smoke)
+# Ver docs/verification/P0-2026-07-28.md
 ```
 
-El mapeo entre nuestras tools y las remotas está en el diccionario `TOOL_MAP` en `agente/mcp/lastapp_server.py`. Si los nombres no coinciden, se corrige automáticamente al arrancar.
+---
+
+## 🛠 Troubleshooting
+
+### Dashboard no carga (HTTP 502 / 504)
+```bash
+# Verificar servicio
+systemctl status liados-dashboard
+
+# Reiniciar si caído
+sudo systemctl restart liados-dashboard
+
+# Ver log
+journalctl -u liados-dashboard -n 50 --no-pager
+```
+
+### Tokens OAuth muertos (watchdog alerta Telegram)
+```bash
+# Ver cuáles están muertos
+python -m agente.scripts.oauth_watchdog --once
+
+# Reautorizar el muerto (ver sección "OAuth Gmail + Drive" arriba)
+```
+
+### Backup no se genera
+```bash
+# Verificar cron
+crontab -l | grep backup
+
+# Ejecutar manualmente
+bash /root/liados/scripts/backup_wrapper.sh
+
+# Ver log
+tail -30 /var/log/backup.log
+```
+
+### Tunnel cloudflared no conecta
+```bash
+# Verificar proceso
+ps aux | grep cloudflared
+
+# Reiniciar
+sudo systemctl restart liados-tunnel
+
+# Obtener nueva URL
+grep -oE 'https://[a-z-]+\.trycloudflare\.com' /var/log/liados/cloudflared.log | tail -1
+```
+
+### Facturas no se capturan
+```bash
+# ¿Última ejecución del collector?
+tail -20 /var/log/liados-drive.log
+tail -20 /var/log/liados-gmail.log
+
+# Forzar re-ejecución manual
+bash /root/liados/scripts/run_drive.sh
+bash /root/liados/scripts/run_gmail.sh   # si existe
+
+# ¿Hay tokens OK?
+python -m agente.scripts.oauth_watchdog --once
+```
+
+---
 
 ## 📁 Estructura del repo
 
 ```
-liados/
+.
 ├── agente/
-│   ├── mcp/
-│   │   └── invoices_server.py    # MCP server (en desarrollo)
-│   ├── openclaw.json             # Config MCP
-│   ├── requirements.txt
-│   └── scripts/
-│       ├── gmail_auth.py         # ✅ OAuth unificado (paste-back, multi-cuenta)
-│       ├── gmail_collector.py    # ✅ Multi-cuenta
-│       ├── lastapp_sync.py       # ✅ Sync ventas Lastapp
-│       ├── invoice_parser.py     # Parser IA (OpenCode Go)
-│       ├── db_writer.py          # Escritura en DB (Postgres)
-│       ├── dedup_checker.py      # Detección duplicados
-│       ├── storage.py            # MinIO / filesystem
-│       ├── weekly_summary.py     # Resumen semanal Telegram
-│       └── check_credentials.py  # ✅ Validador de config
+│   ├── scripts/        # collectors, parser, watchdog
+│   ├── credentials/   # tokens OAuth (NO commitear)
+│   └── lib/           # utilidades compartidas
+├── dashboard/
+│   ├── app.py         # FastAPI app principal
+│   ├── static/        # CSS, JS, imágenes
+│   └── templates/     # Jinja2 templates
 ├── db/
-│   ├── schema.sql                # ✅ Schema completo
-│   └── migrations/
-│       └── 001_add_source_account.sql
-├── docker-compose.yml
-├── setup.sh
-├── .env.example                  # ✅ Multi-cuenta
-└── README.md
+│   └── schema.sql     # esquema PostgreSQL
+├── systemd/           # unit files para producción
+├── scripts/           # wrappers bash para cron
+├── ops/               # scripts operativos (tunnel tracker, etc)
+├── docs/
+│   ├── MANUAL_CLIENTE.md
+│   ├── PLAN-*.md      # planes de loops pasados
+│   ├── safety.md
+│   └── verification/  # verificaciones de loops cerrados
+├── tests/
+│   ├── test_*.py
+│   └── run_e2e.sh
+├── backups/           # backups BD (NO commitear)
+├── data/              # raw/, processed/, logs/
+├── certs/             # TLS self-signed (NO commitear)
+├── docker-compose.yml # BD + servicios para dev
+├── pyproject.toml     # deps del proyecto
+├── .env.example       # plantilla de config
+└── README.md          # este archivo
 ```
 
-## 🔄 Migración desde n8n
+---
 
-El cliente tenía 6 workflows en n8n (https://dualai2026-n8n.qooqoh.easypanel.host). Este repo los reemplaza:
+## 🤝 Contribución
 
-| Workflow n8n | Reemplazo Python |
-|---|---|
-| Dashboard | Streamlit (pendiente) |
-| Importación Histórica | `gmail_collector.py` (backfill) |
-| Sync Sheets | `lastapp_sync.py` |
-| Archivo Facturas | `storage.py` + `gmail_collector.py` |
-| Sapito | Parser IA en `invoice_parser.py` |
-| Error Handler | Try/except en cada script + `agent_logs` |
+- **Repo privado** compartido entre Antonio y Jerónimo
+- Issues y PRs se gestionan en GitHub
+- Conventional Commits para mensajes
+- Tests requeridos para merge a `main`
 
-## 🐛 Troubleshooting
-
-### "GMAIL_ACCOUNTS no configurado"
-Añade en `.env`:
-```
-GMAIL_ACCOUNTS=principal,secundaria
-```
-
-### "Token no encontrado: agente/credentials/gmail_token_X.json"
-Ejecuta:
-```bash
-python3 agente/scripts/gmail_auth.py --account X
-```
-
-### "Permission denied: storage.py"
-Comprueba que `DATA_DIR` existe y es escribible:
-```bash
-mkdir -p data/invoices/{raw,processed,temp}
-```
-
-## 🛠 Comandos útiles
-
-```bash
-# Health check de todos los servicios
-bash scripts/healthcheck.sh
-
-# Arrancar/reiniciar todos los servicios
-bash scripts/start_all.sh
-
-# Ejecutar tests
-bash scripts/run_tests.sh
-
-# Gestión del dashboard (systemd)
-systemctl status liados-dashboard
-systemctl restart liados-dashboard
-journalctl -u liados-dashboard -f
-
-# Sincronización manual
-.venv/bin/python -m agente.scripts.run_all
-.venv/bin/python -m agente.scripts.lastapp_sync
-.venv/bin/python -m agente.scripts.gmail_collector
-```
+---
 
 ## 📜 Licencia
 
-Privado — DualAI / Antonio Serrano.
+Propietario — DualAI / Liados.
+Todos los derechos reservados.
 
 ---
 
-## 🎬 Demo rápida (3 pasos)
-
-Para enseñar el sistema funcionando con datos realistas en 5 minutos:
-
-```bash
-# 1. Cargar 80 facturas demo (necesita DB 'desliado' viva)
-cd /root/liados
-.venv/bin/python -m agente.scripts.seed_demo --wipe
-
-# 2. Probar el MCP server (6 tools disponibles)
-.venv/bin/python -c "
-import sys; sys.path.insert(0, '.')
-from agente.mcp.invoices_server import list_invoices, monthly_summary, vendor_summary
-print(list_invoices(type='expense', limit=5))
-print(monthly_summary(year=2026))
-print(vendor_summary(limit=5))
-"
-
-# 3. Orquestador end-to-end en dry-run
-.venv/bin/python -m agente.scripts.run_all --dry-run
-```
-
-### Datos que genera el seed
-- **24 facturas expense** de 10 proveedores reales (Coca-Cola, Makro, Endesa, Telefónica, Mahou, Seguros Catalana Occidente, etc.)
-- **56 facturas income** de 4 locales TPV (Liados Centro, Malasaña, La Latina, Chueca)
-- **13 pagos** asociados a facturas pagadas
-- **6 agent_logs** simulando actividad de los últimos 14 días
-- **Margen neto mensual** entre 19k€ y 30k€ (realista para 4 locales)
----
-
-## 👤 Manual de uso (para el equipo)
-
-### Acceso al dashboard
-
-**URL pública (tunnel efímero Cloudflare):** ver `data/.current_tunnel_url` o el último mensaje de Telegram con etiqueta `🔗 Liados tunnel URL NUEVA`.
-
-> ⚠️ **Importante:** la URL cambia cada vez que el VPS se reinicia (quick-tunnel de Cloudflare). El bot de Telegram avisa automáticamente cuando esto pasa. Para tener un dominio fijo, configurar un *named tunnel* (ver sección "Setup avanzado" abajo).
-
-**Login:** usuario y contraseña definidos en `/root/liados/.env` (`DASHBOARD_USER` y `DASHBOARD_PASSWORD`).
-
-**Pantalla de login:** https://<URL>/login (formulario elegante, no diálogo del navegador).
-
-### Qué ves en el dashboard
-
-| Sección | Qué muestra |
-|---|---|
-| **KPIs** (arriba) | Ventas del mes, gastos del mes, margen neto, nº facturas |
-| **Ventas por canal** | Distribución: mostrador, Glovo, Uber Eats, Lastapp |
-| **Ventas por local** | 4 locales: Centro, Malasaña, La Latina, Chueca |
-| **Ingresos por mes** | Histórico 6 meses con tendencia |
-| **Gastos por proveedor** | Top proveedores del mes |
-| **Gastos por categoría** | Distribución por tipo de gasto |
-| **Margen por mes** | EBITDA mes a mes |
-| **Facturas recientes** | Últimas facturas parseadas |
-| **Comparativa MoM** | Mes actual vs mes anterior |
-| **Búsqueda** | Por texto, proveedor, categoría |
-
-### ¿Cómo llegan las facturas nuevas?
-
-**Automático, sin hacer nada:**
-1. Gmail revisa cada 30 min (`cron`)
-2. Drive revisa cada 30 min (`cron`)
-3. Cuando llega una factura → parseo con IA → guardado en BD
-4. Aparece en el dashboard sin tocar nada
-5. Si algo falla → alerta a Telegram
-
-### Comandos útiles
-
-```bash
-# Ver estado completo del sistema
-systemctl status liados-dashboard.service liados-proxy-9122.service liados-tunnel.service liados-tunnel-tracker.timer
-
-# Ver URL actual del tunnel (si se te olvidó)
-cat /root/liados/data/.current_tunnel_url | python3 -c "import json,sys;print(json.load(sys.stdin)['url'])"
-
-# Forzar re-parseo de facturas pendientes
-cd /root/liados && /root/liados/.venv/bin/python -m agente.scripts.reparse_pending
-
-# Ver logs del dashboard
-journalctl -u liados-dashboard.service -f
-
-# Backup manual
-/root/liados/ops/backup_wrapper.py
-
-# Watchdog OAuth
-PYTHONPATH=agente/scripts /root/liados/.venv/bin/python -m agente.scripts.oauth_watchdog
-```
-
-### ¿Qué pasa si...?
-
-| Si pasa esto... | Solución |
-|---|---|
-| **Tunnel URL cambió** | Bot Telegram lo notifica. Lee el último mensaje. |
-| **Token OAuth expirado** | Watchdog avisa por Telegram. Reautorizar siguiendo `oauth-troubleshooting`. |
-| **Factura no aparece** | Esperar 30 min (ciclo). Si >1h, ver `/var/log/liados-gmail.log`. |
-| **Dashboard no carga** | `systemctl status liados-dashboard.service`. Si está activo, ver logs. |
-| **Error 530 en tunnel** | `systemctl restart liados-tunnel.service`. URL cambiará, bot avisará. |
-
----
-
-## 🔧 Setup avanzado: dominio fijo (named tunnel)
-
-La URL efímera sirve para piloto. Para producción con dominio fijo (`liados.tudominio.es`):
-
-1. Crear cuenta Cloudflare gratuita (https://dash.cloudflare.com/sign-up)
-2. Añadir dominio y migrar DNS a Cloudflare
-3. Crear *named tunnel* desde dashboard:
-   ```
-   Zero Trust > Networks > Tunnels > Create a tunnel
-   ```
-4. Instalar `cloudflared` y autenticar:
-   ```bash
-   cloudflared tunnel login
-   cloudflared tunnel create liados
-   ```
-5. Configurar ingress:
-   ```yaml
-   # ~/.cloudflared/config.yml
-   tunnel: <TUNNEL_ID>
-   credentials-file: ~/.cloudflared/<TUNNEL_ID>.json
-   ingress:
-     - hostname: liados.tudominio.es
-       service: http://127.0.0.1:9122
-     - service: http_status:404
-   ```
-6. DNS automático: crear CNAME en Cloudflare apuntando a `<TUNNEL_ID>.cfargotunnel.com`
-7. Sustituir `liados-tunnel.service` por:
-   ```
-   ExecStart=/usr/bin/cloudflared tunnel run liados
-   ```
-
-Tiempo total: 20 minutos. Sin coste.
-
----
+**Versión**: 2.1 — 2026-07-28
+**Mantenedor**: Antonio (antonio@dualai.es)
+**Stack principal**: Python 3.12 · PostgreSQL 16 · FastAPI · MiniMax M3

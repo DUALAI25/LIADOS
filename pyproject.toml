@@ -1,0 +1,99 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "liados"
+version = "2.1.0"
+description = "Sistema de gestion de facturas para cliente Liados (cadena de restaurantes)"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{name = "DualAI", email = "antonio@dualai.es"}]
+license = {text = "Proprietary"}
+
+dependencies = [
+    # Core
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "jinja2>=3.1.0",
+    "python-multipart>=0.0.9",
+    "pydantic>=2.6.0",
+
+    # Database
+    "psycopg2-binary>=2.9.9",
+    "sqlalchemy>=2.0.0",
+    "pg8000>=1.30.0",
+
+    # Google APIs
+    "google-api-python-client>=2.120.0",
+    "google-auth>=2.27.0",
+    "google-auth-oauthlib>=1.2.0",
+    "google-auth-httplib2>=0.2.0",
+
+    # Parser IA
+    "openai>=1.30.0",  # usado en modo compatible con MiniMax M3
+    "tiktoken>=0.6.0",
+
+    # PDF
+    "PyPDF2>=3.0.0",
+    "pdfplumber>=0.10.0",
+    "pytesseract>=0.3.10",
+    "Pillow>=10.2.0",
+
+    # Utilities
+    "python-dotenv>=1.0.0",
+    "requests>=2.31.0",
+    "urllib3>=2.2.0",
+    "tenacity>=8.2.0",
+    "structlog>=24.1.0",
+
+    # Tests
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "httpx>=0.27.0",
+    "playwright>=1.42.0",  # opcional, para E2E
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest-watch>=4.0.0",
+    "black>=24.1.0",
+    "ruff>=0.3.0",
+    "mypy>=1.8.0",
+    "ipython>=8.20.0",
+]
+e2e = [
+    "playwright>=1.42.0",
+    "pytest-playwright>=0.4.0",
+]
+
+[project.scripts]
+liados-dashboard = "dashboard.app:main"
+liados-collect = "agente.scripts.run_all:main"
+liados-watchdog = "agente.scripts.oauth_watchdog:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agente*", "dashboard*"]
+exclude = ["tests*", "docs*", "scripts*", "backups*", "data*", "certs*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short --strict-markers"
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
+strict = false
+ignore_missing_imports = true

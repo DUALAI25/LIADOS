@@ -659,6 +659,16 @@ def main(argv=None):
             total_errors += errors
             if dry_report is not None:
                 dry_reports[account] = dry_report
+        except RuntimeError as e:
+            # SKIP SILENCIOSO: cuenta sin token Drive autorizado (p.ej. secundaria).
+            # No suma a total_errors ni manda Telegram: es estado esperado, no un fallo.
+            msg = str(e)
+            if "Drive token no OK" in msg or "sin servicio Drive" in msg:
+                logger.warning(f"[drive:{account}] sin token Drive autorizado, skip silencioso (no es error): {msg}")
+            else:
+                logger.error(f"[drive:{account}] RuntimeError no controlada: {e}")
+                total_errors += 1
+                send_telegram("WARN Liados drive " + account + ": " + msg)
         except Exception as e:
             logger.error(f"[drive:{account}] Excepcion no controlada (no aborta batch): {e}")
             total_errors += 1

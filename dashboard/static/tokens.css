@@ -118,6 +118,16 @@
   --fz-3xl: 40px;
   --fz-4xl: 56px;
 
+  /* Iconografía (v9-premium) */
+  --ico-xs: 12px;
+  --ico-sm: 14px;
+  --ico-md: 18px;
+  --ico-lg: 22px;
+  --ico-xl: 28px;
+  --ico-fg: #94a3b8;
+  --ico-fg-strong: #cbd5e1;
+  --ico-stroke: 1.75;
+
   /* Layout */
   --sidebar-w: 240px;
   --sidebar-w-collapsed: 68px;
@@ -143,6 +153,10 @@
   --fg-1: #1e293b;
   --fg-2: #475569;
   --fg-3: #94a3b8;
+
+  /* Iconografía tema claro */
+  --ico-fg: #64748b;
+  --ico-fg-strong: #1e293b;
 
   --green-bg: #22c55e18;
   --red-bg: #ef444418;

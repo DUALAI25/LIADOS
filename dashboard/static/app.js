@@ -6,7 +6,7 @@
 // ── Constantes ───────────────────────────────────────────────────────────
 const COLORS = { card:'#3b82f6', cash:'#22c55e', uber:'#f97316', glovo:'#eab308', shop:'#a855f7', justeat:'#ef4444' };
 const LABELS = { card:'Tarjeta', cash:'Efectivo', uber:'Uber Eats', glovo:'Glovo', shop:'Shop', justeat:'Just Eat' };
-const ICONS  = { card:'💳', cash:'💵', uber:'🚗', glovo:'🟡', shop:'🛒', justeat:'🛵' };
+const ICONS  = { card:'credit-card', cash:'banknote', uber:'car', glovo:'shopping-bag', shop:'shopping-cart', justeat:'bike' };
 
 const $  = (s, r=document) => r.querySelector(s);
 const $$ = (s, r=document) => [...r.querySelectorAll(s)];
@@ -368,7 +368,7 @@ async function loadGastos() {
           <td>${r.source_account ? esc(r.source_account) : '<span class="muted">—</span>'}</td>
           <td><span class="status status-${esc(r.status||'pending')}">${esc(statusLabel(r.status||'pending'))}</span></td>
           <td class="num"><b>${eur(r.total_amount||0)}</b></td>
-          <td>${r.raw_file_url ? '<span class="pdf-yes" title="PDF disponible">📎</span>' : '<span class="muted" title="Sin PDF">—</span>'}</td>
+          <td>${r.raw_file_url ? '<span class="pdf-yes" title="PDF disponible">' + icon('paperclip', 'ico ico-xs') + '</span>' : '<span class="muted" title="Sin PDF">—</span>'}</td>
         </tr>
       `).join('')}</tbody>
     </table></div>`;
@@ -419,7 +419,7 @@ async function openFacturaModal(id) {
     ).join('');
     const pdfBlock = f.raw_file_url
       ? (f.pdf_exists
-          ? `<a class="btn primary" href="/api/gastos/${id}/pdf" target="_blank" rel="noopener" download>📄 Ver/Descargar PDF (${(f.pdf_size_bytes/1024).toFixed(1)} KB)</a>`
+          ? `<a class="btn primary" href="/api/gastos/${id}/pdf" target="_blank" rel="noopener" download>${icon('file-text', 'ico ico-xs')} Ver/Descargar PDF (${(f.pdf_size_bytes/1024).toFixed(1)} KB)</a>`
           : `<span class="muted">PDF no disponible en disco (${esc(f.raw_file_url)})</span>`)
       : '<span class="muted">Esta factura no tiene PDF adjunto</span>';
     const pagosBlock = f.pagos && f.pagos.length > 0
@@ -452,8 +452,8 @@ async function openFacturaModal(id) {
         ${f.created_at ? `<small>Creada: ${esc(f.created_at)}</small>` : ''}
       </div>
       <div class="factura-actions">
-        <button class="btn ghost" onclick="chatPrefill('Analiza la factura ${esc(f.invoice_number||id)} de ${esc((f.vendor_name||'').replace(/'/g, ''))}')">💬 Abrir en chat AI</button>
-        <button class="btn ghost" id="reclass-toggle-${esc(id)}" onclick="toggleReclassPanel('${esc(id)}')">✏️ Reclasificar</button>
+        <button class="btn ghost" onclick="chatPrefill('Analiza la factura ${esc(f.invoice_number||id)} de ${esc((f.vendor_name||'').replace(/'/g, ''))}')">${icon('message-circle', 'ico ico-xs')} Abrir en chat AI</button>
+        <button class="btn ghost" id="reclass-toggle-${esc(id)}" onclick="toggleReclassPanel('${esc(id)}')">${icon('file-text', 'ico ico-xs')} Reclasificar</button>
       </div>
       <div class="reclass-panel" id="reclass-panel-${esc(id)}" style="display:none">
         <h4>Reclasificar factura</h4>
@@ -580,7 +580,7 @@ async function loadAlertas() {
       const isAcked = ackedIds.has(a.id);
       const ackInfo = acks.find(x => x.alert_id === a.id);
       const isDismissed = dismissed[a.id] && (now - dismissed[a.id] < 24*3600*1000);
-      const dismissBtn = (isAcked || isDismissed) ? '' : `<button class="al-dismiss" data-id="${esc(a.id)}" aria-label="Descartar alerta">✕</button>`;
+      const dismissBtn = (isAcked || isDismissed) ? '' : `<button class="al-dismiss" data-id="${esc(a.id)}" aria-label="Descartar alerta">'×'</button>`;
       const ackBtn = isAcked
         ? `<span class="al-acked" title="Revisada por ${esc(ackInfo?.acked_by || '')} el ${esc((ackInfo?.acked_at || '').replace('T',' ').slice(0,16))}">✓ Revisada</span>`
         : `<button class="al-ack" data-id="${esc(a.id)}">✓ Marcar revisada</button>`;
@@ -600,8 +600,8 @@ async function loadAlertas() {
             ${dismissBtn}
           </div>
           <p class="al-desc">${esc(a.descripcion)}</p>
-          ${a.accion_sugerida ? `<p class="al-accion">💡 <b>Acción:</b> ${esc(a.accion_sugerida)}</p>` : ''}
-          ${isAcked && ackInfo?.note ? `<p class="al-note"><b>📝 Nota:</b> ${esc(ackInfo.note)}</p>` : ''}
+          ${a.accion_sugerida ? `<p class="al-accion">${icon('info', 'ico ico-xs')} <b>Acción:</b> ${esc(a.accion_sugerida)}</p>` : ''}
+          ${isAcked && ackInfo?.note ? `<p class="al-note"><b>${icon('file-text', 'ico ico-xs')} Nota:</b> ${esc(ackInfo.note)}</p>` : ''}
           <div class="al-foot">
             ${cta}
             ${ackBtn}
@@ -708,24 +708,24 @@ async function renderConfig() {
       const clientStr = a.client_id || '—';
       return `<div class="cfg-fuente">
         <div class="cfg-fuente-head">
-          <b>📧 ${esc(a.account)}</b>
+          <b>${icon('mail', 'ico ico-xs')} ${esc(a.account)}</b>
           ${statusBadge}
         </div>
         <div class="cfg-fuente-grid">
-          <div><span>Credentials</span><b>${a.credentials_file_exists ? '✓' : '✗'}</b></div>
-          <div><span>Token</span><b>${a.token_file_exists ? '✓' : '✗'}</b></div>
-          <div><span>Refresh</span><b>${a.has_refresh_token ? '✓' : '✗'}</b></div>
+          <div><span>Credentials</span><b>${a.credentials_file_exists ? '✓' : '×'}</b></div>
+          <div><span>Token</span><b>${a.token_file_exists ? '✓' : '×'}</b></div>
+          <div><span>Refresh</span><b>${a.has_refresh_token ? '✓' : '×'}</b></div>
           <div><span>Edad token</span><b>${ageStr}</b></div>
           <div><span>Client ID</span><b><code>${esc(clientStr)}</code></b></div>
           <div><span>Scope</span><b><code>${esc(a.scope||'—')}</code></b></div>
         </div>
-        ${a.status === 'MISSING_TOKEN' || a.status === 'STALE' ? `<details class="cfg-reauth"><summary>🔄 Reautorizar esta cuenta</summary>
+        ${a.status === 'MISSING_TOKEN' || a.status === 'STALE' ? `<details class="cfg-reauth"><summary>${icon('refresh-cw', 'ico ico-xs')} Reautorizar esta cuenta</summary>
           <ol>
             <li>En tu máquina local, ejecuta:<br><code>python3 -m agente.scripts.gmail_auth --account ${esc(a.account)} --force</code></li>
             <li>Sube el nuevo token al VPS:<br><code>scp agente/credentials/gmail_token_${esc(a.account)}.json vps:/root/liados/agente/credentials/</code></li>
             <li>Prueba el collector:<br><code>python3 -m agente.scripts.gmail_collector --account ${esc(a.account)} --dry-run</code></li>
           </ol>
-          <p class="muted">⚠️ El re-OAuth requiere navegador interactivo. No se puede automatizar desde el dashboard.</p>
+          <p class="muted">${icon('alert-triangle', 'ico ico-xs')} El re-OAuth requiere navegador interactivo. No se puede automatizar desde el dashboard.</p>
         </details>` : ''}
       </div>`;
     }).join('');
@@ -743,7 +743,7 @@ function toast(msg, type='info', ms=3500) {
   const t = document.createElement('div');
   t.className = `toast toast-${type}`;
   t.setAttribute('role', 'status');
-  t.innerHTML = `<span class="toast-ico">${type==='error'?'⛔':type==='success'?'✓':type==='warn'?'⚠':'ℹ'}</span><span>${esc(msg)}</span><button class="toast-x" aria-label="Cerrar">✕</button>`;
+  t.innerHTML = `<span class="toast-ico">${type==='error' ? icon('x', 'ico ico-xs') : type==='success' ? '✓' : type==='warn' ? icon('alert-triangle', 'ico ico-xs') : 'ℹ'}</span><span>${esc(msg)}</span><button class="toast-x" aria-label="Cerrar">×</button>`;
   c.appendChild(t);
   // Animate in
   requestAnimationFrame(() => t.classList.add('toast-in'));
@@ -759,20 +759,20 @@ function toast(msg, type='info', ms=3500) {
 
 // ── v6: Command palette (⌘K) ────────────────────────────────────────────
 const COMMANDS = [
-  { id: 'nav:dashboard', label: 'Ir a Dashboard', icon: '📊', action: () => switchView('dashboard') },
-  { id: 'nav:ventas', label: 'Ir a Ventas', icon: '📈', action: () => switchView('ventas') },
-  { id: 'nav:gastos', label: 'Ir a Gastos (resumen)', icon: '📄', action: () => switchView('gastos') },
-  { id: 'nav:gastos-detalle', label: 'Ir a Detalle gastos', icon: '🧾', action: () => switchView('gastos-detalle') },
-  { id: 'nav:alertas', label: 'Ir a Alertas', icon: '🔔', action: () => switchView('alertas') },
-  { id: 'nav:config', label: 'Ir a Configuración', icon: '⚙️', action: () => switchView('config') },
-  { id: 'act:chat', label: 'Abrir asistente AI', icon: '💬', action: () => { if (!$('#chatPanel').classList.contains('open')) $('#chatFab').click(); $('#chatText').focus(); } },
-  { id: 'act:refresh', label: 'Refrescar datos', icon: '🔄', action: () => { loadAll(); toast('Datos refrescados', 'success'); } },
-  { id: 'act:export-facturas', label: 'Exportar facturas a CSV', icon: '⬇️', action: () => window.location = '/api/export/facturas' },
-  { id: 'act:export-proveedores', label: 'Exportar gastos por proveedor a CSV', icon: '⬇️', action: () => window.location = '/api/export/proveedores' },
-  { id: 'act:export-categorias', label: 'Exportar gastos por categoría a CSV', icon: '⬇️', action: () => window.location = '/api/export/categorias' },
-  { id: 'act:export-ingresos', label: 'Exportar ingresos a CSV', icon: '⬇️', action: () => window.location = '/api/export/ingresos' },
-  { id: 'act:theme', label: 'Cambiar tema claro/oscuro', icon: '🌗', action: () => toggleTheme() },
-  { id: 'act:help', label: 'Ver atajos de teclado', icon: '❓', action: () => openModal('helpModal') },
+  { id: 'nav:dashboard', label: 'Ir a Dashboard', icon: 'bar-chart-3', action: () => switchView('dashboard') },
+  { id: 'nav:ventas', label: 'Ir a Ventas', icon: 'trending-up', action: () => switchView('ventas') },
+  { id: 'nav:gastos', label: 'Ir a Gastos (resumen)', icon: 'file-text', action: () => switchView('gastos') },
+  { id: 'nav:gastos-detalle', label: 'Ir a Detalle gastos', icon: 'receipt', action: () => switchView('gastos-detalle') },
+  { id: 'nav:alertas', label: 'Ir a Alertas', icon: 'bell', action: () => switchView('alertas') },
+  { id: 'nav:config', label: 'Ir a Configuración', icon: 'cog', action: () => switchView('config') },
+  { id: 'act:chat', label: 'Abrir asistente AI', icon: 'message-circle', action: () => { if (!$('#chatPanel').classList.contains('open')) $('#chatFab').click(); $('#chatText').focus(); } },
+  { id: 'act:refresh', label: 'Refrescar datos', icon: 'refresh-cw', action: () => { loadAll(); toast('Datos refrescados', 'success'); } },
+  { id: 'act:export-facturas', label: 'Exportar facturas a CSV', icon: '⬇', action: () => window.location = '/api/export/facturas' },
+  { id: 'act:export-proveedores', label: 'Exportar gastos por proveedor a CSV', icon: '⬇', action: () => window.location = '/api/export/proveedores' },
+  { id: 'act:export-categorias', label: 'Exportar gastos por categoría a CSV', icon: '⬇', action: () => window.location = '/api/export/categorias' },
+  { id: 'act:export-ingresos', label: 'Exportar ingresos a CSV', icon: '⬇', action: () => window.location = '/api/export/ingresos' },
+  { id: 'act:theme', label: 'Cambiar tema claro/oscuro', icon: 'moon', action: () => toggleTheme() },
+  { id: 'act:help', label: 'Ver atajos de teclado', icon: 'help-circle', action: () => openModal('helpModal') },
 ];
 function switchView(v) {
   const nav = $(`.nav-item[data-view="${v}"]`);
@@ -1139,7 +1139,7 @@ function renderRest() {
   // Facturas recientes
   $('#facturas').innerHTML = `<div class="table-wrap"><table>
     <thead><tr><th>Nº</th><th>Fecha</th><th>Cliente</th><th>Canales</th><th class="num">Total</th></tr></thead>
-    <tbody>${DATA.facturas.map(f=>{const tags=(f.canales||'').split(',').map(x=>x.trim()).filter(Boolean).map(x=>`<span class="tag tag-${x}">${ICONS[x]||''} ${x}</span>`).join(' ');return `<tr><td>${esc(f.number||'')}</td><td>${esc(f.fecha||'')}</td><td>${esc(f.cliente||'')}</td><td>${tags}</td><td class="num"><b>${eur(f.total_eur)}</b></td></tr>`;}).join('')}</tbody>
+    <tbody>${DATA.facturas.map(f=>{const tags=(f.canales||'').split(',').map(x=>x.trim()).filter(Boolean).map(x=>`<span class="tag tag-${x}">${icon(ICONS[x]||'')} <span>${x}</span></span>`).join(' ');return `<tr><td>${esc(f.number||'')}</td><td>${esc(f.fecha||'')}</td><td>${esc(f.cliente||'')}</td><td>${tags}</td><td class="num"><b>${eur(f.total_eur)}</b></td></tr>`;}).join('')}</tbody>
   </table></div>`;
 }
 
@@ -1198,7 +1198,7 @@ function initChat() {
 function renderSuggest() { $('#chatSuggest').innerHTML = SUGGEST.map(s=>`<button>${s}</button>`).join(''); $$('#chatSuggest button').forEach(b=>b.onclick=()=>{$('#chatText').value=b.textContent;sendMsg();}); }
 function saveHist(){ try{ localStorage.setItem('liados_chat_hist',JSON.stringify(chatHistory.slice(-20))); }catch(e){} }
 function addMsg(text,cls,extra){ const d=document.createElement('div'); d.className='msg '+cls; d.innerHTML=text+(extra||''); $('#chatBody').appendChild(d); d.scrollIntoView({behavior:'smooth'}); return d; }
-function renderHistory(){ $('#chatBody').innerHTML=''; if(chatHistory.length===0){$('#chatBody').innerHTML='<div class="msg bot">¡Hola! 👋 Soy el asistente de Liados. Pregúntame sobre ventas, gastos, productos o reservas.</div>';} else chatHistory.forEach(m=>addMsg(m.role==='user'?esc(m.content):mdToHtml(m.content), m.role==='user'?'user':'bot')); }
+function renderHistory(){ $('#chatBody').innerHTML=''; if(chatHistory.length===0){$('#chatBody').innerHTML='<div class="msg bot">¡Hola! ' + icon('message-circle', 'ico ico-xs') + ' Soy el asistente de Liados. Pregúntame sobre ventas, gastos, productos o reservas.</div>';} else chatHistory.forEach(m=>addMsg(m.role==='user'?esc(m.content):mdToHtml(m.content), m.role==='user'?'user':'bot')); }
 
 async function sendMsg(){
   const txt=$('#chatText'); const msg=txt.value.trim(); if(!msg) return;
@@ -1270,7 +1270,7 @@ async function sendMsg(){
           toolsUsed.push(payload.name);
           // Crear/actualizar chips de tools en la burbuja bot (si ya existe) o en una provisional
           if (!toolsChip) { toolsChip = document.createElement('div'); toolsChip.className='msg bot'; toolsChip.style.background='transparent'; toolsChip.style.border='none'; toolsChip.style.padding='0'; toolsChip.style.alignSelf='flex-start'; toolsChip.innerHTML='<div class="tools" style="border:none;padding:0;margin:0"></div>'; $('#chatBody').appendChild(toolsChip); }
-          toolsChip.querySelector('.tools').innerHTML += `<span class="tchip">🔧 ${esc(payload.name)}</span>`;
+          toolsChip.querySelector('.tools').innerHTML += `<span class="tchip">${icon('wrench', 'ico ico-xs')} ${esc(payload.name)}</span>`;
           toolsChip.scrollIntoView({behavior:'smooth'});
         } else if (type === 'token') {
           if (typing.parentNode) typing.remove();
@@ -1284,7 +1284,7 @@ async function sendMsg(){
           pending = payload.pending_confirmation;
           // Adjuntar chips de tools a la burbuja final si existen
           if (toolsUsed.length) {
-            const chips = `<div class="tools">${toolsUsed.map(t=>`<span class="tchip">🔧 ${esc(t)}</span>`).join('')}</div>`;
+            const chips = `<div class="tools">${toolsUsed.map(t=>`<span class="tchip">${icon('wrench', 'ico ico-xs')} ${esc(t)}</span>`).join('')}</div>`;
             if (botMsg) botMsg.innerHTML = mdToHtml(fullReply) + chips;
             if (toolsChip) toolsChip.remove();
           }
@@ -1294,7 +1294,7 @@ async function sendMsg(){
         } else if (type === 'error') {
           if (typing.parentNode) typing.remove();
           if (toolsChip) toolsChip.remove();
-          addMsg('⚠️ '+(payload.message||'Error del agente'),'error');
+          addMsg(icon('alert-triangle', 'ico ico-xs') + ' ' + (payload.message||'Error del agente'), 'error')
           return;
         }
       }
@@ -1324,7 +1324,7 @@ async function sendMsg(){
 // v6.0.2: Fallback al endpoint no-stream cuando el stream falla o se agota el timeout.
 async function _fallbackNonStream(originalMsg) {
   try {
-    addMsg('🔄 Conectando con modo alternativo...', 'bot');
+    addMsg(icon('refresh-cw', 'ico ico-xs') + ' Conectando con modo alternativo...', 'bot');
     const r = await _fetchAuth('/api/chat', { method:'POST', json:{message: originalMsg, history: chatHistory} });
     if (!r.ok) {
       addMsg('❌ Error HTTP '+r.status+' (rate limit o servidor caído). Espera unos segundos.', 'error');
@@ -1352,7 +1352,7 @@ async function _fallbackNonStream(originalMsg) {
 
 function showConfirm(p){
   const box=document.createElement('div'); box.className='confirm-box';
-  box.innerHTML=`<div><b>⚠️ ${esc(p.action)}</b><br>${esc(p.message||'Esta acción requiere confirmación.')}</div><div class="btns"><button class="yes">Confirmar</button><button class="no">Cancelar</button></div>`;
+  box.innerHTML=`<div><b>${icon('alert-triangle', 'ico ico-xs')} ${esc(p.action)}</b><br>${esc(p.message||'Esta acción requiere confirmación.')}</div><div class="btns"><button class="yes">Confirmar</button><button class="no">Cancelar</button></div>`;
   $('#chatBody').appendChild(box); box.scrollIntoView();
   box.querySelector('.yes').onclick=async()=>{box.innerHTML='Ejecutando…';try{const r=await _fetchAuth('/api/chat/confirm',{method:'POST',json:{confirmation_token:pendingToken}});const d=await r.json().catch(()=>({error:'Respuesta no es JSON valido'}));box.remove();addMsg('```json\n'+JSON.stringify(d,null,2)+'\n```','bot');pendingToken=null;}catch(e){box.remove();addMsg('Error al confirmar: '+esc(e.message),'error');pendingToken=null;}};
   box.querySelector('.no').onclick=async()=>{try{await _fetchAuth('/api/chat/cancel',{method:'POST',json:{confirmation_token:pendingToken}});box.remove();addMsg('Acción cancelada.','bot');}catch(e){box.remove();addMsg('No se pudo cancelar (la acción puede seguir pendiente en el servidor): '+esc(e.message),'error');}pendingToken=null;};
@@ -1440,7 +1440,7 @@ async function openDrill(type, name) {
   name = (name || '').trim();
   if (!name) return;
   openModal('drillModal');
-  $('#drillTitle').textContent = (type==='proveedor' ? '🧾 ' : '📦 ') + name;
+  $('#drillTitle').textContent = (type==='proveedor' ? icon('receipt', 'ico ico-xs') + ' ' : icon('package', 'ico ico-xs') + ' ') + name;
   $('#drillBody').innerHTML = '<div class="search-empty">Cargando…</div>';
   try {
     const url = type==='proveedor'
@@ -1756,7 +1756,7 @@ async function loadDesgloseMatrix() {
     const d = await getJSON('/api/gastos/desglose/matrix?' + params.toString());
 
     if (!d.cells || d.cells.length === 0) {
-      wrap.innerHTML = '<div class="excel-empty"><div class="ico">📭</div><h3>Sin datos</h3><p>No hay facturas que coincidan con los filtros actuales.</p></div>';
+      wrap.innerHTML = '<div class="excel-empty"><div class="ico">' + icon('mail', 'ico ico-xs') + '</div><h3>Sin datos</h3><p>No hay facturas que coincidan con los filtros actuales.</p></div>';
       return;
     }
 
@@ -1841,7 +1841,7 @@ async function loadDesgloseTop() {
     const d = await getJSON('/api/gastos/desglose/top?' + params.toString());
 
     if (!d.items || d.items.length === 0) {
-      wrap.innerHTML = '<div class="excel-empty"><div class="ico">🏆</div><h3>Sin datos</h3></div>';
+      wrap.innerHTML = '<div class="excel-empty"><div class="ico">' + icon('trophy', 'ico ico-xs') + '</div><h3>Sin datos</h3></div>';
       return;
     }
 
@@ -2024,7 +2024,7 @@ async function loadDesgloseCompare() {
     const d = await getJSON('/api/gastos/desglose/compare?' + params.toString());
 
     if (!d.items || d.items.length === 0) {
-      wrap.innerHTML = '<div class="excel-empty"><div class="ico">⚖️</div><h3>Sin datos comparables</h3><p>Ajusta los rangos de fechas.</p></div>';
+      wrap.innerHTML = '<div class="excel-empty"><div class="ico">' + icon('scale', 'ico ico-xs') + '</div><h3>Sin datos comparables</h3><p>Ajusta los rangos de fechas.</p></div>';
       return;
     }
 
@@ -2157,7 +2157,7 @@ async function loadProductosStats() {
       </div>
     `;
   } catch(e) {
-    grid.innerHTML = `<div class="pr-error"><h3>⚠️ No se pudo cargar estadísticas</h3><p>${esc(e.message)}</p></div>`;
+    grid.innerHTML = `<div class="pr-error"><h3>${icon('alert-triangle', 'ico ico-xs')} No se pudo cargar estadísticas</h3><p>${esc(e.message)}</p></div>`;
   }
 }
 
@@ -2178,7 +2178,7 @@ async function loadProductosList() {
     const el = $('#pr-gen-at');
     if (el) el.textContent = `Última actualización: ${new Date().toLocaleString('es-ES')}`;
   } catch(e) {
-    list.innerHTML = `<div class="pr-error"><h3>⚠️ Error cargando catálogo</h3><p>${esc(e.message)}</p></div>`;
+    list.innerHTML = `<div class="pr-error"><h3>${icon('alert-triangle', 'ico ico-xs')} Error cargando catálogo</h3><p>${esc(e.message)}</p></div>`;
   }
 }
 
@@ -2192,7 +2192,7 @@ function renderProductosList() {
   else if (sort === 'price-desc') items.sort((a,b) => (b.price||0) - (a.price||0));
   
   if (items.length === 0) {
-    list.innerHTML = `<div class="pr-empty"><h3>📦 Sin productos</h3><p>No se encontraron productos que coincidan con los filtros.</p></div>`;
+    list.innerHTML = `<div class="pr-empty"><h3>${icon('package', 'ico ico-xs')} Sin productos</h3><p>No se encontraron productos que coincidan con los filtros.</p></div>`;
     return;
   }
 
@@ -2241,10 +2241,10 @@ async function openProductoDetail(productId) {
             ✓ Marcar disponible
           </button>
           <button class="pr-mini-btn danger" onclick="toggleProducto('${esc(p.id)}', false)" ${!p.available ? 'disabled style="opacity:.5"' : ''}>
-            ✕ Marcar no disponible
+            '×' Marcar no disponible
           </button>
           <button class="pr-mini-btn" onclick="chatPrefill('Analiza el producto ${esc(p.name.replace(/'/g, "\\'"))} con ID ${p.id}')">
-            💬 Preguntar al chat
+            icon('message-circle', 'ico ico-xs') Preguntar al chat
           </button>
         </div>
       </div>
@@ -2270,7 +2270,7 @@ async function toggleProducto(productId, available) {
       toast(`✓ Disponibilidad actualizada`, 'success');
       await loadProductosList();
     } else {
-      toast('⚠️ La operación requiere confirmación', 'warn');
+      toast(icon('alert-triangle', 'ico ico-xs') + ' La operación requiere confirmación', 'warn');
     }
   } catch(e) {
     toast('Error: ' + e.message, 'error');
@@ -2298,7 +2298,7 @@ async function loadDesglosePyg() {
   const tbody = $('#pyg-tbody');
   const issuesEl = $('#pyg-issues');
   if (!fromVal || !toVal) {
-    toast('⚠️ Selecciona Desde y Hasta en los filtros globales', 'warn');
+    toast(icon('alert-triangle', 'ico ico-xs') + ' Selecciona Desde y Hasta en los filtros globales', 'warn');
     return;
   }
 

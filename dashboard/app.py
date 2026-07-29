@@ -1682,6 +1682,59 @@ def api_alertas_ack_list(user: str = Depends(get_current_user)):
     return _list_acks(q_fn=q, limit=100)
 
 
+# v9-premium: icon paths espejo del static/icons.js (Lucide, ISC).
+# Usado por el servidor para renderizar placeholders __ICON__name__ en INDEX_HTML.
+_ICON_PATHS = {
+    'menu': '<line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>',
+    'search': '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
+    'x': '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+    'check': '<polyline points="20 6 9 17 4 12"/>',
+    'chevron-left': '<polyline points="15 18 9 12 15 6"/>',
+    'chevron-right': '<polyline points="9 18 15 12 9 6"/>',
+    'chevron-down': '<polyline points="6 9 12 15 18 9"/>',
+    'filter': '<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>',
+    'refresh-cw': '<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>',
+    'download': '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
+    'eye': '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
+    'info': '<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>',
+    'help-circle': '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+    'utensils': '<path d="M3 2v7c0 1.1.9 2 2 2h0a2 2 0 0 0 2-2V2"/><path d="M7 2v7c0 1.1.9 2 2 2h0a2 2 0 0 0 2-2V2"/><path d="M14 2v20M14 9h6"/>',
+    'building-2': '<path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18"/><path d="M6 12H4a2 2 0 0 0-2 2v8h20v-8a2 2 0 0 0-2-2h-2"/><path d="M10 6h4M10 10h4M10 14h4M10 18h4"/>',
+    'trending-up': '<polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/>',
+    'trending-down': '<polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/>',
+    'euro': '<path d="M4 10h12"/><path d="M4 14h9"/><path d="M19 6a7.7 7.7 0 0 0-5.2-2A7.9 7.9 0 0 0 6 12a7.9 7.9 0 0 0 7.8 8c2 0 3.8-.8 5.2-2"/>',
+    'coins': '<circle cx="8" cy="8" r="6"/><path d="M18.09 10.37A6 6 0 1 1 10.34 18"/><path d="M7 6h1v4"/><path d="M16.71 13.88l.7.71-2.82 2.82"/>',
+    'percent': '<line x1="19" y1="5" x2="5" y2="19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/>',
+    'receipt': '<path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z"/><path d="M8 7h8M8 11h8M8 15h6"/>',
+    'bar-chart-2': '<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>',
+    'bar-chart-3': '<path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>',
+    'pie-chart': '<path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/>',
+    'layout-grid': '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>',
+    'trophy': '<path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/>',
+    'calendar': '<rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>',
+    'scale': '<path d="M12 3v18"/><path d="M3 7h6l-3 7h6l-3-7"/><path d="M21 7h-6l3 7h-6l3-7"/>',
+    'package': '<line x1="16.5" y1="9.4" x2="7.5" y2="4.21"/><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/>',
+    'package-2': '<path d="M3 9h18v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9Z"/><path d="M3 9V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v4"/><path d="M12 13v6"/>',
+    'credit-card': '<rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/>',
+    'banknote': '<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2"/><path d="M6 12h.01M18 12h.01"/>',
+    'car': '<path d="M14 16H9m10 0h3v-3.15a1 1 0 0 0-.84-.99L16 11l-2.7-3.6a1 1 0 0 0-.8-.4H5.24a2 2 0 0 0-1.8 1.1l-.8 1.63A6 6 0 0 0 2 12.42V16h2"/><circle cx="6.5" cy="16.5" r="2.5"/><circle cx="16.5" cy="16.5" r="2.5"/>',
+    'shopping-bag': '<path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/>',
+    'shopping-cart': '<circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/>',
+    'bike': '<circle cx="5.5" cy="17.5" r="3.5"/><circle cx="18.5" cy="17.5" r="3.5"/><path d="M15 6a1 1 0 100-2h-1l-1 2h2l-2 4h-2"/><path d="M5.5 17.5L9 11h6l3 6.5"/>',
+    'alert-triangle': '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+    'bell': '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
+    'settings': '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+    'plug': '<path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v4a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z"/>',
+    'wrench': '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>',
+    'moon': '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>',
+    'sun': '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>',
+    'message-circle': '<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>',
+    'sparkles': '<path d="M12 3l1.45 4.36L18 9l-4.55 1.64L12 15l-1.45-4.36L6 9l4.55-1.64z"/><path d="M19 14l.7 2.1L22 17l-2.3.9L19 20l-.7-2.1L16 17l2.3-.9z"/><path d="M5 14l.7 2.1L8 17l-2.3.9L5 20l-.7-2.1L2 17l2.3-.9z"/>',
+    'mail': '<path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/>',
+    'cog': '<path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+    'file-text': '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>',
+}
+
 INDEX_HTML = """<!DOCTYPE html>
 <html lang="es" data-theme="dark">
 <head>
@@ -1751,7 +1804,7 @@ INDEX_HTML = """<!DOCTYPE html>
     <!-- Hero -->
     <section class="hero">
       <div>
-        <div class="hero-label">💰 Margen del mes</div>
+        <div class="hero-label"><span class="hero-icon">__ICON__euro__</span> Margen del mes</div>
         <div class="hero-value pos" id="heroValue">0€</div>
         <div style="margin-bottom:var(--s-2)"><span class="delta flat" id="heroDelta">—</span></div>
         <div class="hero-meta" id="heroMeta"></div>
@@ -1831,7 +1884,7 @@ INDEX_HTML = """<!DOCTYPE html>
           <div class="card-body" id="ventas-resumen"></div>
         </div>
       </div>
-      <p class="view-hint">💡 ¿Quieres más detalle? Abre el <b>asistente AI</b> 💬 y pregunta «¿cuáles son mis 5 productos más vendidos esta semana?».</p>
+      <p class="view-hint">__ICON__info__ ¿Quieres más detalle? Abre el <b>asistente AI</b> __ICON__message-circle__ y pregunta «¿cuáles son mis 5 productos más vendidos esta semana?».</p>
     </section>
 
     <!-- ═══ Vista: Gastos ═══ -->
@@ -1866,7 +1919,7 @@ INDEX_HTML = """<!DOCTYPE html>
       <!-- Desglose multidimensional -->
       <div class="card gd-desglose-card">
         <div class="card-head">
-          <h2>📊 Desglose multidimensional</h2>
+          <h2>__ICON__bar-chart-3__ Desglose multidimensional</h2>
           <span class="subtitle">Agrupar facturas por varias dimensiones</span>
         </div>
         <div class="card-body">
@@ -1949,7 +2002,7 @@ INDEX_HTML = """<!DOCTYPE html>
     <section class="view" data-view="alertas">
       <div class="al-header">
         <div>
-          <h2>🔔 Alertas y anomalías</h2>
+          <h2>__ICON__bell__ Alertas y anomalías</h2>
           <span class="subtitle">Detector automático · Última actualización: <span id="al-generated">—</span></span>
         </div>
         <div class="al-header-actions">
@@ -1968,27 +2021,27 @@ INDEX_HTML = """<!DOCTYPE html>
       <!-- Tabs estilo Excel -->
       <div class="excel-tabs" id="excel-tabs">
         <button class="excel-tab active" data-tab="resumen">
-          <span class="excel-tab-ico">📋</span>
+          <span class="excel-tab-ico">__ICON__layout-grid__</span>
           <span>Resumen</span>
         </button>
         <button class="excel-tab" data-tab="analisis">
-          <span class="excel-tab-ico">📊</span>
+          <span class="excel-tab-ico">__ICON__bar-chart-2__</span>
           <span>Análisis (matriz)</span>
         </button>
         <button class="excel-tab" data-tab="top">
-          <span class="excel-tab-ico">🏆</span>
+          <span class="excel-tab-ico">__ICON__trophy__</span>
           <span>Top N</span>
         </button>
         <button class="excel-tab" data-tab="calendario">
-          <span class="excel-tab-ico">📅</span>
+          <span class="excel-tab-ico">__ICON__calendar__</span>
           <span>Calendario</span>
         </button>
         <button class="excel-tab" data-tab="comparar">
-          <span class="excel-tab-ico">⚖️</span>
+          <span class="excel-tab-ico">__ICON__scale__</span>
           <span>Comparar</span>
         </button>
         <button class="excel-tab" data-tab="pyg">
-          <span class="excel-tab-ico">💰</span>
+          <span class="excel-tab-ico">__ICON__coins__</span>
           <span>PYG / Análisis</span>
         </button>
         <div class="excel-tabs-spacer"></div>
@@ -2010,7 +2063,7 @@ INDEX_HTML = """<!DOCTYPE html>
               <option value="secundaria">secundaria</option>
             </select>
           </label>
-          <button class="btn primary" id="dg-apply">🔄 Aplicar a todas las pestañas</button>
+          <button class="btn primary" id="dg-apply">__ICON__refresh-cw__ Aplicar a todas las pestañas</button>
           <span class="dg-gen-at" id="dg-gen-at"></span>
         </div>
       </div>
@@ -2029,7 +2082,7 @@ INDEX_HTML = """<!DOCTYPE html>
       <div class="excel-panel" data-tab-panel="analisis">
         <div class="card">
           <div class="card-head">
-            <h2>📊 Matriz cruzada</h2>
+            <h2>__ICON__bar-chart-3__ Matriz cruzada</h2>
             <span class="subtitle">Selecciona dimensiones filas × columnas</span>
           </div>
           <div class="card-body">
@@ -2071,7 +2124,7 @@ INDEX_HTML = """<!DOCTYPE html>
       <div class="excel-panel" data-tab-panel="top">
         <div class="card">
           <div class="card-head">
-            <h2>🏆 Top N elementos</h2>
+            <h2>__ICON__trophy__ Top N elementos</h2>
             <div class="gd-top-controls">
               <label class="gd-field"><span>Agrupar por</span>
                 <select id="top-by">
@@ -2106,7 +2159,7 @@ INDEX_HTML = """<!DOCTYPE html>
       <div class="excel-panel" data-tab-panel="calendario">
         <div class="card">
           <div class="card-head">
-            <h2>📅 Calendario de gastos</h2>
+            <h2>__ICON__calendar__ Calendario de gastos</h2>
             <div class="gd-cal-controls">
               <label class="gd-field"><span>Año</span>
                 <input type="number" id="cal-year" min="2024" max="2030" step="1">
@@ -2130,7 +2183,7 @@ INDEX_HTML = """<!DOCTYPE html>
       <div class="excel-panel" data-tab-panel="comparar">
         <div class="card">
           <div class="card-head">
-            <h2>⚖️ Comparar 2 períodos</h2>
+            <h2>__ICON__scale__ Comparar 2 períodos</h2>
             <div class="gd-cmp-controls">
               <label class="gd-field"><span>Agrupar por</span>
                 <select id="cmp-by">
@@ -2168,7 +2221,7 @@ INDEX_HTML = """<!DOCTYPE html>
       <div class="excel-panel" data-tab-panel="pyg">
         <div class="card">
           <div class="card-head">
-            <h2>💰 PYG jerárquico (waterfall)</h2>
+            <h2>__ICON__euro__ PYG jerárquico (waterfall)</h2>
             <span class="subtitle">P&L con totales, márgenes y EBITDA · Drill-down por sub-categoría y vendor</span>
           </div>
           <div class="card-body">
@@ -2195,7 +2248,7 @@ INDEX_HTML = """<!DOCTYPE html>
             </div>
 
             <div class="gd-pyg-comparison" id="pyg-comparison" style="display:none">
-              <h3>📊 Comparativa con período anterior</h3>
+              <h3>__ICON__bar-chart-2__ Comparativa con período anterior</h3>
               <div id="pyg-comparison-table"></div>
             </div>
 
@@ -2212,7 +2265,7 @@ INDEX_HTML = """<!DOCTYPE html>
             </div>
 
             <div class="gd-pyg-drilldown" id="pyg-drilldown" style="display:none">
-              <h3>🔍 Drill-down por bucket</h3>
+              <h3>__ICON__search__ Drill-down por bucket</h3>
               <div id="pyg-drilldown-content"></div>
             </div>
           </div>
@@ -2225,7 +2278,7 @@ INDEX_HTML = """<!DOCTYPE html>
       <div class="coming-soon">
         <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18M16 10a4 4 0 0 1-8 0"/></svg>
         <h2>Catálogo de productos</h2>
-        <p>Próximamente: top productos más vendidos, disponibilidad por local y control de stock. Mientras tanto, pregunta al <b>asistente AI</b> 💬 por tus productos más vendidos.</p>
+        <p>Próximamente: top productos más vendidos, disponibilidad por local y control de stock. Mientras tanto, pregunta al <b>asistente AI</b> __ICON__message-circle__ por tus productos más vendidos.</p>
       </div>
     </section>
 
@@ -2235,7 +2288,7 @@ INDEX_HTML = """<!DOCTYPE html>
         <div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div>
       </div>
       <div class="pr-controls">
-        <input type="search" id="pr-search" placeholder="🔍 Buscar producto..." autocomplete="off">
+        <input type="search" id="pr-search" placeholder="__ICON__search__ Buscar producto..." autocomplete="off">
         <label class="pr-toggle"><input type="checkbox" id="pr-available-only"> <span>Solo disponibles</span></label>
         <select id="pr-sort">
           <option value="name">Nombre A-Z</option>
@@ -2252,13 +2305,13 @@ INDEX_HTML = """<!DOCTYPE html>
     <!-- ═══ Vista: Configuración (nueva v6) ═══ -->
     <section class="view" data-view="config">
       <div class="card">
-        <div class="card-head"><h2>🔌 Fuentes de datos</h2><span class="subtitle">Estado de los conectores</span></div>
+        <div class="card-head"><h2>__ICON__plug__ Fuentes de datos</h2><span class="subtitle">Estado de los conectores</span></div>
         <div class="card-body" id="cfg-fuentes">
           <div class="skeleton-card" aria-hidden="true"></div>
         </div>
       </div>
       <div class="card">
-        <div class="card-head"><h2>🛠️ Sistema</h2></div>
+        <div class="card-head"><h2>__ICON__wrench__ Sistema</h2></div>
         <div class="card-body">
           <dl class="cfg-list">
             <dt>Versión dashboard</dt><dd id="cfg-version">—</dd>
@@ -2278,7 +2331,7 @@ INDEX_HTML = """<!DOCTYPE html>
 <button class="chat-fab" id="chatFab" title="Asistente AI"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span class="fab-badge"></span></button>
 <div class="chat-panel" id="chatPanel">
   <div class="chat-head">
-    <div class="title"><span class="av">🤖</span> Asistente Liados</div>
+    <div class="title"><span class="av">__ICON__sparkles__</span> Asistente Liados</div>
     <button class="icon-btn" id="chatClose"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
   </div>
   <div class="chat-body" id="chatBody"></div>
@@ -2357,6 +2410,7 @@ INDEX_HTML = """<!DOCTYPE html>
   </div>
 </div>
 
+<script src="/static/icons.js"></script>
 <script src="/static/app.js"></script>
 <script>
 if ('serviceWorker' in navigator) {
@@ -2499,7 +2553,20 @@ def last_invoice_card(account: str = "", user: str = Depends(get_current_user)):
 
 @app.get("/", response_class=HTMLResponse)
 def index(user: str = Depends(get_current_user)):
-    return INDEX_HTML
+    # v9-premium: reemplazar __ICON__name__ placeholders por HTML <svg> inline
+    # El cliente también puede regenerarlos via icon() si quiere refrescos.
+    import re as _re
+    def _icon_repl(m):
+        name = m.group(1)
+        cls = m.group(2) or 'ico'
+        # Reproduce la función icon() del cliente. Si el nombre no existe,
+        # devuelve un svg con ? para no romper la UI.
+        path = _ICON_PATHS.get(name, '<text x="12" y="16" text-anchor="middle" font-size="10" fill="currentColor">?</text>')
+        return ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+                'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" '
+                f'class="{cls}" aria-hidden="true">{path}</svg>')
+    # _ICON_PATHS debe estar disponible — lo definimos cerca de INDEX_HTML
+    return _re.sub(r'__ICON__([\w-]+)__(?:\{([^}]+)\})?', _icon_repl, INDEX_HTML)
 
 
 LOGIN_HTML = '<!DOCTYPE html>\n<html lang="es">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width,initial-scale=1">\n<title>Liados - Login</title>\n<style>\nbody{margin:0;font-family:-apple-system,BlinkMacSystemFont,Inter,Segoe UI,sans-serif;background:linear-gradient(135deg,#0f172a 0%,#1e293b 100%);color:#e2e8f0;min-height:100vh;display:flex;align-items:center;justify-content:center}\n.card{background:rgba(15,23,42,.85);backdrop-filter:blur(8px);border:1px solid rgba(148,163,184,.18);border-radius:16px;padding:40px;width:380px;box-shadow:0 24px 60px rgba(0,0,0,.5)}\nh1{margin:0 0 4px;font-size:22px;font-weight:600;color:#f8fafc}\n.sub{color:#94a3b8;font-size:13px;margin:0 0 28px}\nlabel{display:block;font-size:12px;color:#cbd5e1;margin:14px 0 6px;text-transform:uppercase;letter-spacing:.04em}\ninput{width:100%;padding:11px 14px;background:rgba(2,6,23,.6);border:1px solid rgba(148,163,184,.22);border-radius:8px;color:#f8fafc;font-size:14px;outline:none;transition:.15s;box-sizing:border-box}\ninput:focus{border-color:#38bdf8;box-shadow:0 0 0 3px rgba(56,189,248,.15)}\nbutton{width:100%;margin-top:24px;padding:12px;background:#0ea5e9;border:0;color:#fff;border-radius:8px;font-weight:600;font-size:14px;cursor:pointer;transition:.15s}\nbutton:hover{background:#0284c7}\nbutton:disabled{background:#475569;cursor:not-allowed}\n.err{margin-top:14px;padding:10px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);border-radius:8px;color:#fca5a5;font-size:13px;display:none}\n.help{margin-top:20px;padding-top:18px;border-top:1px solid rgba(148,163,184,.12);font-size:12px;color:#64748b;text-align:center;line-height:1.6}\n</style>\n</head>\n<body>\n<form class="card" id="f" autocomplete="off">\n<h1>Liados</h1>\n<p class="sub">Acceso al dashboard de gestion</p>\n<label>Usuario</label><input id="u" name="username" required autofocus>\n<label>Contrasena</label><input id="p" name="password" type="password" required>\n<button id="btn" type="submit">Entrar</button>\n<div class="err" id="err"></div>\n<div class="help">Acceso restringido a personal autorizado.<br>Si olvidas la contrasena, contacta con tu administrador.</div>\n</form>\n<script>\nconst f=document.getElementById(\'f\'),u=document.getElementById(\'u\'),p=document.getElementById(\'p\'),b=document.getElementById(\'btn\'),e=document.getElementById(\'err\');\nf.onsubmit=async ev=>{\n  ev.preventDefault();b.disabled=true;b.textContent=\'Verificando...\';e.style.display=\'none\';\n  try{\n    const r=await fetch(\'/api/health\',{headers:{Authorization:\'Basic \'+btoa(u.value+\':\'+p.value)}});\n    if(r.ok){sessionStorage.setItem(\'liados_user\',u.value);sessionStorage.setItem(\'liados_pass\',p.value);window.location=\'/\'}\n    else{e.textContent=\'Usuario o contrasena incorrectos\';e.style.display=\'block\';b.disabled=false;b.textContent=\'Entrar\'}\n  }catch(x){e.textContent=\'Error de conexion\';e.style.display=\'block\';b.disabled=false;b.textContent=\'Entrar\'}\n};\n</script>\n</body>\n</html>\n'

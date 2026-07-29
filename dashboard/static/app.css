@@ -818,6 +818,71 @@ button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
 }
 
 /* ── Print ──────────────────────────────────────────────────────────── */
+
+/* ── Iconografía v9-premium ────────────────────────────────────────── */
+.ico {
+  width: var(--ico-md);
+  height: var(--ico-md);
+  stroke-width: var(--ico-stroke);
+  color: var(--ico-fg);
+  flex-shrink: 0;
+  vertical-align: -3px;
+  transition: color var(--dur-1) var(--ease), transform var(--dur-1) var(--ease);
+}
+.ico-xs { width: var(--ico-xs); height: var(--ico-xs); }
+.ico-sm { width: var(--ico-sm); height: var(--ico-sm); }
+.ico-md { width: var(--ico-md); height: var(--ico-md); }
+.ico-lg { width: var(--ico-lg); height: var(--ico-lg); }
+.ico-xl { width: var(--ico-xl); height: var(--ico-xl); }
+.ico-strong { color: var(--ico-fg-strong); }
+.ico-blue   { color: var(--blue); }
+.ico-green  { color: var(--green); }
+.ico-red    { color: var(--red); }
+.ico-orange { color: var(--orange); }
+.ico-yellow { color: var(--yellow); }
+.ico-purple { color: var(--purple); }
+.ico-cyan   { color: var(--cyan); }
+
+.card-head .ico:hover { color: var(--accent, var(--blue)); transform: scale(1.1); }
+
+/* Logo brand (Fase 2) */
+.brand-mark { display:flex; align-items:center; gap:var(--s-3); padding:var(--s-5); }
+.brand-icon {
+  width:38px; height:38px; border-radius:var(--r-md);
+  background:linear-gradient(135deg, var(--orange), var(--red));
+  display:grid; place-items:center; color:#fff;
+  box-shadow: 0 4px 12px -4px rgba(249,115,22,.5);
+  flex-shrink:0;
+}
+.brand-icon .ico { color:#fff; stroke-width:1.6; width:20px; height:20px; }
+.brand-text { display:flex; flex-direction:column; line-height:1.15; }
+.brand-name { font-family:var(--font-sans); font-weight:700; font-size:var(--fz-sm); letter-spacing:.06em; line-height:1; color:var(--fg-0); }
+.brand-sub  { font-size:var(--fz-xs); color:var(--fg-3); margin-top:3px; letter-spacing:.04em; font-weight:500; }
+
+/* Hero icon */
+.hero-icon { display:inline-flex; vertical-align:-3px; margin-right:6px; color:var(--accent, var(--blue)); }
+
+/* Excel tab icon */
+.excel-tab-ico {
+  display:inline-flex; vertical-align:-2px;
+  width:var(--ico-sm); height:var(--ico-sm);
+  color:var(--fg-2); margin-right:6px;
+  transition: color var(--dur-1) var(--ease);
+}
+.excel-tab.active .excel-tab-ico { color: var(--blue); }
+
+/* Chat avatar */
+.chat-head .av { display:inline-grid; place-items:center; width:22px; height:22px; vertical-align:-5px; margin-right:6px; color: var(--blue); }
+
+/* Toast icon */
+.toast-ico { display:inline-flex; vertical-align:-3px; margin-right:6px; color:var(--fg-1); }
+.toast-error .toast-ico { color:var(--red); }
+.toast-warn  .toast-ico { color:var(--yellow); }
+.toast-success .toast-ico { color:var(--green); }
+
+/* Excel empty state icon */
+.excel-empty .ico { width:36px; height:36px; opacity:.6; margin-bottom:var(--s-3); }
+
 @media print {
   .sidebar, .header, .chat-fab, .chat-panel, .modal-overlay, .toast-container { display: none !important; }
   .view { display: block !important; page-break-after: always; }

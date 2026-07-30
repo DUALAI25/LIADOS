@@ -221,16 +221,16 @@ def process_account(account, search_query=None, dry_run=False):
                 f" Reautorizar con gmail_auth.py --account {account} --force"
             )
             # CRITICO: devolver 0, 1 para que el caller sepa que NO se procesaron
-            return 0, 1
+            return 0, 1, None
         logger.warning(f"[{account}] Saltando cuenta ({status})")
         log_agent('gmail_collector', 'error', f"[{account}] Gmail service no disponible ({status})")
-        return 0, 1
+        return 0, 1, None
 
     parser_client, _parser_model, _parser_provider = _get_parser_config()
     if parser_client is None:
         logger.error(f"[{account}] Ningún proveedor IA del parser está configurado")
         log_agent('gmail_collector', 'error', f"[{account}] Ningún proveedor IA configurado")
-        return 0, 1
+        return 0, 1, None
 
     # Listar mensajes
     all_messages = []

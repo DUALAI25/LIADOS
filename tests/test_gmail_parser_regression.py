@@ -51,3 +51,37 @@ def test_successful_sync_advances_cursor(monkeypatch):
     result = gmail_collector._finalize_sync("gmail:principal", 0)
     assert result == "ok"
     assert calls == [("success", "gmail:principal", "ok")]
+
+
+
+def test_vision_uses_selected_client_even_with_openai_key_present(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("OPENAI_API_KEY", "residual-openai-key")
+    captured = {}
+
+    def fake_call(client, **kwargs):
+        captured["client"] = client
+        captured["model"] = kwargs["model"]
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='{"invoice_number":"V-1"}'))]
+        )
+
+    monkeypatch.setattr(invoice_parser, "_call_with_retry", fake_call)
+    client = FakeOpenAI("minimax-test", "https://api.minimax.io/v1")
+    result = invoice_parser._parse_with_vision(
+        client, b"image-bytes", "application/pdf", model="MiniMax-Text-01"
+    )
+
+    assert result["invoice_number"] == "V-1"
+    assert captured == {"client": client, "model": "MiniMax-Text-01"}
+
+
+def test_process_account_early_error_keeps_three_value_contract(monkeypatch):
+    monkeypatch.setattr(gmail_collector, "get_service", lambda account: (None, "error"))
+
+    result = gmail_collector.process_account(
+        "principal", search_query="has:attachment after:2026/07/30"
+    )
+
+    assert result == (0, 1, None)

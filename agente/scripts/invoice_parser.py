@@ -392,35 +392,8 @@ def _parse_with_text(client, text, model=None):
 
 
 def _parse_with_vision(client, content, mime_type, model=None):
-    # Si hay API key de OpenAI, usar gpt-4o-mini que soporta vision real
-    openai_key = os.getenv('OPENAI_API_KEY')
-    if openai_key:
-        try:
-            from openai import OpenAI as OpenAIClient
-            vision_client = OpenAIClient(api_key=openai_key)
-            b64 = base64.b64encode(content).decode()
-            resp = _call_with_retry(
-                vision_client,
-                model='gpt-4o-mini',
-                messages=[
-                    {'role': 'system', 'content': 'Analiza esta imagen de factura y extrae los datos en JSON.'},
-                    {'role': 'user', 'content': [
-                        {'type': 'text', 'text': PROMPT_PARSE},
-                        {'type': 'image_url', 'image_url': {
-                            'url': f'data:{mime_type};base64,{b64}',
-                            'detail': 'auto'
-                        }}
-                    ]}
-                ],
-                temperature=0.05,
-                max_tokens=1000,
-            )
-            payload = _extract_json(resp.choices[0].message.content or '')
-            return json.loads(payload) if payload else None
-        except Exception as e:
-            logger.warning("OpenAI vision fallo (%s), probando OpenCode...", e.__class__.__name__)
-
-    # Fallback del proveedor configurado (solo texto, no soporta image_url real).
+    # Usar exclusivamente el cliente y modelo seleccionados por _get_parser_config.
+    # No consultar OPENAI_API_KEY aquí: su presencia no debe desviar el routing.
     try:
         b64 = base64.b64encode(content).decode()
         resp = _call_with_retry(

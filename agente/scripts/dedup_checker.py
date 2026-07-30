@@ -28,12 +28,16 @@ def is_duplicate_by_hash(content_hash, current_source_id=None):
         cur = conn.cursor()
         if current_source_id is not None:
             cur.execute(
-                "SELECT id FROM invoices WHERE content_hash = %s AND source_id != %s",
+                "SELECT id FROM invoices WHERE content_hash = %s AND source_id != %s "
+                "AND NOT (invoice_number IS NULL AND vendor_name IS NULL "
+                "AND total_amount IS NULL AND base_amount IS NULL)",
                 (content_hash, current_source_id),
             )
         else:
             cur.execute(
-                "SELECT id FROM invoices WHERE content_hash = %s",
+                "SELECT id FROM invoices WHERE content_hash = %s "
+                "AND NOT (invoice_number IS NULL AND vendor_name IS NULL "
+                "AND total_amount IS NULL AND base_amount IS NULL)",
                 (content_hash,),
             )
         result = cur.fetchone()

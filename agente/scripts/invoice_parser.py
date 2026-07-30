@@ -192,6 +192,27 @@ def _normalize_parsed_data(parsed):
     }
 
 
+def _get_parser_config():
+    """Devuelve un par coherente (cliente, modelo) para el parser IA.
+
+    MiniMax es el proveedor primario de Liados. OpenCode queda como fallback,
+    pero nunca se mezclan la API key, el endpoint y el modelo entre proveedores.
+    """
+    minimax_key = os.getenv('MINIMAX_API_KEY')
+    if minimax_key:
+        base_url = os.getenv('MINIMAX_BASE_URL', 'https://api.minimax.io/v1')
+        model = os.getenv('MINIMAX_MODEL', 'MiniMax-Text-01')
+        return OpenAI(api_key=minimax_key, base_url=base_url), model, 'minimax'
+
+    opencode_key = os.getenv('OPENCODE_API_KEY')
+    if opencode_key:
+        base_url = os.getenv('OPENCODE_BASE_URL', 'https://opencode.ai/zen/go/v1')
+        model = os.getenv('OPENCODE_MODEL', 'deepseek-v4-flash')
+        return OpenAI(api_key=opencode_key, base_url=base_url), model, 'opencode'
+
+    return None, None, None
+
+
 def parse_invoice(file_path_or_content, mime_type, filename=""):
     """
     Parsea una factura desde ruta de archivo o contenido binario.
@@ -204,14 +225,11 @@ def parse_invoice(file_path_or_content, mime_type, filename=""):
     Returns:
         dict normalizado con los datos de la factura, o None si falla
     """
-    if not os.getenv('OPENCODE_API_KEY'):
-        logger.error("OPENCODE_API_KEY no configurado en .env")
+    client, model, provider = _get_parser_config()
+    if client is None:
+        logger.error("Ningún proveedor IA del parser está configurado")
         return None
-
-    client = OpenAI(
-        api_key=os.getenv('OPENCODE_API_KEY'),
-        base_url=os.getenv('OPENCODE_BASE_URL') or os.getenv('MINIMAX_BASE_URL') or 'https://api.minimax.io/v1',
-    )
+    logger.debug("Parser IA usando proveedor=%s modelo=%s", provider, model)
 
     # Si es una ruta, leer el contenido
     if isinstance(file_path_or_content, (str, os.PathLike)):
@@ -234,20 +252,20 @@ def parse_invoice(file_path_or_content, mime_type, filename=""):
         text = _extract_pdf_text(file_content)
         if text and len(text.strip()) > 50:
             logger.debug(f"[{filename}] PDF con texto extraíble, usando parseo texto")
-            parsed = _parse_with_text(client, text)
+            parsed = _parse_with_text(client, text, model=model)
         else:
             logger.debug(f"[{filename}] PDF sin texto, usando visión")
-            parsed = _parse_with_vision(client, file_content, mime_type)
+            parsed = _parse_with_vision(client, file_content, mime_type, model=model)
     elif mime_type in ('image/jpeg', 'image/png'):
         logger.debug(f"[{filename}] Imagen, usando visión")
-        parsed = _parse_with_vision(client, file_content, mime_type)
+        parsed = _parse_with_vision(client, file_content, mime_type, model=model)
     else:
         # Tipo desconocido, intentar texto
         text = _extract_pdf_text(file_content)
         if text:
-            parsed = _parse_with_text(client, text)
+            parsed = _parse_with_text(client, text, model=model)
         else:
-            parsed = _parse_with_vision(client, file_content, mime_type)
+            parsed = _parse_with_vision(client, file_content, mime_type, model=model)
 
     if not parsed:
         logger.warning(f"[{filename}] Parser IA no devolvió datos")
@@ -352,11 +370,11 @@ def _call_with_retry(client, **kwargs):
                 raise
 
 
-def _parse_with_text(client, text):
+def _parse_with_text(client, text, model=None):
     try:
         resp = _call_with_retry(
             client,
-            model='MiniMax-Text-01',
+            model=model or os.getenv('MINIMAX_MODEL', 'MiniMax-Text-01'),
             messages=[
                 {'role': 'system', 'content': 'Eres un extractor de datos de facturas. Devuelve JSON válido.'},
                 {'role': 'user', 'content': f'{PROMPT_PARSE}\n\nTexto de la factura:\n{text[:15000]}'}
@@ -373,7 +391,7 @@ def _parse_with_text(client, text):
         return None
 
 
-def _parse_with_vision(client, content, mime_type):
+def _parse_with_vision(client, content, mime_type, model=None):
     # Si hay API key de OpenAI, usar gpt-4o-mini que soporta vision real
     openai_key = os.getenv('OPENAI_API_KEY')
     if openai_key:
@@ -402,12 +420,12 @@ def _parse_with_vision(client, content, mime_type):
         except Exception as e:
             logger.warning("OpenAI vision fallo (%s), probando OpenCode...", e.__class__.__name__)
 
-    # Fallback: OpenCode / DeepSeek (solo texto, no soporta image_url real)
+    # Fallback del proveedor configurado (solo texto, no soporta image_url real).
     try:
         b64 = base64.b64encode(content).decode()
         resp = _call_with_retry(
             client,
-            model='MiniMax-Text-01',
+            model=model or os.getenv('MINIMAX_MODEL', 'MiniMax-Text-01'),
             messages=[
                 {'role': 'system', 'content': 'Analiza esta imagen de factura y extrae los datos en JSON.'},
                 {'role': 'user', 'content': [

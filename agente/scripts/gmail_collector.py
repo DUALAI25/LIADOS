@@ -47,8 +47,8 @@ def load_env():
 # Cargar env ANTES de cualquier import que use BD o APIs externas
 load_env()
 
-from invoice_parser import parse_invoice
-from db_writer import save_invoice, log_agent, update_last_sync, get_last_sync
+from invoice_parser import parse_invoice, _get_parser_config
+from db_writer import save_invoice, repair_incomplete_invoice, log_agent, update_last_sync, record_sync_error, mark_sync_running, get_last_sync
 from dedup_checker import is_duplicate_by_hash, mark_as_duplicate
 from storage import save_raw_file
 
@@ -166,6 +166,16 @@ def save_non_invoice(account, source_id, attachment, reason, subject):
     conn.close()
 
 
+def _finalize_sync(sync_source, errors):
+    """Cierra un sync sin perder el cursor cuando hay errores."""
+    if errors:
+        record_sync_error(sync_source)
+        logger.warning("[%s] Cursor no avanzado: quedan %s error(es) para reintentar", sync_source, errors)
+        return 'error'
+    update_last_sync(sync_source, status='ok')
+    return 'ok'
+
+
 def process_account(account, search_query=None, dry_run=False):
     """Procesa todas las facturas de una cuenta.
     B1: since_date y search_query se calculan aqui, no en main(). Cada cuenta
@@ -193,7 +203,7 @@ def process_account(account, search_query=None, dry_run=False):
 
         # Marcar sync como en curso para esta cuenta
         try:
-            update_last_sync(f'gmail:{account}', status='warning')
+            mark_sync_running(f'gmail:{account}')
             logger.info("[%s] sync marcado como en curso en sync_control", account)
         except Exception as e:
             logger.warning("[%s] No se pudo marcar sync como en curso: %s",
@@ -216,9 +226,10 @@ def process_account(account, search_query=None, dry_run=False):
         log_agent('gmail_collector', 'error', f"[{account}] Gmail service no disponible ({status})")
         return 0, 1
 
-    if not os.getenv('OPENCODE_API_KEY'):
-        logger.error(f"[{account}] OPENCODE_API_KEY no configurado en .env")
-        log_agent('gmail_collector', 'error', f"[{account}] OPENCODE_API_KEY no configurado")
+    parser_client, _parser_model, _parser_provider = _get_parser_config()
+    if parser_client is None:
+        logger.error(f"[{account}] Ningún proveedor IA del parser está configurado")
+        log_agent('gmail_collector', 'error', f"[{account}] Ningún proveedor IA configurado")
         return 0, 1
 
     # Listar mensajes
@@ -310,25 +321,31 @@ def process_account(account, search_query=None, dry_run=False):
                     parsed['local_path'] = local_path
                     parsed['minio_url'] = minio_url
                     parsed['source_account'] = account  # <- multi-cuenta
-                    # source_id incluye la cuenta para unicidad
-                    inv_id = save_invoice(parsed, source='gmail', source_id=source_id, inv_type='expense')
+                    # Reparar primero una fila incompleta del mismo PDF (p. ej. Drive).
+                    # Solo si no existe, crear la factura Gmail normalmente.
+                    inv_id = repair_incomplete_invoice(parsed, source_id)
+                    if inv_id is None:
+                        inv_id = save_invoice(parsed, source='gmail', source_id=source_id, inv_type='expense')
                     if minio_url and inv_id:
                         save_raw_file(att['content'], att['filename'], invoice_id=inv_id)
                     logger.info(f"  ✅ {parsed.get('invoice_number', '?')} → {inv_id}")
                     processed += 1
                 else:
-                    logger.warning(f"  ⚠️  No se pudo parsear: {att['filename']}")
+                    detail = f"[{account}] No se pudo parsear adjunto: {att['filename']}"
+                    logger.warning(f"  ⚠️  {detail}")
+                    log_agent('gmail_collector', 'error', detail)
                     errors += 1
         except Exception as e:
-            logger.error(f"  ❌ Error msg {msg['id']}: {_sanitize_error(e)}")
+            detail = f"[{account}] Error msg {msg['id']}: {_sanitize_error(e)}"
+            logger.error(f"  ❌ {detail}")
+            log_agent('gmail_collector', 'error', detail)
             errors += 1
 
     # B1-1 (2026-07-06): sync_control por cuenta, no global. Un fallo de
     # secundaria no marca principal como error.
     sync_source = f"gmail:{account}"
-    final_status = 'ok' if errors == 0 else 'error'
     try:
-        update_last_sync(sync_source, status=final_status)
+        _finalize_sync(sync_source, errors)
     except Exception as e:
         logger.warning(f"[{account}] No se pudo actualizar sync_control: {e}")
 

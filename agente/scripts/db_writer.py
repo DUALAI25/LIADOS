@@ -7,6 +7,43 @@ from db_connection import get_conn
 
 logger = logging.getLogger(__name__)
 
+def repair_incomplete_invoice(data, source_id):
+    """Rellena una fila previa cuyo PDF se guardó sin parsear datos."""
+    content_hash = data.get('content_hash')
+    if not content_hash:
+        return None
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id FROM invoices WHERE content_hash = %s AND source_id != %s "
+        "AND invoice_number IS NULL AND vendor_name IS NULL "
+        "AND total_amount IS NULL AND base_amount IS NULL LIMIT 1",
+        (content_hash, source_id),
+    )
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return None
+    vendor_id = _get_or_create_vendor(cur, data)
+    cur.execute(
+        "UPDATE invoices SET invoice_number=%s, invoice_date=%s, due_date=%s, "
+        "vendor_id=%s, vendor_name=%s, vendor_tax_id=%s, base_amount=%s, "
+        "tax_amount=%s, total_amount=%s, currency=%s, "
+        "category_id=(SELECT cm.category_id FROM category_mapping cm WHERE cm.category_raw = %s LIMIT 1), "
+        "category_raw=%s, description=%s, status=%s, parsed_json=%s, "
+        "confidence_score=%s, updated_at=NOW() "
+        "WHERE id=%s",
+        (data.get('invoice_number'), data.get('invoice_date'), data.get('due_date'),
+         vendor_id, data.get('vendor_name'), data.get('vendor_tax_id'),
+         data.get('base_amount'), data.get('tax_amount'), data.get('total_amount'),
+         data.get('currency', 'EUR'), data.get('category'), data.get('category'),
+         data.get('description'), 'classified' if data.get('category') else 'pending',
+         json.dumps(data), data.get('confidence_score', 0.5), row[0]),
+    )
+    conn.commit()
+    conn.close()
+    return row[0]
+
 def save_invoice(data, source, source_id, inv_type='expense', minio_url=None):
     conn = get_conn()
     cur = conn.cursor()
@@ -201,6 +238,38 @@ def update_last_sync(source, status='ok'):
         "  items_processed = sync_control.items_processed + 1, "
         "  errors = sync_control.errors + CASE WHEN EXCLUDED.status = 'error' THEN 1 ELSE 0 END",
         (source, status),
+    )
+    conn.commit()
+    conn.close()
+
+def mark_sync_running(source):
+    """Marca un sync en curso sin modificar su cursor incremental."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO sync_control (source, last_sync, status, items_processed, errors) "
+        "VALUES (%s, NOW(), 'warning', 0, 0) "
+        "ON CONFLICT (source) DO UPDATE SET status = 'warning'",
+        (source,),
+    )
+    conn.commit()
+    conn.close()
+
+def record_sync_error(source):
+    """Registra un fallo sin avanzar last_sync.
+
+    El collector debe reintentar los mensajes fallidos en la siguiente
+    ejecución; por eso este camino no modifica el cursor incremental.
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO sync_control (source, last_sync, status, items_processed, errors) "
+        "VALUES (%s, NOW(), 'error', 0, 1) "
+        "ON CONFLICT (source) DO UPDATE SET "
+        "  status = 'error', "
+        "  errors = sync_control.errors + 1",
+        (source,),
     )
     conn.commit()
     conn.close()

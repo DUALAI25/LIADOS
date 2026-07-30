@@ -1756,8 +1756,8 @@ INDEX_HTML = """<!DOCTYPE html>
   <!-- ── Sidebar ── -->
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-head">
-      <div class="logo"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2h8M9 2v6.5a5.5 5.5 0 0 0 6 5.48M9 8.5a5.5 5.5 0 0 1-6 5.48M5.5 14h13M12 19v3"/></svg></div>
-      <div class="brand">Liados<small>Analytics</small></div>
+      <div class="logo logo-vl">__ICON__utensils__{cls:"ico-strong"}</div>
+      <div class="brand"><strong>VAMOS</strong> AL LÍO<small>Liados · Restauración</small></div>
     </div>
     <nav class="sidebar-nav">
       <div class="nav-section-label">Operativa</div>
@@ -1774,7 +1774,7 @@ INDEX_HTML = """<!DOCTYPE html>
     </nav>
     <div class="sidebar-foot">
       <span class="live-dot"></span>
-      <div class="foot-text">Datos en vivo<br><b id="syncTime">cargando…</b></div>
+      <div class="foot-text">Datos en vivo<br><b id="syncTime">cargando…</b><small>VAMOS AL LÍO · Restauración</small></div>
     </div>
   </aside>
 
@@ -2273,16 +2273,7 @@ INDEX_HTML = """<!DOCTYPE html>
       </div>
     </section>
 
-    <!-- ═══ Vista: Productos (próximamente) ═══ -->
-    <section class="view" data-view="productos">
-      <div class="coming-soon">
-        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18M16 10a4 4 0 0 1-8 0"/></svg>
-        <h2>Catálogo de productos</h2>
-        <p>Próximamente: top productos más vendidos, disponibilidad por local y control de stock. Mientras tanto, pregunta al <b>asistente AI</b> __ICON__message-circle__ por tus productos más vendidos.</p>
-      </div>
-    </section>
-
-    <!-- ═══ Vista: Productos (nueva v8.3) ═══ -->
+    <!-- ═══ Vista: Productos (v8.3 — feed en tiempo real) ═══ -->
     <section class="view" data-view="productos">
       <div class="pr-stats" id="pr-stats">
         <div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div>

@@ -25,20 +25,20 @@ from desglose import build_desglose, DesgloseError, normalize_invoice_row, ALLOW
 SAMPLE_ROWS = [
     # vendor, category, source_account, status, invoice_date, total_amount (céntimos)
     {"vendor_name": "Makro", "category_raw": "Suministros", "source_account": "principal",
-     "status": "classified", "invoice_date": "2026-05-10", "total_amount": 12345},  # 123.45€
+     "status": "classified", "invoice_date": "2026-05-10", "total_amount": 123.45},  # 123.45€
     {"vendor_name": "Makro", "category_raw": "Suministros", "source_account": "principal",
-     "status": "classified", "invoice_date": "2026-05-20", "total_amount": 5000},   # 50€
+     "status": "classified", "invoice_date": "2026-05-20", "total_amount": 50.0},   # 50€
     {"vendor_name": "Makro", "category_raw": "Suministros", "source_account": "secundaria",
-     "status": "classified", "invoice_date": "2026-06-15", "total_amount": 8800},   # 88€
+     "status": "classified", "invoice_date": "2026-06-15", "total_amount": 88.0},   # 88€
     {"vendor_name": "Glovo", "category_raw": "Servicios", "source_account": "principal",
-     "status": "classified", "invoice_date": "2026-06-01", "total_amount": 1500},   # 15€
+     "status": "classified", "invoice_date": "2026-06-01", "total_amount": 15.0},   # 15€
     {"vendor_name": "Glovo", "category_raw": "Servicios", "source_account": "principal",
-     "status": "pending", "invoice_date": "2026-07-01", "total_amount": 2300},      # 23€
+     "status": "pending", "invoice_date": "2026-07-01", "total_amount": 23.0},      # 23€
     {"vendor_name": "Iberdrola", "category_raw": "Suministros", "source_account": "secundaria",
-     "status": "classified", "invoice_date": "2026-04-10", "total_amount": 6500},   # 65€
+     "status": "classified", "invoice_date": "2026-04-10", "total_amount": 65.0},   # 65€
     # Edge: invoice_date vacía
     {"vendor_name": "Vacio", "category_raw": "Otros", "source_account": "principal",
-     "status": "classified", "invoice_date": None, "total_amount": 100},
+     "status": "classified", "invoice_date": None, "total_amount": 1.0},
     # Edge: total_amount None
     {"vendor_name": "SinTotal", "category_raw": "Otros", "source_account": "principal",
      "status": "classified", "invoice_date": "2026-05-05", "total_amount": None},
@@ -177,20 +177,28 @@ class TestEdgeCases:
         n = normalize_invoice_row(row)
         assert n["vendor_name"] == "DirectVendor"
 
-    def test_eur_vs_centimos_heuristica(self):
-        # total_amount = 12345 -> se interpreta como céntimos -> 123.45€
+    def test_eur_canonical_unit(self):
+        # total_amount = 123.45 -> euros canónicos -> 123.45€
         out = build_desglose(
-            [{"vendor_name": "Test", "category_raw": "C", "invoice_date": "2026-01-01", "total_amount": 12345}],
+            [{"vendor_name": "Test", "category_raw": "C", "invoice_date": "2026-01-01", "total_amount": 123.45}],
             ["vendor"], "sum"
         )
         assert out["rows"][0]["value"] == 123.45
 
-        # total_amount = 50.0 (< 1000) -> ya es euros
+        # total_amount = 50.0 -> euros canónicos
         out2 = build_desglose(
             [{"vendor_name": "Test2", "category_raw": "C", "invoice_date": "2026-01-01", "total_amount": 50.0}],
             ["vendor"], "sum"
         )
         assert out2["rows"][0]["value"] == 50.0
+
+    def test_importe_real_mayor_de_1000_eur_no_se_divide(self):
+        out = build_desglose(
+            [{"vendor_name": "ROTAPEL", "category_raw": "Servicios",
+              "invoice_date": "2026-08-01", "total_amount": 3138.68}],
+            ["vendor"], "sum"
+        )
+        assert out["rows"][0]["value"] == 3138.68
 
 
 # ── Smoke: caso real con datos del VPS ───────────────────────

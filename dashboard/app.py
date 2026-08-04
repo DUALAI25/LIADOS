@@ -1175,6 +1175,7 @@ def api_gastos_pyg(
     rules = load_rules()
 
     def _fetch_rows(p_from, p_to, p_cuenta):
+        # Gastos: invoices.total_amount ya está en euros.
         sql = f"""
             SELECT
               i.invoice_date::text as invoice_date,
@@ -1192,7 +1193,29 @@ def api_gastos_pyg(
             LIMIT 20000
         """
         pp = [p_from, p_to] + ([p_cuenta] if p_cuenta else [])
-        return q(sql, tuple(pp))
+        rows = q(sql, tuple(pp))
+
+        # Ingresos: Last.app almacena total_cents; el PYG trabaja en euros.
+        # Las ventas se atribuyen a principal porque Last.app es la fuente TPV
+        # única del cliente. Una cuenta secundaria no incluye ventas TPV.
+        if p_cuenta is None or str(p_cuenta).lower() == "principal":
+            sales_sql = """
+                SELECT
+                  COALESCE(finalizing_time, creation_time)::date::text as invoice_date,
+                  'Last.app' as vendor_name,
+                  CASE WHEN total_cents < 0 THEN 'Devoluciones' ELSE 'Ventas' END as category_raw,
+                  'principal' as source_account,
+                  ABS(total_cents)::numeric / 100.0 as total_amount,
+                  'classified' as status
+                FROM lastapp_bills
+                WHERE deleted = false
+                  AND COALESCE(finalizing_time, creation_time)::date >= %s
+                  AND COALESCE(finalizing_time, creation_time)::date <= %s
+                ORDER BY COALESCE(finalizing_time, creation_time)
+                LIMIT 20000
+            """
+            rows.extend(q(sales_sql, (p_from, p_to)))
+        return rows
 
     raw_rows = _fetch_rows(df, dt, cuenta)
     rows = [{

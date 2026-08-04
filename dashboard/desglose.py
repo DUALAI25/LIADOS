@@ -113,8 +113,7 @@ def build_desglose(rows: Iterable[dict], group_by: list[str], metric: str) -> di
     Args:
         rows: lista de dicts con campos normalizados (ver DIMENSION_MAP).
               Cada fila DEBE tener `invoice_date` y opcionalmente los demás
-              campos de dimensión. `total_amount` se espera en céntimos
-              (entero) o euros (float); se detecta por magnitud.
+              campos de dimensión. `total_amount` se espera en euros, como en la tabla invoices.
         group_by: lista de 1 a 4 dimensiones válidas (ver ALLOWED_DIMS).
         metric: una de METRICS.
 
@@ -142,17 +141,12 @@ def build_desglose(rows: Iterable[dict], group_by: list[str], metric: str) -> di
         raise DesgloseError(f"Demasiadas filas ({len(rows)} > {MAX_ROWS})")
 
     for r in rows:
-        # Extraer importe en euros. Si es >1000, asumimos céntimos.
+        # Unidad canónica de producción: euros.
         ta = r.get("total_amount")
-        if ta is None:
+        try:
+            amount_eur = float(ta) if ta is not None else 0.0
+        except (TypeError, ValueError):
             amount_eur = 0.0
-        else:
-            try:
-                amount_eur = float(ta)
-            except (TypeError, ValueError):
-                amount_eur = 0.0
-            if abs(amount_eur) > 1000:  # heurística: >1000 probablemente céntimos
-                amount_eur = amount_eur / 100.0
 
         # Construir clave compuesta
         key_parts = []

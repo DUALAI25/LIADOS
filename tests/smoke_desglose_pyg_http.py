@@ -20,10 +20,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 def main():
     # Arrancar uvicorn en puerto 9130 con override de auth
     env = os.environ.copy()
-    # Sobrescribir credenciales dummy (la app valida que coincidan)
-    env["DASHBOARD_USER"] = "smoke"
-    env["DASHBOARD_PASSWORD"] = "smoke"
-    # Cargar .env para DB_* (si existe)
+    # Cargar .env para DB y autenticación (si existe). El smoke usa las
+    # credenciales reales solo dentro del proceso local; nunca las imprime.
     env_path = "/root/liados/.env"
     if os.path.exists(env_path):
         for line in open(env_path):
@@ -31,8 +29,7 @@ def main():
             if not line or line.startswith("#") or "=" not in line:
                 continue
             k, v = line.split("=", 1)
-            if k not in env:  # no pisar DASHBOARD_*
-                env[k] = v
+            env[k] = v
 
     proc = subprocess.Popen(
         [".venv/bin/python3", "-m", "uvicorn", "dashboard.app:app",
@@ -43,9 +40,13 @@ def main():
     time.sleep(5)
 
     try:
-        # Auth basic
+        # Auth basic con las credenciales cargadas desde .env.
         import base64
-        auth = base64.b64encode(b"smoke:smoke").decode()
+        if not env.get("DASHBOARD_USER") or not env.get("DASHBOARD_PASSWORD"):
+            raise RuntimeError("faltan DASHBOARD_USER/DASHBOARD_PASSWORD en .env")
+        auth = base64.b64encode(
+            f"{env['DASHBOARD_USER']}:{env['DASHBOARD_PASSWORD']}".encode()
+        ).decode()
         headers = {"Authorization": f"Basic {auth}"}
 
         # TEST 1: PYG sin comparador

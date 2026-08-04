@@ -52,6 +52,22 @@ def fetch_invoices_for_period(date_from: str, date_to: str, cuenta: str | None =
     pp = [date_from, date_to] + ([cuenta] if cuenta else [])
     cur.execute(sql, tuple(pp))
     rows = [dict(r) for r in cur.fetchall()]
+
+    # Last.app es la fuente de ingresos del PYG; total_cents -> euros.
+    if cuenta is None or cuenta.lower() == "principal":
+        cur.execute("""
+            SELECT COALESCE(finalizing_time, creation_time)::date::text as invoice_date,
+                   'Last.app' as vendor_name,
+                   CASE WHEN total_cents < 0 THEN 'Devoluciones' ELSE 'Ventas' END as category_raw,
+                   'principal' as source_account,
+                   ABS(total_cents)::numeric / 100.0 as total_amount,
+                   'classified' as status
+            FROM lastapp_bills
+            WHERE deleted = false
+              AND COALESCE(finalizing_time, creation_time)::date >= %s
+              AND COALESCE(finalizing_time, creation_time)::date <= %s
+        """, (date_from, date_to))
+        rows.extend(dict(r) for r in cur.fetchall())
     cur.close()
     conn.close()
     return rows

@@ -22,47 +22,47 @@ from desglose_pyg_rules import (
 
 
 # ── Datos de muestra ──
-# Convención Liados: total_amount en CÉNTIMOS (int) por la BD.
-# El motor detecta céntimos (|x| > 1000) y divide entre 100.
+# Convención Liados: total_amount en EUROS (numeric) en la BD.
+# Last.app total_cents se normaliza a euros antes de entrar en el motor.
 
 SAMPLE = [
-    # Ventas (cts): 150€ + 120€ + 30€ = 300€
+    # Ventas (EUR): 150€ + 120€ + 30€ = 300€
     {"vendor_name": "Cliente A", "category_raw": "Ventas", "source_account": "principal",
-     "invoice_date": "2026-01-05", "total_amount": 15000},
+     "invoice_date": "2026-01-05", "total_amount": 150.0},
     {"vendor_name": "Cliente B", "category_raw": "Ventas", "source_account": "principal",
-     "invoice_date": "2026-01-15", "total_amount": 12000},
+     "invoice_date": "2026-01-15", "total_amount": 120.0},
     {"vendor_name": "Cliente C", "category_raw": "Ventas", "source_account": "principal",
-     "invoice_date": "2026-01-25", "total_amount": 3000},
-    # Descuentos (cts): 10€
+     "invoice_date": "2026-01-25", "total_amount": 30.0},
+    # Descuentos (EUR): 10€
     {"vendor_name": "Cliente A", "category_raw": "Descuentos", "source_account": "principal",
-     "invoice_date": "2026-01-10", "total_amount": 1000},
-    # Aprovisionamientos (cts): 40€ + 10€ + 10€ = 60€ → food cost 60/290 = 20.7%
+     "invoice_date": "2026-01-10", "total_amount": 10.0},
+    # Aprovisionamientos (EUR): 40€ + 10€ + 10€ = 60€ → food cost 60/290 = 20.7%
     {"vendor_name": "Makro", "category_raw": "Alimentación", "source_account": "principal",
-     "invoice_date": "2026-01-08", "total_amount": 4000},
+     "invoice_date": "2026-01-08", "total_amount": 40.0},
     {"vendor_name": "Ramillo", "category_raw": "Bebida", "source_account": "principal",
-     "invoice_date": "2026-01-12", "total_amount": 1000},
+     "invoice_date": "2026-01-12", "total_amount": 10.0},
     {"vendor_name": "Envapro", "category_raw": "Packaging", "source_account": "principal",
-     "invoice_date": "2026-01-18", "total_amount": 1000},
-    # Comisiones (cts): 30€ + 15€ + 10€ = 55€ → 55/290 = 18.9% (entre 17% y 20%, no warn estricto)
+     "invoice_date": "2026-01-18", "total_amount": 10.0},
+    # Comisiones (EUR): 30€ + 15€ + 10€ = 55€ → 55/290 = 18.9% (entre 17% y 20%, no warn estricto)
     {"vendor_name": "Glovo", "category_raw": "Comisiones", "source_account": "principal",
-     "invoice_date": "2026-01-20", "total_amount": 3000},
+     "invoice_date": "2026-01-20", "total_amount": 30.0},
     {"vendor_name": "Uber", "category_raw": "Comisiones", "source_account": "principal",
-     "invoice_date": "2026-01-22", "total_amount": 1500},
+     "invoice_date": "2026-01-22", "total_amount": 15.0},
     {"vendor_name": "LastShop", "category_raw": "Comisiones", "source_account": "principal",
-     "invoice_date": "2026-01-26", "total_amount": 1000},
-    # Personal (cts): 40€ + 100€ = 140€
+     "invoice_date": "2026-01-26", "total_amount": 10.0},
+    # Personal (EUR): 40€ + 100€ = 140€
     {"vendor_name": "TGSS", "category_raw": "Seguridad Social", "source_account": "principal",
-     "invoice_date": "2026-01-30", "total_amount": 4000},
+     "invoice_date": "2026-01-30", "total_amount": 40.0},
     {"vendor_name": "Nómina Ana", "category_raw": "Nóminas", "source_account": "principal",
-     "invoice_date": "2026-01-30", "total_amount": 10000},
-    # Servicios (cts): 60€ + 120€ = 180€
+     "invoice_date": "2026-01-30", "total_amount": 100.0},
+    # Servicios (EUR): 60€ + 120€ = 180€
     {"vendor_name": "Iberdrola", "category_raw": "Luz", "source_account": "principal",
-     "invoice_date": "2026-01-05", "total_amount": 6000},
+     "invoice_date": "2026-01-05", "total_amount": 60.0},
     {"vendor_name": "Propietario", "category_raw": "Alquiler", "source_account": "principal",
-     "invoice_date": "2026-01-01", "total_amount": 12000},
+     "invoice_date": "2026-01-01", "total_amount": 120.0},
     # Out-of-period (no debe entrar)
     {"vendor_name": "Iberdrola", "category_raw": "Luz", "source_account": "principal",
-     "invoice_date": "2025-12-30", "total_amount": 6000},
+     "invoice_date": "2025-12-30", "total_amount": 60.0},
 ]
 
 
@@ -114,7 +114,7 @@ class TestPygCalculation:
 
     def test_aprovisionamientos_y_food_cost(self):
         out = build_pyg(SAMPLE, "2026-01-01", "2026-01-31", cuenta="principal")
-        # Aprovisionamientos (céntimos): 4000+1000+1000 = 6000 cts = 60€ → food cost 60/290 = 20.7%
+        # Aprovisionamientos (céntimos): 4000+1000+1000 = 6000 EUR = 60€ → food cost 60/290 = 20.7%
         assert out["buckets"]["aprovisionamientos"] == 60.0
         # Margen bruto = 290 - 60 = 230
         assert out["totals"]["margen_bruto"] == 230.0
@@ -124,16 +124,16 @@ class TestPygCalculation:
 
     def test_comisiones_y_mc(self):
         out = build_pyg(SAMPLE, "2026-01-01", "2026-01-31", cuenta="principal")
-        # Comisiones (cts): 3000+1500+1000 = 5500 cts = 55€ → 55/290 = 19.0% < 20% no warn
+        # Comisiones (EUR): 3000+1500+1000 = 5500 EUR = 55€ → 55/290 = 19.0% < 20% no warn
         assert out["buckets"]["comisiones"] == 55.0
         # MC = 230 - 55 = 175
         assert out["totals"]["mc"] == 175.0
 
     def test_personal_y_servicios_y_ebitda(self):
         out = build_pyg(SAMPLE, "2026-01-01", "2026-01-31", cuenta="principal")
-        # Personal (cts): 4000+10000 = 14000 cts = 140€
+        # Personal (EUR): 4000+10000 = 14000 EUR = 140€
         assert out["buckets"]["personal"] == 140.0
-        # Servicios (cts): 6000+12000 = 18000 cts = 180€
+        # Servicios (EUR): 6000+12000 = 18000 EUR = 180€
         assert out["buckets"]["servicios"] == 180.0
         # EBITDA = MC - Personal - Servicios - OtrosProd = 175 - 140 - 180 - 0 = -145
         assert out["totals"]["ebitda"] == -145.0
@@ -161,7 +161,7 @@ class TestEdgeCases:
         # Añadir factura de cuenta "secundaria"
         rows = SAMPLE + [
             {"vendor_name": "Otro", "category_raw": "Luz", "source_account": "secundaria",
-             "invoice_date": "2026-01-10", "total_amount": 5000},
+             "invoice_date": "2026-01-10", "total_amount": 50.0},
         ]
         out_p = build_pyg(rows, "2026-01-01", "2026-01-31", cuenta="principal")
         out_s = build_pyg(rows, "2026-01-01", "2026-01-31", cuenta="secundaria")
@@ -219,6 +219,13 @@ class TestEdgeCases:
         cc = cross_check_subcat(out, ventas_por_subcat={"Bebida": 20.0, "Alimentación": 100.0, "Packaging": 30.0})
         bebida = next(r for r in cc if r["subcat"] == "Bebida")
         assert bebida["status"] == "alerta"
+
+    def test_importe_real_mayor_de_1000_eur_no_se_divide(self):
+        rows = [{"vendor_name": "ROTAPEL", "category_raw": "Servicios",
+                 "source_account": "principal", "invoice_date": "2026-08-01",
+                 "total_amount": 3138.68}]
+        out = build_pyg(rows, "2026-08-01", "2026-08-01", cuenta="principal")
+        assert out["totals"]["total_gastos"] == 3138.68
 
     def test_all_buckets_present(self):
         """Los 6 buckets están en BUCKETS."""

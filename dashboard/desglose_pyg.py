@@ -15,8 +15,8 @@ API:
     build_pyg(rows, period_from, period_to, cuenta=None, rules=None) -> dict
         rows: lista de dicts con campos de factura (vendor_name, category_raw,
               source_account, invoice_date, total_amount, status).
-              total_amount puede venir en céntimos (int) o euros (float);
-              se detecta por magnitud (>1000 = céntimos, se divide entre 100).
+              total_amount se expresa en euros, unidad canónica de invoices y
+              lastapp_bills normalizado por el endpoint.
         period_from / period_to: 'YYYY-MM-DD' (inclusivo).
         cuenta: 'principal' / 'secundaria' / None = todas.
         rules: dict de reglas PYG (ver desglose_pyg_rules.DEFAULT_RULES).
@@ -111,21 +111,18 @@ def _coerce_date(v) -> _date | None:
 
 
 def _amount_eur(raw) -> float:
-    """Detecta céntimos (|x| >= 1000) y devuelve euros (float).
+    """Convierte el importe canónico de producción a euros.
 
-    Convención Liados: total_amount en céntimos. Umbral en 1000€ (100.000 cts)
-    es seguro porque ningún gasto real está entre 1€ y 10€ en céntimos sin
-    decimales: 1000 cts = 10€ y es claramente céntimo.
+    `invoices.total_amount` se almacena en euros. Los campos `*_cents` de
+    Last.app se convierten a euros en la consulta del endpoint antes de llegar
+    aquí; no se aplica heurística por magnitud.
     """
     if raw is None:
         return 0.0
     try:
-        v = float(raw)
+        return float(raw)
     except (TypeError, ValueError):
         return 0.0
-    if abs(v) >= 1000:
-        v = v / 100.0
-    return v
 
 
 def _is_venta(category_raw: str | None) -> bool:

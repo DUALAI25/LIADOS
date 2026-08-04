@@ -76,7 +76,7 @@ def age_seconds(token_path: Path):
 
 
 def main():
-    mode = os.getenv("OAUTH_APP_MODE", "testing").lower()
+    mode = os.getenv("OAUTH_APP_MODE", "production").lower()
     if mode not in UMBRALES:
         print(f"[ERROR] OAUTH_APP_MODE={mode!r} no soportado (testing|production)", file=sys.stderr)
         return 2

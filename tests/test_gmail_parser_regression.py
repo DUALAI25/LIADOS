@@ -85,3 +85,18 @@ def test_process_account_early_error_keeps_three_value_contract(monkeypatch):
     )
 
     assert result == (0, 1, None)
+
+
+def test_scanned_pdf_vision_payload_uses_png(monkeypatch):
+    import fitz
+    from agente.scripts.invoice_parser import _prepare_vision_content
+
+    doc = fitz.open()
+    doc.new_page(width=100, height=100)
+    pdf_bytes = doc.tobytes()
+    doc.close()
+
+    rendered, mime = _prepare_vision_content(pdf_bytes, 'application/pdf')
+
+    assert mime == 'image/png'
+    assert rendered.startswith(b'\x89PNG')

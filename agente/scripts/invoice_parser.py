@@ -312,6 +312,27 @@ def _extract_pdf_text(pdf_content):
 
 
 
+def _prepare_vision_content(content, mime_type):
+    """Convierte PDFs escaneados a PNG para APIs de visión."""
+    if mime_type != 'application/pdf':
+        return content, mime_type
+    try:
+        import fitz
+        doc = fitz.open(stream=content, filetype='pdf')
+        if not doc.page_count:
+            doc.close()
+            return content, mime_type
+        page = doc.load_page(0)
+        pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+        rendered = pixmap.tobytes('png')
+        doc.close()
+        logger.debug('PDF escaneado renderizado a PNG para vision (%d bytes)', len(rendered))
+        return rendered, 'image/png'
+    except Exception as e:
+        logger.warning('No se pudo renderizar PDF para vision: %s', _sanitize_error(e))
+        return content, mime_type
+
+
 def _extract_json(raw: str):
     if not raw:
         return None
@@ -395,7 +416,8 @@ def _parse_with_vision(client, content, mime_type, model=None):
     # Usar exclusivamente el cliente y modelo seleccionados por _get_parser_config.
     # No consultar OPENAI_API_KEY aquí: su presencia no debe desviar el routing.
     try:
-        b64 = base64.b64encode(content).decode()
+        vision_content, vision_mime = _prepare_vision_content(content, mime_type)
+        b64 = base64.b64encode(vision_content).decode()
         resp = _call_with_retry(
             client,
             model=model or os.getenv('MINIMAX_MODEL', 'MiniMax-Text-01'),
@@ -404,7 +426,7 @@ def _parse_with_vision(client, content, mime_type, model=None):
                 {'role': 'user', 'content': [
                     {'type': 'text', 'text': PROMPT_PARSE},
                     {'type': 'image_url', 'image_url': {
-                        'url': f'data:{mime_type};base64,{b64}'
+                        'url': f'data:{vision_mime};base64,{b64}'
                     }}
                 ]}
             ],

@@ -45,8 +45,11 @@ CREDENTIALS_DIR = WORKSPACE / "agente" / "credentials"
 TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 
 # Umbrales (en segundos)
-WARN_DAYS = 5
-CRITICAL_DAYS = 6
+OAUTH_APP_MODE = os.getenv('OAUTH_APP_MODE', 'production').lower()
+if OAUTH_APP_MODE == 'production':
+    WARN_DAYS, CRITICAL_DAYS = 90, 180
+else:
+    WARN_DAYS, CRITICAL_DAYS = 5, 6
 WARN_SEC = WARN_DAYS * 24 * 3600
 CRITICAL_SEC = CRITICAL_DAYS * 24 * 3600
 

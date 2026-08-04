@@ -1189,6 +1189,7 @@ def api_gastos_pyg(
             WHERE i.invoice_date >= %s AND i.invoice_date <= %s
               {("AND i.source_account = %s" if p_cuenta else "")}
               AND i.status != 'void'
+              AND i.is_invoice = true
             ORDER BY i.invoice_date
             LIMIT 20000
         """

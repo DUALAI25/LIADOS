@@ -1616,3 +1616,33 @@ button.primary:hover, .btn.primary:hover {
 
 .cr-card-head .cr-actions .btn.ghost { color: #fff; border-color: rgba(255,255,255,.55); background: rgba(255,255,255,.08); }
 .cr-card-head .cr-actions .btn.ghost:hover { background: rgba(255,255,255,.18); }
+
+
+/* Cuenta de resultados v2 — geometría de la referencia Excel */
+.cr-table { font-size: 12px; }
+.cr-table th, .cr-table td { padding: 4px 6px; height: 24px; }
+.cr-table th:first-child, .cr-table td:first-child { width: 260px; min-width: 260px; max-width: 260px; }
+.cr-num { min-width: 68px; width: 68px; max-width: 68px; }
+.cr-table thead .cr-head-period th { top: 0; background: #eaff52; color: #25363c; font-size: 11px; }
+.cr-table thead .cr-head-real th { top: 24px; background: #f4f5ef; color: #34464d; font-size: 10px; }
+.cr-table thead .cr-head-year th { top: 48px; background: #344b55; color: #eaff52; font-size: 11px; }
+.cr-table thead .cr-head-index th { top: 72px; background: #344b55; color: #eaff52; font-size: 11px; }
+.cr-table thead .cr-head-month th { top: 96px; background: #fff; color: #31424a; font-size: 11px; border-bottom: 2px solid #718447; }
+.cr-table thead .cr-head-year th:first-child { color: #fff; font-size: 12px; }
+.cr-kind-section td, .cr-kind-subtotal td { background: #eaff52; color: #1f2d32; border-top: 7px solid #fff; border-bottom: 1px solid #647a39; }
+.cr-kind-sales_primary td { background: #eaff52; font-weight: 800; }
+.cr-kind-sales_detail td { background: #e7eaeb; color: #35464d; }
+.cr-kind-channel td, .cr-kind-channel_allocated td { background: #f4f2ad; color: #35464d; }
+.cr-kind-channel_allocated td { font-style: italic; }
+.cr-kind-provider td { background: #eef0f1; }
+.cr-kind-accounting_pending td { background: #e7eaeb; font-weight: 700; }
+.cr-kind-percentage td { background: #f7f6c8; color: #415b34; }
+.cr-table th:last-child, .cr-table td:last-child { box-shadow: inset 2px 0 0 #8ca242; font-weight: 800; }
+.cr-table-wrap { max-height: 70vh; }
+@media (max-width: 800px) {
+  .cr-table th:first-child, .cr-table td:first-child { min-width: 220px; width: 220px; max-width: 220px; }
+  .cr-num { min-width: 62px; width: 62px; max-width: 62px; }
+}
+
+.cr-kind-channel_allocated td { font-style: normal; }
+.cr-kind-provider_group td { background:#e7eaeb; font-weight:700; color:#35464d; }

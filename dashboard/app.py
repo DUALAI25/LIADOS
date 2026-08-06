@@ -1301,7 +1301,7 @@ def api_cuenta_resultados(
     channel_rows = []
     if not cuenta or cuenta.lower() == "principal":
         sales_rows = q("""SELECT COALESCE(finalizing_time,creation_time)::date::text AS invoice_date,'Last.app' AS vendor_name,'Ventas' AS category_raw,total_cents::numeric/100.0 AS total_amount,taxable_base_cents::numeric/100.0 AS base_amount,tax_cents::numeric/100.0 AS tax_amount,discount_total_cents::numeric/100.0 AS discount_amount FROM lastapp_bills WHERE deleted=false AND COALESCE(finalizing_time,creation_time)::date BETWEEN %s AND %s ORDER BY COALESCE(finalizing_time,creation_time) LIMIT 50000""", (df, dt))
-        channel_rows = q("""SELECT COALESCE(b.finalizing_time,b.creation_time)::date::text AS invoice_date,p.type AS channel,SUM(p.amount_cents)::numeric/100.0 AS amount FROM lastapp_payments p JOIN lastapp_bills b ON b.id=p.bill_id WHERE p.deleted=false AND b.deleted=false AND COALESCE(b.finalizing_time,b.creation_time)::date BETWEEN %s AND %s GROUP BY 1,p.type ORDER BY 1,p.type""", (df, dt))
+        channel_rows = q("""SELECT COALESCE(b.finalizing_time,b.creation_time)::date::text AS invoice_date,p.type AS channel,SUM(p.amount_cents)::numeric/100.0 AS amount_gross,SUM(p.amount_cents::numeric*b.taxable_base_cents/NULLIF(b.total_cents,0))/100.0 AS amount_net FROM lastapp_payments p JOIN lastapp_bills b ON b.id=p.bill_id WHERE p.deleted=false AND b.deleted=false AND COALESCE(b.finalizing_time,b.creation_time)::date BETWEEN %s AND %s GROUP BY 1,p.type ORDER BY 1,p.type""", (df, dt))
     out = build_cuenta_resultados(invoice_rows, sales_rows, df, dt, cuenta=cuenta, channel_rows=channel_rows)
     out["generated_at"] = _dt.utcnow().isoformat() + "Z"
     _cache_put(cache_key, out)

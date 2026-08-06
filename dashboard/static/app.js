@@ -2497,9 +2497,15 @@ function crMonthLabel(key) {
 }
 function crNumber(value, percentage=false) {
   if (value == null || Number.isNaN(Number(value))) return '—';
-  if (percentage) return `${(Number(value)*100).toFixed(0)}%`;
-  const n = Number(value);
-  return `${n < 0 ? '-' : ''}${Math.abs(n).toLocaleString('es-ES',{minimumFractionDigits:0,maximumFractionDigits:0})}`;
+  let n = Number(value);
+  if (Math.abs(n) < 1e-9) n = 0;
+  if (percentage) {
+    const pct = n * 100;
+    const digits = pct !== 0 && Math.abs(pct) < 1 ? 1 : 0;
+    return `${pct.toLocaleString('es-ES',{minimumFractionDigits:digits,maximumFractionDigits:digits})}%`;
+  }
+  const rounded = Math.round(Math.abs(n)).toString().replace(/\B(?=(\d{3})+(?!\d))/g,'.');
+  return `${n < 0 ? '-' : ''}${rounded}`;
 }
 function crRenderRow(row, columns, parentCode=null) {
   const percentage = row.kind === 'percentage';
@@ -2518,8 +2524,14 @@ function crRenderRow(row, columns, parentCode=null) {
   return html;
 }
 async function loadCuentaResultados() {
-  const from = $('#dg-from')?.value;
-  const to = $('#dg-to')?.value;
+  const selectedTo = $('#dg-to')?.value || new Date().toISOString().slice(0,10);
+  const targetYear = Number(selectedTo.slice(0,4)) || new Date().getFullYear();
+  const from = `${targetYear - 1}-12-01`;
+  const to = `${targetYear}-12-31`;
+  if ($('#dg-from')) $('#dg-from').value = from;
+  if ($('#dg-to')) $('#dg-to').value = to;
+  DG.filters.date_from = from;
+  DG.filters.date_to = to;
   const cuenta = $('#dg-cuenta')?.value;
   const head = $('#cr-head'), body = $('#cr-body');
   if (!head || !body || !from || !to) return;
@@ -2530,11 +2542,14 @@ async function loadCuentaResultados() {
     const data = await getJSON('/api/gastos/cuenta-resultados?' + params.toString());
     const cols = data.columns || [];
     const years = cols.map(c => c === 'YTD' ? 'YTD' : c.slice(0,4));
-    head.innerHTML = `<tr class="cr-head-real"><th></th>${cols.map(c => `<th>${c === 'YTD' ? 'REAL' : 'REAL'}</th>`).join('')}</tr>` +
-      `<tr class="cr-head-year"><th></th>${years.map(y => `<th>${y}</th>`).join('')}</tr>` +
+    const monthNumbers = cols.map(c => c === 'YTD' ? 'YTD' : Number(c.slice(5,7)));
+    head.innerHTML = `<tr class="cr-head-period"><th></th>${cols.map(c => `<th>${c === 'YTD' ? 'YTD' : crMonthLabel(c)}</th>`).join('')}</tr>` +
+      `<tr class="cr-head-real"><th></th>${cols.map(() => '<th>REAL</th>').join('')}</tr>` +
+      `<tr class="cr-head-year"><th>A. Cuenta de resultados</th>${years.map(y => `<th>${y}</th>`).join('')}</tr>` +
+      `<tr class="cr-head-index"><th></th>${monthNumbers.map(m => `<th>${m}</th>`).join('')}</tr>` +
       `<tr class="cr-head-month"><th>€</th>${cols.map(c => `<th>${c === 'YTD' ? 'YTD' : crMonthLabel(c)}</th>`).join('')}</tr>`;
     body.innerHTML = (data.rows || []).map(row => crRenderRow(row, cols)).join('');
-    $('#cr-meta').textContent = `REAL · ${from} → ${to} · ${data.rows_used || 0} registros · importes en €`;
+    $('#cr-meta').textContent = `REAL · ${data.period.from} → ${data.period.to} · ${data.rows_used || 0} registros · importes en €`;
     const issues = data.issues || [];
     $('#cr-issues').innerHTML = issues.map(i => `<span class="cr-issue">ⓘ ${esc(i.message)}</span>`).join('');
     const reload = $('#cr-reload');
@@ -2545,7 +2560,7 @@ async function loadCuentaResultados() {
       expand.onclick = () => {
         const hidden = $$('.cr-child').some(el => el.style.display === 'none');
         $$('.cr-child').forEach(el => { el.style.display = hidden ? 'table-row' : 'none'; });
-        expand.textContent = hidden ? 'Ocultar proveedores' : 'Expandir proveedores';
+        expand.textContent = hidden ? 'Ocultar detalle' : 'Expandir detalle';
       };
     }
     body.onclick = (event) => {

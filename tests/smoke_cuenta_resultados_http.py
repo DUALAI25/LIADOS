@@ -19,8 +19,13 @@ def main():
         channels={x["label"] for x in sales.get("children",[]) if x.get("kind") == "channel"}
         assert {"Uber", "Glovo", "Just Eat"}.issubset(channels), channels
         for code in ("ventas","food_cost","margen_bruto","margen_contribucion","personal","otros_explotacion","ebitda","resultado_ejercicio"): assert code in codes, code
+        def provider_keys(row):
+            keys=[]
+            if row.get("provider_key"): keys.append(row["provider_key"])
+            for child in row.get("children",[]): keys.extend(provider_keys(child))
+            return keys
         for row in data["rows"]:
-            keys=[c.get("provider_key") for c in row.get("children",[]) if c.get("provider_key")]
+            keys=provider_keys(row)
             assert len(keys)==len(set(keys)), row["code"]
         print(f"HTTP {r.status}; columnas={len(data['columns'])}; filas={len(data['rows'])}; ventas={data['totals']['ventas_netas']}; EBITDA={data['totals']['ebitda']}; proveedores sin repetición=OK")
         return 0

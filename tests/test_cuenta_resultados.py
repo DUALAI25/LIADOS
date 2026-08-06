@@ -17,18 +17,53 @@ def test_provider_normalization_deduplicates_company_suffixes():
 def test_monthly_ytd_and_provider_breakdown():
  out=build_cuenta_resultados(ROWS,SALES,"2026-01-01","2026-02-28")
  assert out["columns"]==["2026-01","2026-02","YTD"]
- assert out["totals"]["ventas_netas"]==1500.0
+ assert out["totals"]["ventas_brutas"]==1500.0
+ assert out["totals"]["ventas_netas"]==1363.64
  assert out["totals"]["food_cost"]==165.0
  assert out["totals"]["personal"]==200.0
  assert out["totals"]["otros_explotacion"]==121.0
- assert out["totals"]["ebitda"]==1014.0
+ assert out["totals"]["ebitda"]==877.64
  food=next(r for r in out["rows"] if r["code"]=="food_cost")
- assert len(food["children"])==1
- assert len({r["provider_key"] for r in food["children"]})==1
+ provider_group=next(r for r in food["children"] if r.get("kind")=="provider_group")
+ providers=provider_group["children"]
+ assert len(providers)==1
+ assert len({r["provider_key"] for r in providers})==1
  assert food["values"]["2026-01"]==-165.0
  assert food["values"]["YTD"]==-165.0
 def test_iva_is_separated_from_net_sales():
  out=build_cuenta_resultados(ROWS,SALES,"2026-01-01","2026-02-28")
- assert out["totals"]["ventas_sin_iva"]==1363.64
+ assert out["totals"]["ventas_netas"]==1363.64
  assert out["totals"]["iva_ventas"]==136.36
  assert out["totals"]["iva_gastos"]==36.0
+
+
+def test_reference_sales_rows_channels_and_ytd_exclude_previous_december():
+    sales = [
+        {"invoice_date":"2025-12-10","total_amount":55.0,"base_amount":50.0,"tax_amount":5.0,"discount_amount":0.0},
+        {"invoice_date":"2026-01-10","total_amount":110.0,"base_amount":100.0,"tax_amount":10.0,"discount_amount":11.0},
+    ]
+    channels = [
+        {"invoice_date":"2026-01-10","channel":"card","amount_gross":55.0,"amount_net":50.0},
+        {"invoice_date":"2026-01-10","channel":"cash","amount_gross":22.0,"amount_net":20.0},
+        {"invoice_date":"2026-01-10","channel":"uber","amount_gross":33.0,"amount_net":30.0},
+    ]
+    out=build_cuenta_resultados([],sales,"2025-12-01","2026-12-31",channel_rows=channels)
+    rows={r["code"]:r for r in out["rows"]}
+    assert rows["ventas"]["values"]["2026-01"] == 110.0
+    assert rows["ventas"]["values"]["YTD"] == 110.0
+    children={r["code"]:r for r in rows["ventas"]["children"]}
+    assert children["venta_bruta_descuentos"]["values"]["2026-01"] == 121.0
+    assert children["venta_neta"]["values"]["2026-01"] == 100.0
+    assert children["venta_bruta"]["values"]["2026-01"] == 110.0
+    assert children["descuentos"]["values"]["2026-01"] == 11.0
+    assert children["ventas.channel.restaurant"]["values"]["2026-01"] == 70.0
+    assert children["ventas.channel.restaurant_gross"]["values"]["2026-01"] == 77.0
+    assert children["ventas.channel.delivery"]["values"]["2026-01"] == 30.0
+
+
+def test_unavailable_accounting_rows_are_not_fabricated_from_ebitda():
+    out=build_cuenta_resultados(ROWS,SALES,"2026-01-01","2026-02-28")
+    rows={r["code"]:r for r in out["rows"]}
+    for code in ("amortizacion","ebit","resultado_financiero","resultado_antes_impuestos","impuesto_sociedades","resultado_antes_impuestos_pct","resultado_ejercicio"):
+        assert rows[code]["availability"] == "unavailable"
+        assert rows[code]["values"]["YTD"] is None

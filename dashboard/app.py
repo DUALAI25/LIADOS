@@ -1277,6 +1277,35 @@ def api_gastos_pyg(
     return out
 
 
+@app.get("/api/gastos/cuenta-resultados")
+def api_cuenta_resultados(
+    date_from: str = Query(None, description="YYYY-MM-DD"),
+    date_to: str = Query(None, description="YYYY-MM-DD"),
+    cuenta: str = Query(None),
+    user: str = Depends(get_current_user),
+):
+    """Cuenta de resultados mensual estilo Excel, con YTD y proveedores deduplicados."""
+    from dashboard.cuenta_resultados import build_cuenta_resultados
+    df, dt = _parse_period(date_from, date_to)
+    if not df: df = date(date.today().year, 1, 1)
+    if not dt: dt = date.today()
+    df, dt = df.isoformat(), dt.isoformat()
+    cache_key = _desglose_safe_cache_key("cuenta-resultados", [], "sum", df, dt, cuenta, None, None, None, user)
+    cached = _cache_get(cache_key)
+    if cached is not None: return cached
+    sql = """SELECT i.invoice_date::text AS invoice_date,i.vendor_name,COALESCE(c.name,i.category_raw) AS category_raw,i.total_amount,i.base_amount,i.tax_amount,i.source_account FROM invoices i LEFT JOIN categories c ON c.id=i.category_id WHERE i.invoice_date BETWEEN %s AND %s AND i.is_invoice=true AND i.status NOT IN ('rejected','duplicate')"""
+    params = [df, dt]
+    if cuenta: sql += " AND i.source_account=%s"; params.append(cuenta)
+    invoice_rows = q(sql + " ORDER BY i.invoice_date LIMIT 50000", tuple(params))
+    sales_rows = []
+    if not cuenta or cuenta.lower() == "principal":
+        sales_rows = q("""SELECT COALESCE(finalizing_time,creation_time)::date::text AS invoice_date,'Last.app' AS vendor_name,'Ventas' AS category_raw,total_cents::numeric/100.0 AS total_amount,taxable_base_cents::numeric/100.0 AS base_amount,tax_cents::numeric/100.0 AS tax_amount,discount_total_cents::numeric/100.0 AS discount_amount FROM lastapp_bills WHERE deleted=false AND COALESCE(finalizing_time,creation_time)::date BETWEEN %s AND %s ORDER BY COALESCE(finalizing_time,creation_time) LIMIT 50000""", (df, dt))
+    out = build_cuenta_resultados(invoice_rows, sales_rows, df, dt, cuenta=cuenta)
+    out["generated_at"] = _dt.utcnow().isoformat() + "Z"
+    _cache_put(cache_key, out)
+    return out
+
+
 @app.get("/api/gastos/{factura_id}")
 def api_gastos_detalle(factura_id: str, user: str = Depends(get_current_user)):
     """Detalle completo de una factura de gasto por id (UUID)."""
@@ -1817,10 +1846,13 @@ INDEX_HTML = """<!DOCTYPE html>
    <div id="last-invoice-card" data-loading="1">Cargando última factura extraída...</div>
    <script>
     // B3: Cargar la card server-rendered. Usa misma auth que el resto de la app.
-    _fetchAuth("/api/invoices/last-invoice-card")
-      .then(r => r.ok ? r.text() : Promise.reject(new Error("HTTP "+r.status)))
-      .then(html => { const el = document.getElementById("last-invoice-card"); if (el) el.innerHTML = html; })
-      .catch(() => { const el = document.getElementById("last-invoice-card"); if (el) el.innerHTML = ""; });
+    window.addEventListener("load", () => {
+      if (typeof _fetchAuth !== "function") return;
+      _fetchAuth("/api/invoices/last-invoice-card")
+        .then(r => r.ok ? r.text() : Promise.reject(new Error("HTTP "+r.status)))
+        .then(html => { const el = document.getElementById("last-invoice-card"); if (el) el.innerHTML = html; })
+        .catch(() => { const el = document.getElementById("last-invoice-card"); if (el) el.innerHTML = ""; });
+    });
    </script>
 
     <!-- ═══ Vista: Dashboard ═══ -->
@@ -2066,7 +2098,7 @@ INDEX_HTML = """<!DOCTYPE html>
         </button>
         <button class="excel-tab" data-tab="pyg">
           <span class="excel-tab-ico">__ICON__coins__</span>
-          <span>PYG / Análisis</span>
+          <span>Cuenta de resultados</span>
         </button>
         <div class="excel-tabs-spacer"></div>
         <button class="excel-tab-excel" id="desglose-export-btn" title="Exportar pestaña activa a CSV">
@@ -2241,61 +2273,23 @@ INDEX_HTML = """<!DOCTYPE html>
         </div>
       </div>
 
-      <!-- TAB: PYG / Análisis (jerárquico) -->
+      <!-- TAB: Cuenta de resultados mensual estilo Excel -->
       <div class="excel-panel" data-tab-panel="pyg">
-        <div class="card">
-          <div class="card-head">
-            <h2>__ICON__euro__ PYG jerárquico (waterfall)</h2>
-            <span class="subtitle">P&L con totales, márgenes y EBITDA · Drill-down por sub-categoría y vendor</span>
+        <div class="card cr-card">
+          <div class="card-head cr-card-head">
+            <h2>A. Cuenta de resultados</h2>
+            <div class="cr-actions"><button class="btn ghost sm" id="cr-expand-all">Expandir proveedores</button><button class="btn primary sm" id="cr-reload">Actualizar</button></div>
           </div>
-          <div class="card-body">
-            <div class="gd-pyg-controls">
-              <label class="gd-field"><span>Comparar con período</span>
-                <select id="pyg-cmp-mode">
-                  <option value="none">Sin comparador</option>
-                  <option value="prev">Período anterior (mismo nº días)</option>
-                  <option value="custom">Personalizado</option>
-                </select>
-              </label>
-              <label class="gd-field pyg-cmp-custom" style="display:none"><span>Desde</span><input type="date" id="pyg-cmp-from"></label>
-              <label class="gd-field pyg-cmp-custom" style="display:none"><span>Hasta</span><input type="date" id="pyg-cmp-to"></label>
-              <button class="btn primary" id="pyg-apply">Calcular PYG</button>
-            </div>
-
-            <div class="gd-pyg-issues" id="pyg-issues"></div>
-
-            <div class="gd-pyg-kpis" id="pyg-kpis">
-              <div class="kpi-card"><div class="kpi-label">Ingresos</div><div class="kpi-value" id="pyg-kpi-ingresos">—</div><div class="kpi-pct" id="pyg-kpi-ingresos-pct"></div></div>
-              <div class="kpi-card"><div class="kpi-label">Margen bruto</div><div class="kpi-value" id="pyg-kpi-margenbruto">—</div><div class="kpi-pct" id="pyg-kpi-margenbruto-pct"></div></div>
-              <div class="kpi-card"><div class="kpi-label">MC</div><div class="kpi-value" id="pyg-kpi-mc">—</div><div class="kpi-pct" id="pyg-kpi-mc-pct"></div></div>
-              <div class="kpi-card kpi-highlight"><div class="kpi-label">EBITDA</div><div class="kpi-value" id="pyg-kpi-ebitda">—</div><div class="kpi-pct" id="pyg-kpi-ebitda-pct"></div></div>
-            </div>
-
-            <div class="gd-pyg-comparison" id="pyg-comparison" style="display:none">
-              <h3>__ICON__bar-chart-2__ Comparativa con período anterior</h3>
-              <div id="pyg-comparison-table"></div>
-            </div>
-
-            <h3>Líneas del P&L</h3>
-            <div class="gd-pyg-table-wrap">
-              <table class="gd-pyg-table" id="pyg-table">
-                <thead>
-                  <tr><th>Concepto</th><th class="num">Valor (€)</th><th class="num">% s/ingresos</th></tr>
-                </thead>
-                <tbody id="pyg-tbody">
-                  <tr><td colspan="3" class="muted">Pulsa "Calcular PYG" para cargar los datos</td></tr>
-                </tbody>
-              </table>
-            </div>
-
-            <div class="gd-pyg-drilldown" id="pyg-drilldown" style="display:none">
-              <h3>__ICON__search__ Drill-down por bucket</h3>
-              <div id="pyg-drilldown-content"></div>
-            </div>
+          <div class="cr-meta" id="cr-meta">REAL · importes en € · fuente: Last.app + facturas</div>
+          <div class="cr-issues" id="cr-issues"></div>
+          <div class="cr-table-wrap">
+            <table class="cr-table" id="cr-table">
+              <thead id="cr-head"></thead>
+              <tbody id="cr-body"><tr><td class="muted">Seleccione un periodo y pulse Aplicar.</td></tr></tbody>
+            </table>
           </div>
         </div>
       </div>
-    </section>
 
     <!-- ═══ Vista: Productos (v8.3 — feed en tiempo real) ═══ -->
     <section class="view" data-view="productos">

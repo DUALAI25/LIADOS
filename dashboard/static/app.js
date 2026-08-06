@@ -1681,6 +1681,7 @@ async function loadDesgloseTab(tabName) {
     case 'top': await loadDesgloseTop(); break;
     case 'calendario': await loadDesgloseCalendar(); break;
     case 'comparar': await loadDesgloseCompare(); break;
+    case 'pyg': await loadCuentaResultados(); break;
   }
   // mostrar timestamp de generación
   const el = $('#dg-gen-at');
@@ -2473,7 +2474,8 @@ function wirePygControls() {
     pygTab.addEventListener('click', () => {
       // Espera a que el panel esté visible
       setTimeout(() => {
-        if ($('#pyg-tbody').children.length <= 1) {
+        const legacyPygBody = $('#pyg-tbody');
+        if (legacyPygBody && legacyPygBody.children.length <= 1) {
           loadDesglosePyg();
         }
       }, 100);
@@ -2485,3 +2487,78 @@ function wirePygControls() {
 document.addEventListener('DOMContentLoaded', () => {
   setTimeout(wirePygControls, 200);
 });
+
+
+// ── Cuenta de resultados mensual estilo Excel ───────────────────────
+function crMonthLabel(key) {
+  const [y,m] = key.split('-');
+  const names = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+  return `${names[Number(m)-1]}-${y.slice(2)}`;
+}
+function crNumber(value, percentage=false) {
+  if (value == null || Number.isNaN(Number(value))) return '—';
+  if (percentage) return `${(Number(value)*100).toFixed(0)}%`;
+  const n = Number(value);
+  return `${n < 0 ? '-' : ''}${Math.abs(n).toLocaleString('es-ES',{minimumFractionDigits:0,maximumFractionDigits:0})}`;
+}
+function crRenderRow(row, columns, parentCode=null) {
+  const percentage = row.kind === 'percentage';
+  const unavailable = row.availability === 'unavailable';
+  const classes = [`cr-kind-${row.kind || 'line'}`, row.section ? 'cr-section' : '', parentCode ? 'cr-child' : ''].filter(Boolean).join(' ');
+  const parentAttr = parentCode ? ` data-parent="${esc(parentCode)}" style="display:none"` : '';
+  const code = esc(row.code);
+  let html = `<tr class="${classes}" data-code="${code}"${parentAttr}>`;
+  html += `<td class="cr-label" style="padding-left:${12 + (row.level||0)*18}px">${row.children && row.children.length ? `<button class="cr-chevron" aria-label="Mostrar desglose">+</button>` : ''}<span>${esc(row.label)}</span>${unavailable ? '<small class="cr-na">N/D</small>' : ''}</td>`;
+  columns.forEach(col => {
+    const value = unavailable ? null : (row.values || {})[col];
+    html += `<td class="cr-num ${value < 0 ? 'cr-negative' : ''}">${crNumber(value, percentage)}</td>`;
+  });
+  html += '</tr>';
+  (row.children || []).forEach(child => { html += crRenderRow(child, columns, row.code); });
+  return html;
+}
+async function loadCuentaResultados() {
+  const from = $('#dg-from')?.value;
+  const to = $('#dg-to')?.value;
+  const cuenta = $('#dg-cuenta')?.value;
+  const head = $('#cr-head'), body = $('#cr-body');
+  if (!head || !body || !from || !to) return;
+  body.innerHTML = '<tr><td class="muted">Calculando cuenta de resultados…</td></tr>';
+  try {
+    const params = new URLSearchParams({date_from: from, date_to: to});
+    if (cuenta) params.set('cuenta', cuenta);
+    const data = await getJSON('/api/gastos/cuenta-resultados?' + params.toString());
+    const cols = data.columns || [];
+    const years = cols.map(c => c === 'YTD' ? 'YTD' : c.slice(0,4));
+    head.innerHTML = `<tr class="cr-head-real"><th></th>${cols.map(c => `<th>${c === 'YTD' ? 'REAL' : 'REAL'}</th>`).join('')}</tr>` +
+      `<tr class="cr-head-year"><th></th>${years.map(y => `<th>${y}</th>`).join('')}</tr>` +
+      `<tr class="cr-head-month"><th>€</th>${cols.map(c => `<th>${c === 'YTD' ? 'YTD' : crMonthLabel(c)}</th>`).join('')}</tr>`;
+    body.innerHTML = (data.rows || []).map(row => crRenderRow(row, cols)).join('');
+    $('#cr-meta').textContent = `REAL · ${from} → ${to} · ${data.rows_used || 0} registros · importes en €`;
+    const issues = data.issues || [];
+    $('#cr-issues').innerHTML = issues.map(i => `<span class="cr-issue">ⓘ ${esc(i.message)}</span>`).join('');
+    const reload = $('#cr-reload');
+    if (reload && !reload._wired) { reload._wired = true; reload.onclick = loadCuentaResultados; }
+    const expand = $('#cr-expand-all');
+    if (expand && !expand._wired) {
+      expand._wired = true;
+      expand.onclick = () => {
+        const hidden = $$('.cr-child').some(el => el.style.display === 'none');
+        $$('.cr-child').forEach(el => { el.style.display = hidden ? 'table-row' : 'none'; });
+        expand.textContent = hidden ? 'Ocultar proveedores' : 'Expandir proveedores';
+      };
+    }
+    body.onclick = (event) => {
+      const button = event.target.closest('.cr-chevron');
+      if (!button) return;
+      const row = button.closest('tr');
+      const code = row?.dataset.code;
+      const children = $$(`.cr-child[data-parent="${CSS.escape(code)}"]`);
+      const show = children.some(el => el.style.display === 'none');
+      children.forEach(el => { el.style.display = show ? 'table-row' : 'none'; });
+      button.textContent = show ? '−' : '+';
+    };
+  } catch (e) {
+    body.innerHTML = `<tr><td class="state error">${esc(e.message)}</td></tr>`;
+  }
+}

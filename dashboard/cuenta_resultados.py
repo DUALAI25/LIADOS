@@ -125,6 +125,19 @@ def _provider_children(rows, months, bucket, rules):
     return children
 
 
+def _channel_children(rows, months):
+    labels = {"card": "Restaurant · tarjeta", "cash": "Restaurant · efectivo", "shop": "Take away / Shop", "uber": "Uber", "glovo": "Glovo", "justeat": "Just Eat"}
+    totals = defaultdict(lambda: defaultdict(float))
+    for row in rows or []:
+        d = _date_value(row.get("invoice_date"))
+        if not d:
+            continue
+        channel = str(row.get("channel") or "otro").lower()
+        key = labels.get(channel, channel.title())
+        totals[key][f"{d.year:04d}-{d.month:02d}"] += _eur(row.get("amount"))
+    return [{"code": "ventas.channel." + normalize_provider(label), "label": label, "values": _values(months, values), "kind": "channel", "level": 1, "children": [], "availability": "real"} for label, values in sorted(totals.items(), key=lambda x: (-sum(x[1].values()), x[0]))]
+
+
 def _merge_provider_children(groups, months):
     merged = {}
     for group in groups:
@@ -139,7 +152,7 @@ def _merge_provider_children(groups, months):
     return sorted(merged.values(), key=lambda c: (-c["values"].get("YTD", 0.0), c["label"].lower()))
 
 
-def build_cuenta_resultados(invoice_rows, sales_rows, period_from: str, period_to: str, cuenta: str | None = None, rules=None):
+def build_cuenta_resultados(invoice_rows, sales_rows, period_from: str, period_to: str, cuenta: str | None = None, rules=None, channel_rows=None):
     start = _date_value(period_from)
     end = _date_value(period_to)
     if not start or not end or start > end:
@@ -194,7 +207,7 @@ def build_cuenta_resultados(invoice_rows, sales_rows, period_from: str, period_t
         _row("descuentos", "Descuentos", months, {m: -discounts[m] for m in months}, level=1),
         _row("ventas_sin_iva", "Ventas sin IVA", months, sales_base, level=1),
         _row("iva_ventas", "IVA repercutido", months, sales_tax, level=1),
-        _row("canal_no_disponible", "Canal operativo (Last.app no lo proporciona)", months, zero, level=1, availability="unavailable"),
+        *(_channel_children(channel_rows, months) if channel_rows else [_row("canal_no_disponible", "Canal operativo no disponible", months, zero, level=1, availability="unavailable")]),
     ]))
     rows.append(_row("food_cost", "2  Food cost", months, {m: -food[m] for m in months}, kind="section", section=True, children=_provider_children(expense_rows, months, "aprovisionamientos", rules)))
     rows.append(_row("food_cost_pct", "% Food cost", months, {m: food[m] / net[m] if net[m] else 0.0 for m in months}, kind="percentage", availability="derived"))
@@ -223,4 +236,4 @@ def build_cuenta_resultados(invoice_rows, sales_rows, period_from: str, period_t
     totals["margen_bruto_pct"] = round(totals["margen_bruto"] / totals["ventas_netas"], 4) if totals["ventas_netas"] else 0.0
     totals["margen_contribucion_pct"] = round(totals["margen_contribucion"] / totals["ventas_netas"], 4) if totals["ventas_netas"] else 0.0
     totals["ebitda_pct"] = round(totals["ebitda"] / totals["ventas_netas"], 4) if totals["ventas_netas"] else 0.0
-    return {"period": {"from": start.isoformat(), "to": end.isoformat()}, "columns": months + ["YTD"], "rows": rows, "totals": totals, "issues": [{"code": "canales_no_disponibles", "level": "info", "message": "Last.app no entrega canal operativo en los datos descargados."}, {"code": "bloques_contables_no_disponibles", "level": "info", "message": "Amortización, resultado financiero e impuesto de sociedades requieren una fuente contable adicional."}], "rows_used": len(expense_rows) + len(sales_rows or [])}
+    return {"period": {"from": start.isoformat(), "to": end.isoformat()}, "columns": months + ["YTD"], "rows": rows, "totals": totals, "issues": (([{"code": "canales_pago", "level": "info", "message": "Canales calculados desde lastapp_payments; representan el tipo de pago y no siempre el canal comercial."}] if channel_rows else [{"code": "canales_no_disponibles", "level": "info", "message": "No hay canales de pago para el periodo seleccionado."}]) + [{"code": "bloques_contables_no_disponibles", "level": "info", "message": "Amortización, resultado financiero e impuesto de sociedades requieren una fuente contable adicional."}]), "rows_used": len(expense_rows) + len(sales_rows or [])}

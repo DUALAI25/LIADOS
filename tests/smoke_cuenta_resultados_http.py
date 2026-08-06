@@ -15,6 +15,9 @@ def main():
         assert r.status==200
         assert data["columns"]==["2026-01","2026-02","2026-03","2026-04","2026-05","2026-06","2026-07","2026-08","YTD"]
         codes={x["code"] for x in data["rows"]}
+        sales=next(x for x in data["rows"] if x["code"] == "ventas")
+        channels={x["label"] for x in sales.get("children",[]) if x.get("kind") == "channel"}
+        assert {"Uber", "Glovo", "Just Eat"}.issubset(channels), channels
         for code in ("ventas","food_cost","margen_bruto","margen_contribucion","personal","otros_explotacion","ebitda","resultado_ejercicio"): assert code in codes, code
         for row in data["rows"]:
             keys=[c.get("provider_key") for c in row.get("children",[]) if c.get("provider_key")]

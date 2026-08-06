@@ -1,6 +1,6 @@
 """
 Agente de consultas para Liados.
-Usa OpenCode Go (deepseek-v4-flash) con function-calling contra dos MCP servers:
+Usa MiniMax (con fallback OpenCode) con function-calling contra dos MCP servers:
   - invoices_server: facturas (Postgres)
   - lastapp_server: operativa del restaurante via MCP oficial de Last.app
 """
@@ -47,8 +47,9 @@ try:
 except ImportError:
     pass
 
-OPENCODE_GO_URL = "https://opencode.ai/zen/go/v1/chat/completions"
-MODEL = "deepseek-v4-flash"
+MINIMAX_BASE_URL = os.getenv("MINIMAX_BASE_URL", "https://api.minimax.io/v1").rstrip("/")
+OPENCODE_GO_URL = MINIMAX_BASE_URL + "/chat/completions"
+MODEL = os.getenv("MINIMAX_MODEL", "MiniMax-Text-01")
 
 # ─── Tools de facturas (invoices_server) ────────────────────────────
 
@@ -399,18 +400,20 @@ TOOL_MAP.update(_lastapp_tools)
 
 def call_llm(messages: list) -> dict:
     """Llama a OpenCode Go con function-calling."""
-    api_key = os.getenv("OPENCODE_API_KEY")
+    api_key = os.getenv("MINIMAX_API_KEY") or os.getenv("OPENCODE_API_KEY")
     if not api_key:
-        raise RuntimeError("OPENCODE_API_KEY no esta en .env")
+        raise RuntimeError("MINIMAX_API_KEY/OPENCODE_API_KEY no esta en .env")
+    endpoint = OPENCODE_GO_URL if os.getenv("MINIMAX_API_KEY") else "https://opencode.ai/zen/go/v1/chat/completions"
+    model = MODEL if os.getenv("MINIMAX_API_KEY") else os.getenv("OPENCODE_MODEL", "deepseek-v4-flash")
 
     resp = requests.post(
-        OPENCODE_GO_URL,
+        endpoint,
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         },
         json={
-            "model": MODEL,
+            "model": model,
             "messages": messages,
             "tools": TOOLS_SCHEMA,
             "tool_choice": "auto",

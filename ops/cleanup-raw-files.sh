@@ -1,37 +1,31 @@
 #!/bin/bash
-# S-1: cleanup raw_files > 90 dias. Cron automatico.
-# Liberar espacio manteniendo auditoria razonable.
-# Hardening 2026-07-17: reemplazo `bc` por aritmética bash pura + agrego
-# cleanup_raw.log al logrotate para que no se pierda el historial.
-
 set -u
-AGED_DAYS=90
+AGED_DAYS="${AGED_DAYS:-90}"
+DRY_RUN="${CLEANUP_DRY_RUN:-0}"
 RAW_DIR=/root/liados/data/invoices/raw
 LOG=/root/liados/data/cleanup_raw.log
-
-TOTAL_BEFORE=$(du -sb "$RAW_DIR" 2>/dev/null | awk '{print $1}')
-COUNT_BEFORE=$(find "$RAW_DIR" -type f 2>/dev/null | wc -l)
-
-echo "=== cleanup started at $(date) ===" >> "$LOG"
-echo "Before: $COUNT_BEFORE files, $TOTAL_BEFORE bytes" >> "$LOG"
-
-DELETED=$(find "$RAW_DIR" -type f -mtime +$AGED_DAYS -delete -print 2>/dev/null | wc -l)
-
-TOTAL_AFTER=$(du -sb "$RAW_DIR" 2>/dev/null | awk '{print $1}')
-COUNT_AFTER=$(find "$RAW_DIR" -type f 2>/dev/null | wc -l)
-
-# Saved sin `bc`: aritmética entera bash + conversión a MB
-SAVED_BYTES=$((TOTAL_BEFORE - TOTAL_AFTER))
-SAVED_MB=$((SAVED_BYTES / 1024 / 1024))
-
-echo "Deleted: $DELETED files (age > $AGED_DAYS days)" >> "$LOG"
-echo "After: $COUNT_AFTER files, $TOTAL_AFTER bytes" >> "$LOG"
-echo "Saved: ${SAVED_MB} MB (${SAVED_BYTES} bytes)" >> "$LOG"
-echo "=== cleanup finished at $(date) ===" >> "$LOG"
-
-# exit 0 siempre que el find haya funcionado; si RAW_DIR no existe, alertar
-if [ ! -d "$RAW_DIR" ]; then
-    echo "WARN: RAW_DIR $RAW_DIR no existe" >&2
-    exit 1
+ENV_FILE=/root/liados/.env
+if [ ! -d "$RAW_DIR" ]; then echo "WARN: RAW_DIR $RAW_DIR no existe" >&2; exit 1; fi
+PSWD_VAR=$(grep '^DB_PASSWORD=' "$ENV_FILE" | head -1 | cut -d= -f2-)
+export PGPASSWORD="$PSWD_VAR"
+PROTECTED=$(mktemp)
+trap 'rm -f "$PROTECTED"' EXIT
+if ! /usr/bin/psql -h localhost -U desliado -d desliado -At -F '' -c "SELECT raw_file_url FROM invoices WHERE raw_file_url LIKE '/root/liados/data/invoices/raw/%' UNION SELECT parsed_json->>'local_path' FROM invoices WHERE parsed_json->>'local_path' LIKE '/root/liados/data/invoices/raw/%';" > "$PROTECTED" 2>/dev/null; then
+  echo "ERROR: no se pudo obtener la lista de raw protegidos" >&2; exit 1
 fi
-exit 0
+TOTAL_BEFORE=$(du -sb "$RAW_DIR" 2>/dev/null | cut -f1)
+COUNT_BEFORE=$(find "$RAW_DIR" -type f 2>/dev/null | wc -l)
+printf '=== cleanup started at %s ===\n' "$(date)" >> "$LOG"
+printf 'Before: %s files, %s bytes; protected: %s paths\n' "$COUNT_BEFORE" "$TOTAL_BEFORE" "$(wc -l < "$PROTECTED")" >> "$LOG"
+DELETED=0; SKIPPED=0; CANDIDATES=0
+while IFS= read -r -d '' file; do
+  CANDIDATES=$((CANDIDATES + 1))
+  if grep -Fqx "$file" "$PROTECTED"; then SKIPPED=$((SKIPPED + 1)); continue; fi
+  if [ "$DRY_RUN" = "1" ]; then printf 'DRY-RUN delete candidate: %s\n' "$file" >> "$LOG"; else rm -f -- "$file"; DELETED=$((DELETED + 1)); fi
+done < <(find "$RAW_DIR" -type f -mtime +"$AGED_DAYS" -print0 2>/dev/null)
+TOTAL_AFTER=$(du -sb "$RAW_DIR" 2>/dev/null | cut -f1)
+COUNT_AFTER=$(find "$RAW_DIR" -type f 2>/dev/null | wc -l)
+SAVED_BYTES=$((TOTAL_BEFORE - TOTAL_AFTER)); SAVED_MB=$((SAVED_BYTES / 1024 / 1024))
+printf 'Candidates: %s; deleted: %s; protected/skipped: %s; dry_run: %s\n' "$CANDIDATES" "$DELETED" "$SKIPPED" "$DRY_RUN" >> "$LOG"
+printf 'After: %s files, %s bytes; saved: %s MB (%s bytes)\n' "$COUNT_AFTER" "$TOTAL_AFTER" "$SAVED_MB" "$SAVED_BYTES" >> "$LOG"
+printf '=== cleanup finished at %s ===\n' "$(date)" >> "$LOG"

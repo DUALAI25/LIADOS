@@ -1,5 +1,10 @@
 """Test chat con espera mas larga para ver el reply completo."""
 import asyncio
+import os
+import sys
+if "pytest" in sys.modules and __name__ != "__main__":
+    import pytest
+    pytest.skip("script E2E: ejecutar directamente, no durante colección", allow_module_level=True)
 
 async def main():
     from playwright.async_api import async_playwright
@@ -7,7 +12,8 @@ async def main():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
         context = await browser.new_context(
-            http_credentials={'username': 'jefe', 'password': 'jefe2026'}
+            http_credentials={'username': 'jefe', 'password': 'jefe2026'},
+            ignore_https_errors=True,
         )
         page = await context.new_page()
 
@@ -21,7 +27,8 @@ async def main():
         page.on('dialog', lambda d: asyncio.create_task(handle_dialog(d)))
 
         print('=== Cargar dashboard ===')
-        await page.goto('http://100.87.20.4:9121/', wait_until='networkidle', timeout=30000)
+        base_url = os.getenv('LIADOS_TEST_URL', 'https://localhost:9121').rstrip('/')
+        await page.goto(base_url + '/', wait_until='networkidle', timeout=30000)
         await page.wait_for_timeout(3000)
 
         print('=== Abrir chat ===')
@@ -66,4 +73,5 @@ async def main():
 
         await browser.close()
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

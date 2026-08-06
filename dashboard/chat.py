@@ -154,9 +154,9 @@ def _call_llm_stream(messages: list):
     """Llama a OpenCode Go con stream=True. Generador de deltas (chunks)."""
     import os
     import requests
-    api_key = os.getenv("OPENCODE_API_KEY")
+    api_key = os.getenv("MINIMAX_API_KEY") or os.getenv("OPENCODE_API_KEY")
     if not api_key:
-        raise RuntimeError("OPENCODE_API_KEY no esta en .env")
+        raise RuntimeError("MINIMAX_API_KEY/OPENCODE_API_KEY no esta en .env")
     try:
         resp = requests.post(
             OPENCODE_GO_URL,

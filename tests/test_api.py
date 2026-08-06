@@ -9,6 +9,9 @@ Uso: python3 tests/test_api.py [host]
 """
 import os
 import sys
+if "pytest" in sys.modules and __name__ != "__main__":
+    import pytest
+    pytest.skip("script E2E: ejecutar directamente, no durante colección", allow_module_level=True)
 import json
 import time
 import urllib3
@@ -47,7 +50,7 @@ requests.post = _post
 requests.put = _put
 requests.delete = _delete
 
-HOST = sys.argv[1] if len(sys.argv) > 1 else "https://localhost:9121"
+HOST = next((arg for arg in sys.argv[1:] if not arg.startswith("-")), os.getenv("LIADOS_TEST_URL", "https://localhost:9121"))
 AUTH = HTTPBasicAuth("jefe", "jefe2026")
 TIMEOUT = 10
 STREAM_TIMEOUT = 45
@@ -895,14 +898,15 @@ if r.ok:
               a.get("severity") in {"high", "medium", "low", "info"}, "")
         check(f"alerta tiene titulo", bool(a.get("titulo")), "")
         check(f"alerta NO expone SQL/tokens", "DROP" not in str(a).upper() and "secret" not in str(a).lower(), "")
-# ── Resumen FINAL (movido al final) ────────────────────────────
-print(f"\n{'='*60}")
-print(f"Tests: {PASS + FAIL} | PASS: {PASS} | FAIL: {FAIL}")
-if ERRORS:
-    print("Errores:")
-    for e in ERRORS:
-        print(f"  - {e}")
-    sys.exit(1)
-else:
-    print("OK -- todos los tests pasan")
-    sys.exit(0)
+if __name__ == "__main__":
+    # ── Resumen FINAL (movido al final) ────────────────────────────
+    print(f"\n{'='*60}")
+    print(f"Tests: {PASS + FAIL} | PASS: {PASS} | FAIL: {FAIL}")
+    if ERRORS:
+        print("Errores:")
+        for e in ERRORS:
+            print(f"  - {e}")
+        sys.exit(1)
+    else:
+        print("OK -- todos los tests pasan")
+        sys.exit(0)

@@ -236,7 +236,7 @@ def update_last_sync(source, status='ok'):
         "  last_sync = NOW(), "
         "  status = EXCLUDED.status, "
         "  items_processed = sync_control.items_processed + 1, "
-        "  errors = sync_control.errors + CASE WHEN EXCLUDED.status = 'error' THEN 1 ELSE 0 END",
+        "  errors = CASE WHEN EXCLUDED.status = 'error' THEN sync_control.errors + 1 ELSE 0 END",
         (source, status),
     )
     conn.commit()

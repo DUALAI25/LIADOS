@@ -1,0 +1,7 @@
+SHELL=/bin/bash
+PATH=/root/liados/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Liados collectors — backup BD cada noche a las 03:00 (logs en data/backup.log)
+# 2026-08-18: restaurado el job backup_wrapper que se había perdido del cron.
+# E2E dashboard corre a las 03:15 en /etc/cron.d/liados-e2e para no competir con el backup.
+0 3 * * * root /root/liados/.venv/bin/python3 /root/liados/ops/backup_wrapper.py >> /var/log/liados-backup.log 2>&1

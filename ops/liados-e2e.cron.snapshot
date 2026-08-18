@@ -1,0 +1,7 @@
+# Tests E2E del dashboard Liados — cada noche a las 03:15
+# 2026-08-18: añadido https://localhost:9121 explícito (dashboard corre en HTTPS desde v9.0 PRO).
+# Secuencia: 03:00 backup, 03:15 E2E (valida que el dashboard está OK después del backup).
+SHELL=/bin/bash
+PATH=/root/liados/.venv/bin:/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+15 3 * * * root bash /root/liados/tests/run_e2e.sh https://localhost:9121 >> /var/log/liados-e2e.log 2>&1

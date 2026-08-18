@@ -53,10 +53,10 @@ async def _security_headers(request: Request, call_next):
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("X-Frame-Options", "DENY")
     resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    # CSP: self para todo lo nuestro, cdn.jsdelivr.net solo para Chart.js
+    # CSP: assets self-hosted para que el dashboard no dependa de CDNs.
     csp = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "script-src 'self' 'unsafe-inline'; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data:; "
         "font-src 'self'; "
@@ -1293,7 +1293,7 @@ def api_cuenta_resultados(
     cache_key = _desglose_safe_cache_key("cuenta-resultados", [], "sum", df, dt, cuenta, None, None, None, user)
     cached = _cache_get(cache_key)
     if cached is not None: return cached
-    sql = """SELECT i.invoice_date::text AS invoice_date,i.vendor_name,COALESCE(c.name,i.category_raw) AS category_raw,i.total_amount,i.base_amount,i.tax_amount,i.source_account FROM invoices i LEFT JOIN categories c ON c.id=i.category_id WHERE i.invoice_date BETWEEN %s AND %s AND i.is_invoice=true AND i.status NOT IN ('rejected','duplicate')"""
+    sql = """SELECT i.invoice_date::text AS invoice_date,i.vendor_name,COALESCE(c.name,i.category_raw) AS category_raw,i.total_amount,i.base_amount,i.tax_amount,i.source_account FROM invoices i LEFT JOIN categories c ON c.id=i.category_id WHERE i.invoice_date BETWEEN %s AND %s AND i.is_invoice=true AND i.status NOT IN ('rejected','duplicate','void')"""
     params = [df, dt]
     if cuenta: sql += " AND i.source_account=%s"; params.append(cuenta)
     invoice_rows = q(sql + " ORDER BY i.invoice_date LIMIT 50000", tuple(params))
@@ -1802,7 +1802,7 @@ INDEX_HTML = """<!DOCTYPE html>
 <title>Liados · Dashboard</title>
 <link rel="stylesheet" href="/static/tokens.css">
 <link rel="stylesheet" href="/static/app.css">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="/static/chart.umd.min.js"></script>
 </head>
 <body>
 <div class="app" id="app">
@@ -2275,21 +2275,52 @@ INDEX_HTML = """<!DOCTYPE html>
         </div>
       </div>
 
-      <!-- TAB: Cuenta de resultados mensual estilo Excel -->
+      <!-- TAB: Libro financiero reconstruido desde la referencia Excel -->
       <div class="excel-panel" data-tab-panel="pyg">
-        <div class="card cr-card">
-          <div class="card-head cr-card-head">
-            <h2>A. Cuenta de resultados</h2>
-            <div class="cr-actions"><button class="btn ghost sm" id="cr-expand-all">Expandir proveedores</button><button class="btn primary sm" id="cr-reload">Actualizar</button></div>
+        <div class="cr-workbook" id="cr-workbook">
+          <div class="cr-titlebar">
+            <div class="cr-quick-access" aria-hidden="true">⌄&nbsp;&nbsp;↶&nbsp;&nbsp;↷</div>
+            <strong>LIA029_Analisis Costes</strong>
+            <span>Guardado</span>
+            <div class="cr-window-actions" aria-hidden="true">—&nbsp;&nbsp;□&nbsp;&nbsp;×</div>
           </div>
-          <div class="cr-meta" id="cr-meta">REAL · importes en € · fuente: Last.app + facturas</div>
+          <div class="cr-ribbon-tabs" role="presentation">
+            <span>Archivo</span><span class="active">Inicio</span><span>Insertar</span><span>Dibujar</span><span>Disposición de página</span><span>Fórmulas</span><span>Datos</span><span>Revisar</span><span>Vista</span><span>Automatizar</span><span>Ayuda</span>
+          </div>
+          <div class="cr-ribbon" aria-hidden="true">
+            <div class="cr-ribbon-block"><b>Pegar</b><small>Portapapeles</small></div>
+            <div class="cr-ribbon-block cr-font-block"><b>Aptos&nbsp;&nbsp; 10</b><span>B&nbsp;&nbsp; I&nbsp;&nbsp; U&nbsp;&nbsp; ▦</span><small>Fuente</small></div>
+            <div class="cr-ribbon-block"><span>☰&nbsp;&nbsp;≡&nbsp;&nbsp;⇆</span><small>Alineación</small></div>
+            <div class="cr-ribbon-block"><b>General</b><span>%&nbsp;&nbsp;€&nbsp;&nbsp;,00</span><small>Número</small></div>
+            <div class="cr-ribbon-block"><span>▤&nbsp;&nbsp;▥&nbsp;&nbsp;▦</span><small>Estilos</small></div>
+          </div>
+          <div class="cr-formula-row">
+            <span class="cr-name-box" id="cr-name-box">A1</span><span class="cr-fx">fx</span><span class="cr-formula" id="cr-formula">A. Cuenta de resultados</span>
+          </div>
+          <div class="cr-meta-line">
+            <span id="cr-meta">REAL · importes en € · fuente: Last.app + facturas</span>
+            <div class="cr-actions"><button class="cr-sheet-button" id="cr-expand-all">Expandir detalle</button><button class="cr-sheet-button primary" id="cr-reload">Actualizar</button></div>
+          </div>
           <div class="cr-issues" id="cr-issues"></div>
-          <div class="cr-table-wrap">
+          <div class="cr-grid-shell">
             <table class="cr-table" id="cr-table">
               <thead id="cr-head"></thead>
               <tbody id="cr-body"><tr><td class="muted">Seleccione un periodo y pulse Aplicar.</td></tr></tbody>
             </table>
           </div>
+          <div class="cr-sheetbar">
+            <button class="cr-sheet-nav" aria-label="Navegar hojas">◀&nbsp;&nbsp;▶</button>
+            <div class="cr-sheet-tabs" role="tablist" aria-label="Hojas del libro">
+              <button class="cr-sheet-tab cr-tab-red active" data-cr-sheet="resumen" role="tab">Resumen Ejecutivo</button>
+              <button class="cr-sheet-tab cr-tab-blue" data-cr-sheet="evolucion" role="tab">Evolución Mensual</button>
+              <button class="cr-sheet-tab cr-tab-green" data-cr-sheet="proveedores" role="tab">Análisis Proveedores</button>
+              <button class="cr-sheet-tab cr-tab-orange" data-cr-sheet="categorias" role="tab">Por Categorías</button>
+              <button class="cr-sheet-tab cr-tab-neutral" data-cr-sheet="hoja5" role="tab">Hoja5</button>
+            </div>
+            <span class="cr-sheet-add" aria-hidden="true">⊕</span>
+            <span class="cr-zoom" aria-hidden="true">100%&nbsp;&nbsp;−━━●━━＋</span>
+          </div>
+          <div class="cr-statusbar"><span>Listo</span><span id="cr-selection-status">REAL · datos sincronizados</span></div>
         </div>
       </div>
 

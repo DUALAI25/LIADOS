@@ -93,3 +93,45 @@ class TestDashboardE2E:
         assert r.status == 200
         r = auth_page.goto(f"{BASE_URL}/")
         assert r.status == 200
+
+    def test_11_excel_workbook_sheets_and_mobile_drawer(self, auth_page: Page):
+        response = auth_page.goto(f"{BASE_URL}/", wait_until="networkidle")
+        assert response.status == 200
+        auth_page.locator('.nav-item[data-view="desglose"]').click()
+        filters_before = (
+            auth_page.locator("#dg-from").input_value(),
+            auth_page.locator("#dg-to").input_value(),
+        )
+        auth_page.locator('.excel-tab[data-tab="pyg"]').click()
+        auth_page.locator(".cr-workbook").wait_for(state="visible")
+        auth_page.locator("#cr-body tr:not(:has(.muted))").first.wait_for(state="visible")
+        assert (
+            auth_page.locator("#dg-from").input_value(),
+            auth_page.locator("#dg-to").input_value(),
+        ) == filters_before
+
+        assert auth_page.locator(".cr-sheet-tab").all_text_contents() == [
+            "Resumen Ejecutivo",
+            "Evolución Mensual",
+            "Análisis Proveedores",
+            "Por Categorías",
+            "Hoja5",
+        ]
+        assert auth_page.locator("#cr-body tr").count() >= 8
+        auth_page.locator('[data-cr-sheet="evolucion"]').click()
+        assert auth_page.locator("#cr-head .cr-head-month th").count() >= 3
+        auth_page.locator('[data-cr-sheet="proveedores"]').click()
+        assert auth_page.locator("#cr-body tr").count() >= 1
+        auth_page.locator('[data-cr-sheet="categorias"]').click()
+        assert auth_page.locator("#cr-body tr").count() >= 6
+        auth_page.locator('[data-cr-sheet="hoja5"]').click()
+        assert auth_page.locator("#cr-body tr").count() == 32
+
+        auth_page.set_viewport_size({"width": 390, "height": 844})
+        auth_page.locator("#sidebarToggle").click()
+        assert auth_page.locator("#sidebar").evaluate("el => el.classList.contains('open')")
+        auth_page.locator('.nav-item[data-view="desglose"]').click()
+        auth_page.wait_for_timeout(500)
+        sidebar = auth_page.locator("#sidebar")
+        assert not sidebar.evaluate("el => el.classList.contains('open')")
+        assert sidebar.evaluate("el => el.getBoundingClientRect().right") <= 0

@@ -20,3 +20,17 @@ Append one entry per run. Prune entries older than 30 days.
 ## Recent Runs
 
 <!-- Loop appends below this line -->
+
+```json
+{
+  "run_id": "2026-08-18T19:20:00Z",
+  "pattern": "daily-triage",
+  "duration_s": 180,
+  "items_found": 4,
+  "actions_taken": 0,
+  "escalations": 2,
+  "tokens_estimate": 70000,
+  "outcome": "report-only",
+  "notes": "P0 nuevos: E2E cron roto (HTTPS vs HTTP), backup cron desaparecido, working tree sucio en main con rediseño P&L Excel sin commit. STATE.md actualizado."
+}
+```

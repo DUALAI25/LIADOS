@@ -1,6 +1,6 @@
 # Loop State — Liados / Desliado
 
-Last run: 2026-07-06 07:42 (P0-1 + P0-3 resueltos)
+Last run: 2026-08-18 19:20 (L1 report-only; P0 nuevo: E2E cron roto por HTTPS)
 
 ## Resolved (P0 fixed this session)
 
@@ -11,6 +11,8 @@ Last run: 2026-07-06 07:42 (P0-1 + P0-3 resueltos)
 
 - **[P0] Gmail collector en `MISSING_TOKEN` (ambas cuentas).** `principal` y `secundaria` requieren reautorización OAuth. No bloquea el dashboard (Last.app lo alimenta), pero rompe el pipeline Gmail→invoices. Acción humana: `python3 -m agente.scripts.gmail_auth --account <cuenta> --force`.
 - **[P0] `main` está 2 commits adelante de `origin/main` sin push.** Commits nuevos: `17ba733 loop-engineering: bootstrap daily-triage L3 (100/100)` + `3d60cc8 fix(safety+state): poblar denylist Liados + STATE.md triage`. Por regla de safety.md, push requiere aprobación humana explícita.
+- **[P0] E2E cron `0 3 * * * bash tests/run_e2e.sh` lleva ~8 días fallando silenciosamente.** Última ejecución registrada (rotada a `.log.1`): 2026-08-10 03:00 → `RESULT: FAIL` con `RemoteDisconnected` en cada request. Causa raíz: dashboard ahora arranca en HTTPS (`--ssl-keyfile/certfile` en ExecStart) pero el cron usa `http://localhost:9121`. Reproducido manualmente ahora: HTTP→9121 devuelve `HTTP 000`, HTTPS→9121 sirve OK. Acción humana: actualizar `/etc/cron.d/liados-e2e` para usar `bash tests/run_e2e.sh https://localhost:9121` (test_api.py ya soporta HTTPS) y rotar manualmente `/var/log/liados-e2e.log` vacío. El cron del backup (03:00 → `backups/db-*.sql.gz`) también paró en 2026-08-10 (último: `db-20260810-0300.sql.gz`); `/etc/cron.d/liados` solo contiene el comentario "# Liados collectors" sin jobs activos — la entrada `backup_wrapper` se perdió o nunca se migró al formateo actual de cron.
+- **[P0] Working tree sucio en `main` (4 archivos, +359/-29, sin commit).** Cambios sin commit: `dashboard/app.py`, `dashboard/static/app.css`, `dashboard/static/app.js`, `tests/test_e2e_dashboard.py`. Tema: rediseño del tab "Cuenta de resultados" estilo libro Excel (5 hojas: Resumen Ejecutivo / Evolución Mensual / Análisis Proveedores / Por Categorías / Hoja5), cambio en SQL de `api_cuenta_resultados` para excluir `status='void'`, y test E2E nuevo `test_11_excel_workbook_sheets_and_mobile_drawer`. **No commitear en L1** — fuera de paths protegidos (no toca .env/auth/payments/secrets/credentials) pero requiere gate humano + verificación (worktree).
 
 ## Watch List
 
@@ -49,13 +51,15 @@ Last run: 2026-07-06 07:42 (P0-1 + P0-3 resueltos)
 
 ---
 
-## Verification run 2026-07-15
+## Verification run 2026-08-18
 
-- L1 report-only; no source/config changes made.
-- Dashboard: `liados-dashboard` active/enabled, Uvicorn listening on `0.0.0.0:9121`, `/api/health` 200, version `7.1.0`, database/pool OK.
-- Python syntax compile: `dashboard/app.py`, `drive_collector.py`, `oauth_drive.py`, `desglose.py` passed.
-- E2E command `tests/test_api.py http://localhost:9121`: **122 PASS / 0 FAIL**.
-- Targeted checks: health, desglose, gdrive-status, alertas and reclasificar-v2 responded successfully; additional negative checks exposed 500s for invalid desglose dates and invalid gasto-detail UUID.
-- Findings reported: v2 audit-table/logger failure path, Drive checkpoint/retry issues, desglose euro/date validation issues, residual JS injection contexts, gdrive token path disclosure, and redundant migration index.
+- L1 report-only; no source/config changes made (no commit, no push).
+- Dashboard: `liados-dashboard` active/enabled, Uvicorn escuchando HTTPS en `0.0.0.0:9121`, `/api/health` 200, version `9.0.0`, db pool OK.
+- HTTP→9121 devuelve `HTTP 000` (TLS handshake fail) — confirma que el cron E2E en HTTP nunca podrá volver a pasar hasta que se cambie a HTTPS.
+- Working tree con cambios sin commit (no toco): rediseño P&L estilo Excel + cambio SQL + test E2E nuevo.
+- Backups: último válido `db-20260810-0300.sql.gz` (8 días de gap). `/etc/cron.d/liados` está vacío (solo comentario header).
+- Run_all collector: OK a 2026-08-18 19:00 (Last.app, Gmail, Drive).
+- OAuth watchdog: OK 3/3 tokens a 2026-08-18 19:00.
+- Gmail age: log estancado en 2026-08-10 — el cron `liados-gmail-age` debería haber escrito el 2026-08-11..18 pero no lo hizo. Probable mismo problema de schedule roto o stderr perdido. Investigar si no se autorresuelve cuando se arregle el cron E2E.
 
-Run log: L1 report-only (2026-07-15). E2E 122/122; bugs reported, no auto-fix.
+Run log: L1 report-only (2026-08-18). E2E cron silenciosamente roto; P0 nuevos listados arriba; no auto-fix.

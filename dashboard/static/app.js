@@ -111,6 +111,7 @@ function initNav() {
       e.preventDefault();
       const v = item.getAttribute('data-view');
       if (!v) return;
+      document.body.classList.toggle('cr-workbook-active', v === 'desglose' && DG.activeTab === 'pyg');
       $$('.nav-item').forEach(n => n.classList.remove('active'));
       item.classList.add('active');
       $$('.view').forEach(s => s.classList.toggle('active', s.getAttribute('data-view') === v));
@@ -1669,6 +1670,7 @@ async function renderDesglose() {
 
 function switchDesgloseTab(tabName) {
   DG.activeTab = tabName;
+  document.body.classList.toggle('cr-workbook-active', tabName === 'pyg');
   DG._tabs.forEach(t => t.classList.toggle('active', t.getAttribute('data-tab') === tabName));
   $$('.excel-panel').forEach(p => p.classList.toggle('active', p.getAttribute('data-tab-panel') === tabName));
   loadDesgloseTab(tabName);
@@ -2489,7 +2491,9 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 
-// ── Cuenta de resultados mensual estilo Excel ───────────────────────
+// ── Libro financiero reconstruido desde la referencia Excel ─────────
+const CR = { data: null, sheet: 'resumen' };
+
 function crMonthLabel(key) {
   const [y,m] = key.split('-');
   const names = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
@@ -2507,31 +2511,108 @@ function crNumber(value, percentage=false) {
   const rounded = Math.round(Math.abs(n)).toString().replace(/\B(?=(\d{3})+(?!\d))/g,'.');
   return `${n < 0 ? '-' : ''}${rounded}`;
 }
-function crRenderRow(row, columns, parentCode=null) {
+function crColumnName(index) {
+  let name = '';
+  for (let n = index + 1; n; n = Math.floor((n - 1) / 26)) name = String.fromCharCode(65 + ((n - 1) % 26)) + name;
+  return name;
+}
+
+function crRenderRow(row, columns, parentCode=null, rowNumber=1) {
   const percentage = row.kind === 'percentage';
   const unavailable = row.availability === 'unavailable';
   const classes = [`cr-kind-${row.kind || 'line'}`, row.section ? 'cr-section' : '', parentCode ? 'cr-child' : ''].filter(Boolean).join(' ');
   const parentAttr = parentCode ? ` data-parent="${esc(parentCode)}" style="display:none"` : '';
   const code = esc(row.code);
   let html = `<tr class="${classes}" data-code="${code}"${parentAttr}>`;
+  html += `<td class="cr-row-num">${rowNumber}</td>`;
   html += `<td class="cr-label" style="padding-left:${12 + (row.level||0)*18}px">${row.children && row.children.length ? `<button class="cr-chevron" aria-label="Mostrar desglose">+</button>` : ''}<span>${esc(row.label)}</span>${unavailable ? '<small class="cr-na">N/D</small>' : ''}</td>`;
   columns.forEach(col => {
     const value = unavailable ? null : (row.values || {})[col];
-    html += `<td class="cr-num ${value < 0 ? 'cr-negative' : ''}">${crNumber(value, percentage)}</td>`;
+    html += `<td class="cr-num ${value < 0 ? 'cr-negative' : ''}" data-formula="${value == null ? '' : esc(String(value))}">${crNumber(value, percentage)}</td>`;
   });
   html += '</tr>';
-  (row.children || []).forEach(child => { html += crRenderRow(child, columns, row.code); });
+  (row.children || []).forEach((child, index) => { html += crRenderRow(child, columns, row.code, `${rowNumber}.${index + 1}`); });
   return html;
 }
+
+function crTableHead(columns, title) {
+  const letters = ['A', ...columns.map((_, i) => crColumnName(i + 1))];
+  const years = columns.map(c => c === 'YTD' ? 'YTD' : c.slice(0,4));
+  const monthNumbers = columns.map(c => c === 'YTD' ? 'YTD' : Number(c.slice(5,7)));
+  return `<tr class="cr-col-letters"><th class="cr-corner"></th>${letters.map(l => `<th>${l}</th>`).join('')}</tr>` +
+    `<tr class="cr-head-period"><th></th><th></th>${columns.map(c => `<th>${c === 'YTD' ? 'YTD' : crMonthLabel(c)}</th>`).join('')}</tr>` +
+    `<tr class="cr-head-real"><th></th><th></th>${columns.map(() => '<th>REAL</th>').join('')}</tr>` +
+    `<tr class="cr-head-year"><th></th><th>${esc(title)}</th>${years.map(y => `<th>${y}</th>`).join('')}</tr>` +
+    `<tr class="cr-head-index"><th></th><th></th>${monthNumbers.map(m => `<th>${m}</th>`).join('')}</tr>` +
+    `<tr class="cr-head-month"><th></th><th>€</th>${columns.map(c => `<th>${c === 'YTD' ? 'YTD' : crMonthLabel(c)}</th>`).join('')}</tr>`;
+}
+
+function crCollectProviders(rows, columns) {
+  const merged = new Map();
+  function visit(row) {
+    if (row.kind === 'provider') {
+      const key = row.provider_key || row.label;
+      if (!merged.has(key)) merged.set(key, {code:`provider.${key}`, label:row.label, kind:'provider', level:0, values:{}});
+      const target = merged.get(key);
+      columns.forEach(col => { target.values[col] = Number(target.values[col] || 0) + Number((row.values || {})[col] || 0); });
+    }
+    (row.children || []).forEach(visit);
+  }
+  (rows || []).forEach(visit);
+  return [...merged.values()].sort((a,b) => Math.abs(b.values.YTD || 0) - Math.abs(a.values.YTD || 0));
+}
+
+function crCategoryRows(rows) {
+  return (rows || []).filter(row => row.section || row.kind === 'percentage').map(row => ({...row, children: row.children || []}));
+}
+
+function crBlankSheet() {
+  const head = $('#cr-head'), body = $('#cr-body');
+  const columns = Array.from({length:13}, (_,i) => crColumnName(i + 1));
+  head.innerHTML = `<tr class="cr-col-letters"><th class="cr-corner"></th><th>A</th>${columns.map(c=>`<th>${c}</th>`).join('')}</tr>`;
+  body.innerHTML = Array.from({length:32},(_,r) => `<tr><td class="cr-row-num">${r+1}</td><td class="cr-label cr-empty-cell"></td>${columns.map(()=>'<td class="cr-num cr-empty-cell"></td>').join('')}</tr>`).join('');
+}
+
+function crRenderSheet(sheet=CR.sheet) {
+  if (!CR.data) return;
+  CR.sheet = sheet;
+  $$('.cr-sheet-tab').forEach(tab => {
+    const active = tab.dataset.crSheet === sheet;
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  const allColumns = CR.data.columns || [];
+  let columns = allColumns, rows = CR.data.rows || [], title = 'A. Cuenta de resultados';
+  if (sheet === 'resumen') {
+    const monthCols = allColumns.filter(c => c !== 'YTD');
+    columns = [monthCols.at(-1), 'YTD'].filter(Boolean);
+    rows = (CR.data.rows || []).filter(row => row.section || row.kind === 'percentage');
+    title = 'Resumen Ejecutivo';
+  } else if (sheet === 'evolucion') {
+    title = 'Evolución Mensual';
+  } else if (sheet === 'proveedores') {
+    rows = crCollectProviders(CR.data.rows || [], allColumns);
+    title = 'Análisis Proveedores';
+  } else if (sheet === 'categorias') {
+    rows = crCategoryRows(CR.data.rows || []);
+    title = 'Por Categorías';
+  } else if (sheet === 'hoja5') {
+    crBlankSheet();
+    $('#cr-formula').textContent = '';
+    $('#cr-name-box').textContent = 'A1';
+    return;
+  }
+  $('#cr-head').innerHTML = crTableHead(columns, title);
+  $('#cr-body').innerHTML = rows.map((row,index) => crRenderRow(row, columns, null, index + 1)).join('') || '<tr><td class="cr-row-num">1</td><td class="muted">Sin datos para esta hoja.</td></tr>';
+  $('#cr-formula').textContent = title;
+  $('#cr-name-box').textContent = 'A1';
+}
 async function loadCuentaResultados() {
-  const selectedTo = $('#dg-to')?.value || new Date().toISOString().slice(0,10);
-  const targetYear = Number(selectedTo.slice(0,4)) || new Date().getFullYear();
-  const from = `${targetYear - 1}-12-01`;
-  const to = `${targetYear}-12-31`;
-  if ($('#dg-from')) $('#dg-from').value = from;
-  if ($('#dg-to')) $('#dg-to').value = to;
-  DG.filters.date_from = from;
-  DG.filters.date_to = to;
+  const today = new Date().toISOString().slice(0,10);
+  const selectedTo = $('#dg-to')?.value || today;
+  const to = selectedTo > today ? today : selectedTo;
+  const targetYear = Number(to.slice(0,4)) || new Date().getFullYear();
+  const from = `${targetYear}-01-01`;
   const cuenta = $('#dg-cuenta')?.value;
   const head = $('#cr-head'), body = $('#cr-body');
   if (!head || !body || !from || !to) return;
@@ -2540,15 +2621,8 @@ async function loadCuentaResultados() {
     const params = new URLSearchParams({date_from: from, date_to: to});
     if (cuenta) params.set('cuenta', cuenta);
     const data = await getJSON('/api/gastos/cuenta-resultados?' + params.toString());
-    const cols = data.columns || [];
-    const years = cols.map(c => c === 'YTD' ? 'YTD' : c.slice(0,4));
-    const monthNumbers = cols.map(c => c === 'YTD' ? 'YTD' : Number(c.slice(5,7)));
-    head.innerHTML = `<tr class="cr-head-period"><th></th>${cols.map(c => `<th>${c === 'YTD' ? 'YTD' : crMonthLabel(c)}</th>`).join('')}</tr>` +
-      `<tr class="cr-head-real"><th></th>${cols.map(() => '<th>REAL</th>').join('')}</tr>` +
-      `<tr class="cr-head-year"><th>A. Cuenta de resultados</th>${years.map(y => `<th>${y}</th>`).join('')}</tr>` +
-      `<tr class="cr-head-index"><th></th>${monthNumbers.map(m => `<th>${m}</th>`).join('')}</tr>` +
-      `<tr class="cr-head-month"><th>€</th>${cols.map(c => `<th>${c === 'YTD' ? 'YTD' : crMonthLabel(c)}</th>`).join('')}</tr>`;
-    body.innerHTML = (data.rows || []).map(row => crRenderRow(row, cols)).join('');
+    CR.data = data;
+    crRenderSheet(CR.sheet);
     $('#cr-meta').textContent = `REAL · ${data.period.from} → ${data.period.to} · ${data.rows_used || 0} registros · importes en €`;
     const issues = data.issues || [];
     $('#cr-issues').innerHTML = issues.map(i => `<span class="cr-issue">ⓘ ${esc(i.message)}</span>`).join('');
@@ -2564,6 +2638,16 @@ async function loadCuentaResultados() {
       };
     }
     body.onclick = (event) => {
+      const cell = event.target.closest('td');
+      if (cell) {
+        $$('#cr-body td.cr-selected').forEach(el => el.classList.remove('cr-selected'));
+        cell.classList.add('cr-selected');
+        const row = cell.closest('tr');
+        const rowIndex = [...body.children].indexOf(row) + 1;
+        const colIndex = [...row.children].indexOf(cell);
+        $('#cr-name-box').textContent = `${crColumnName(Math.max(0,colIndex-1))}${rowIndex}`;
+        $('#cr-formula').textContent = cell.dataset.formula || cell.textContent.trim();
+      }
       const button = event.target.closest('.cr-chevron');
       if (!button) return;
       const row = button.closest('tr');
@@ -2573,6 +2657,11 @@ async function loadCuentaResultados() {
       children.forEach(el => { el.style.display = show ? 'table-row' : 'none'; });
       button.textContent = show ? '−' : '+';
     };
+    $$('.cr-sheet-tab').forEach(tab => {
+      if (tab._wired) return;
+      tab._wired = true;
+      tab.onclick = () => crRenderSheet(tab.dataset.crSheet);
+    });
   } catch (e) {
     body.innerHTML = `<tr><td class="state error">${esc(e.message)}</td></tr>`;
   }

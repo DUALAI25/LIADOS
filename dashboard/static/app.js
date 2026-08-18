@@ -763,8 +763,7 @@ const COMMANDS = [
   { id: 'nav:dashboard', label: 'Ir a Dashboard', icon: 'bar-chart-3', action: () => switchView('dashboard') },
   { id: 'nav:ventas', label: 'Ir a Ventas', icon: 'trending-up', action: () => switchView('ventas') },
   { id: 'nav:gastos', label: 'Ir a Gastos (resumen)', icon: 'file-text', action: () => switchView('gastos') },
-  { id: 'nav:gastos-detalle', label: 'Ir a Detalle gastos', icon: 'receipt', action: () => switchView('gastos-detalle') },
-  { id: 'nav:alertas', label: 'Ir a Alertas', icon: 'bell', action: () => switchView('alertas') },
+
   { id: 'nav:config', label: 'Ir a Configuración', icon: 'cog', action: () => switchView('config') },
   { id: 'act:chat', label: 'Abrir asistente AI', icon: 'message-circle', action: () => { if (!$('#chatPanel').classList.contains('open')) $('#chatFab').click(); $('#chatText').focus(); } },
   { id: 'act:refresh', label: 'Refrescar datos', icon: 'refresh-cw', action: () => { loadAll(); toast('Datos refrescados', 'success'); } },
@@ -956,36 +955,20 @@ function _getAuthHeaders() { return _authHeader(); }  // compat: usado por strea
 
 // ── Render ───────────────────────────────────────────────────────────────
 function renderHero() {
-  const k = DATA.kpis, comp = DATA.comp, sp = DATA.spark6m;
+  const k = DATA.kpis, comp = DATA.comp;
   const margin = k.margen_mes;
-  const dp = comp.margen.delta_pct;
-  const dpU = dp != null && dp >= 0;
-  $('#heroValue').className = 'hero-value ' + (margin >= 0 ? 'pos' : 'neg');
-  animateCount($('#heroValue'), margin, {decimals:2});
-  // delta (margen: subir = bueno)
-  $('#heroDelta').className = 'delta ' + (dp==null ? 'flat' : (dpU ? 'up' : 'down'));
-  $('#heroDelta').innerHTML = deltaInner(comp.margen.delta_pct);
-  const margenPct = k.ventas_mes ? (margin/k.ventas_mes*100) : 0;
-  $('#heroMeta').innerHTML = `
-    <div class="meta">Ventas <b>${eur(k.ventas_mes)}</b></div>
-    <div class="meta">Gastos <b>${eur(k.gastos_mes)}</b></div>
-    <div class="meta">Margen s/ventas <b>${margenPct.toFixed(1)}%</b></div>`;
-  // sparkline hero
-  const ctx = $('#heroSpark');
-  if (typeof Chart !== 'undefined' && ctx) {
-    if (charts.hero) charts.hero.destroy();
-    charts.hero = new Chart(ctx, {
-      type:'line',
-      data:{ labels: sp.map(r=>r.mes.slice(5)), datasets:[{
-        data: sp.map(r=>r.total_eur), borderColor: css('--blue'),
-        backgroundColor: 'rgba(59,130,246,.12)', fill:true, tension:.4,
-        pointRadius:0, borderWidth:2.5
-      }]},
-      options:{ responsive:true, maintainAspectRatio:false,
-        plugins:{ legend:{display:false}, tooltip:{ enabled:false } },
-        scales:{ x:{display:false}, y:{display:false} } }
-    });
-  }
+  const margenPct = k.ventas_mes ? (margin / k.ventas_mes * 100) : 0;
+  $('#financeSales').textContent = eur(k.ventas_mes);
+  $('#financeExpenses').textContent = eur(k.gastos_mes);
+  $('#heroValue').textContent = eur(margin);
+  $('#heroValue').className = margin >= 0 ? 'finance-positive' : 'finance-negative';
+  $('#financeSalesDelta').className = 'finance-delta ' + ((comp.ventas.delta_pct ?? 0) >= 0 ? 'good' : 'bad');
+  $('#financeSalesDelta').textContent = comp.ventas.delta_pct == null ? 'Sin período anterior' : `${comp.ventas.delta_pct >= 0 ? '▲' : '▼'} ${Math.abs(comp.ventas.delta_pct).toFixed(1)}%`;
+  $('#financeExpensesDelta').className = 'finance-delta ' + ((comp.gastos.delta_pct ?? 0) <= 0 ? 'good' : 'bad');
+  $('#financeExpensesDelta').textContent = comp.gastos.delta_pct == null ? 'Sin período anterior' : `${comp.gastos.delta_pct >= 0 ? '▲' : '▼'} ${Math.abs(comp.gastos.delta_pct).toFixed(1)}%`;
+  $('#heroDelta').className = 'finance-delta ' + (margin >= 0 ? 'good' : 'bad');
+  $('#heroDelta').textContent = `${margenPct.toFixed(1)}% sobre ventas`;
+  $('#heroMeta').innerHTML = `<span>${k.facturas_ventas} tickets procesados</span><span>${k.facturas_gastos} facturas de gasto</span>`;
 }
 
 function deltaInner(d) {
@@ -997,10 +980,10 @@ function deltaInner(d) {
 function renderKpis() {
   const k = DATA.kpis, comp = DATA.comp;
   const cards = [
-    { label:'Ventas mes', value:k.ventas_mes, color:'green', sub:`${k.facturas_ventas} facturas`, delta:comp.ventas.delta_pct, deltaGood: v=>v>=0 },
-    { label:'Gastos mes', value:k.gastos_mes, color:'red', sub:`${k.facturas_gastos} facturas`, delta:comp.gastos.delta_pct, deltaGood: v=>v<0 },
-    { label:'IVA repercutido', value:k.iva_mes, color:'blue', sub:'Soportado sobre ventas', delta:null },
-    { label:'Delivery', value:k.delivery_mes, color:'yellow', sub:'Comisiones reparto', delta:null },
+    { label:'Ventas netas', value:k.ventas_mes, color:'green', sub:`${k.facturas_ventas} tickets · mes actual`, delta:comp.ventas.delta_pct, deltaGood: v=>v>=0 },
+    { label:'Gastos operativos', value:k.gastos_mes, color:'red', sub:`${k.facturas_gastos} facturas · mes actual`, delta:comp.gastos.delta_pct, deltaGood: v=>v<0 },
+    { label:'Margen operativo', value:k.margen_mes, color:'blue', sub:'Ventas menos gastos', delta:comp.margen.delta_pct, deltaGood: v=>v>=0 },
+    { label:'Tickets procesados', value:k.facturas_ventas, color:'yellow', sub:'Ventas contabilizadas', delta:null },
   ];
   $('#kpis').innerHTML = cards.map((c,i) => {
     let dhtml = '';
@@ -1137,11 +1120,16 @@ function renderRest() {
   renderBars('#proveedores', DATA.proveedores, r=>'#8b5cf6', r=>(r.proveedor||'').slice(0,18), r=>r.total_eur, r=>`${r.facturas} fc.`);
   // Categorías
   renderBars('#categorias', DATA.categorias, r=>r.color||'#6b7280', r=>(r.categoria||'').slice(0,15), r=>r.total_eur, r=>`${r.facturas} fc.`);
-  // Facturas recientes
-  $('#facturas').innerHTML = `<div class="table-wrap"><table>
-    <thead><tr><th>Nº</th><th>Fecha</th><th>Cliente</th><th>Canales</th><th class="num">Total</th></tr></thead>
-    <tbody>${DATA.facturas.map(f=>{const tags=(f.canales||'').split(',').map(x=>x.trim()).filter(Boolean).map(x=>`<span class="tag tag-${x}">${icon(ICONS[x]||'')} <span>${x}</span></span>`).join(' ');return `<tr><td>${esc(f.number||'')}</td><td>${esc(f.fecha||'')}</td><td>${esc(f.cliente||'')}</td><td>${tags}</td><td class="num"><b>${eur(f.total_eur)}</b></td></tr>`;}).join('')}</tbody>
-  </table></div>`;
+
+}
+
+function ensureHomeDataBlocks() {
+  if (DATA.proveedores?.length && !$('#proveedores')?.children.length) {
+    renderBars('#proveedores', DATA.proveedores, r=>'#8b5cf6', r=>(r.proveedor||'').slice(0,18), r=>r.total_eur, r=>`${r.facturas} fc.`);
+  }
+  if (DATA.categorias?.length && !$('#categorias')?.children.length) {
+    renderBars('#categorias', DATA.categorias, r=>r.color||'#6b7280', r=>(r.categoria||'').slice(0,15), r=>r.total_eur, r=>`${r.facturas} fc.`);
+  }
 }
 
 function buildCanalFilter() {
@@ -1154,15 +1142,15 @@ function buildCanalFilter() {
 
 // ── Carga principal ──────────────────────────────────────────────────────
 async function loadAll(opts = {}) {
-  const [kpis, comp, canalMes, canalMeses, margen, ingresos, proveedores, facturas, categorias, localesMes, dia, spark6m] = await Promise.all([
+  const [kpis, comp, canalMes, canalMeses, margen, ingresos, proveedores, categorias, localesMes, dia, spark6m] = await Promise.all([
     getJSON('/api/kpis'), getJSON('/api/kpis-comparativa'),
     getJSON('/api/ventas-por-canal'), getJSON('/api/canal-por-mes'),
     getJSON('/api/margen-por-mes'), getJSON('/api/ingresos-por-mes'),
-    getJSON('/api/gastos-por-proveedor'), getJSON('/api/facturas-recientes'),
-    getJSON('/api/gastos-por-categoria'), getJSON('/api/ventas-por-local'),
+    getJSON('/api/gastos-por-proveedor'), getJSON('/api/gastos-por-categoria'),
+    getJSON('/api/ventas-por-local'),
     getJSON('/api/ventas-por-dia?days=30'), getJSON('/api/ingresos-6m'),
   ]);
-  DATA = { kpis, comp, canalMes, canalMeses, margen, ingresos, proveedores, facturas, categorias, localesMes, dia, spark6m };
+  DATA = { kpis, comp, canalMes, canalMeses, margen, ingresos, proveedores, categorias, localesMes, dia, spark6m };
   // Mostrar "última sync"
   $('#syncTime').textContent = 'hace unos segundos';
   renderHero();
@@ -1171,6 +1159,7 @@ async function loadAll(opts = {}) {
   renderCharts();
   renderRest();
   wireBarDrillDown();
+  requestAnimationFrame(ensureHomeDataBlocks);
 }
 
 // ── MoM toggle (chart diario) ────────────────────────────────────────────
@@ -1512,7 +1501,7 @@ function initShortcuts() {
       pendingG = false;
       clearTimeout(pendingGTimer);
       const k = e.key.toLowerCase();
-      const map = { d:'dashboard', v:'ventas', g:'gastos', a:'alertas', b:'desglose', c:'config' };
+      const map = { d:'dashboard', v:'ventas', g:'gastos', b:'desglose', c:'config' };
       if (map[k]) { e.preventDefault(); switchView(map[k]); return; }
     }
     if (e.key.toLowerCase() === 'g') {
@@ -1544,8 +1533,6 @@ function init() {
   applyChartTheme();
   $('#themeToggle').onclick = toggleTheme;
   tick(); setInterval(tick, 30000);
-  // v7.1 PRO: badge de alertas en sidebar SI se carga al init() (no esperar a abrir vista)
-  loadAlertBadge().catch(() => {});
 
   loadAll().catch(e => {
     $$('.card-body, .kpis, .hero').forEach(el => { el.style.opacity=1; });
@@ -1609,7 +1596,8 @@ if (document.readyState === 'loading') {
 // ── v8.0 PRO: Desglose Excel-style ──────────────────────────────────
 
 const DG = {
-  activeTab: 'resumen',
+  // La entrada principal replica directamente el libro de los vídeos.
+  activeTab: 'pyg',
   filters: {},
   _tabs: null,
 };
@@ -1664,8 +1652,9 @@ async function renderDesglose() {
   wireCalendarControls();
   wireCompareControls();
 
-  // Cargar pestaña activa (Resumen por defecto)
-  loadDesgloseTab(DG.activeTab);
+  // Abrir directamente el libro financiero; el resto queda disponible
+  // como herramientas auxiliares en las pestañas superiores.
+  switchDesgloseTab(DG.activeTab);
 }
 
 function switchDesgloseTab(tabName) {
@@ -2492,7 +2481,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
 // ── Libro financiero reconstruido desde la referencia Excel ─────────
-const CR = { data: null, sheet: 'resumen' };
+const CR = { data: null, sheet: 'resumen', month: '' };
 
 function crMonthLabel(key) {
   const [y,m] = key.split('-');
@@ -2585,16 +2574,18 @@ function crRenderSheet(sheet=CR.sheet) {
   let columns = allColumns, rows = CR.data.rows || [], title = 'A. Cuenta de resultados';
   if (sheet === 'resumen') {
     const monthCols = allColumns.filter(c => c !== 'YTD');
-    columns = [monthCols.at(-1), 'YTD'].filter(Boolean);
+    columns = [CR.month || monthCols.at(-1), 'YTD'].filter(Boolean);
     rows = (CR.data.rows || []).filter(row => row.section || row.kind === 'percentage');
     title = 'Resumen Ejecutivo';
   } else if (sheet === 'evolucion') {
     title = 'Evolución Mensual';
   } else if (sheet === 'proveedores') {
     rows = crCollectProviders(CR.data.rows || [], allColumns);
+    if (CR.month) columns = [CR.month, 'YTD'];
     title = 'Análisis Proveedores';
   } else if (sheet === 'categorias') {
     rows = crCategoryRows(CR.data.rows || []);
+    if (CR.month) columns = [CR.month, 'YTD'];
     title = 'Por Categorías';
   } else if (sheet === 'hoja5') {
     crBlankSheet();
@@ -2609,10 +2600,12 @@ function crRenderSheet(sheet=CR.sheet) {
 }
 async function loadCuentaResultados() {
   const today = new Date().toISOString().slice(0,10);
+  const selectedFrom = $('#dg-from')?.value || '';
   const selectedTo = $('#dg-to')?.value || today;
   const to = selectedTo > today ? today : selectedTo;
   const targetYear = Number(to.slice(0,4)) || new Date().getFullYear();
-  const from = `${targetYear}-01-01`;
+  const defaultFrom = `${targetYear}-01-01`;
+  const from = selectedFrom && selectedFrom <= to ? selectedFrom : defaultFrom;
   const cuenta = $('#dg-cuenta')?.value;
   const head = $('#cr-head'), body = $('#cr-body');
   if (!head || !body || !from || !to) return;
@@ -2622,10 +2615,22 @@ async function loadCuentaResultados() {
     if (cuenta) params.set('cuenta', cuenta);
     const data = await getJSON('/api/gastos/cuenta-resultados?' + params.toString());
     CR.data = data;
+    const monthFilter = $('#cr-month-filter');
+    if (monthFilter) {
+      const months = (data.columns || []).filter(c => c !== 'YTD');
+      const previous = CR.month;
+      monthFilter.innerHTML = '<option value="">Todos los meses</option>' + months.map(c => `<option value="${esc(c)}">${crMonthLabel(c)}</option>`).join('');
+      CR.month = months.includes(previous) ? previous : '';
+      monthFilter.value = CR.month;
+      if (!monthFilter._wired) {
+        monthFilter._wired = true;
+        monthFilter.onchange = () => { CR.month = monthFilter.value; crRenderSheet(CR.sheet); };
+      }
+    }
     crRenderSheet(CR.sheet);
     $('#cr-meta').textContent = `REAL · ${data.period.from} → ${data.period.to} · ${data.rows_used || 0} registros · importes en €`;
-    const issues = data.issues || [];
-    $('#cr-issues').innerHTML = issues.map(i => `<span class="cr-issue">ⓘ ${esc(i.message)}</span>`).join('');
+    const issues = (data.issues || []).filter(i => i.level && i.level !== 'info');
+    $('#cr-issues').innerHTML = issues.map(i => `<span class="cr-issue">${icon('alert-triangle','ico ico-xs')} ${esc(i.message)}</span>`).join('');
     const reload = $('#cr-reload');
     if (reload && !reload._wired) { reload._wired = true; reload.onclick = loadCuentaResultados; }
     const expand = $('#cr-expand-all');

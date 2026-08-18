@@ -37,6 +37,17 @@ def test_iva_is_separated_from_net_sales():
  assert out["totals"]["iva_gastos"]==36.0
 
 
+def test_marketplace_legal_names_are_grouped_as_commissions():
+    invoices = [
+        {"invoice_date":"2026-01-05", "vendor_name":"Glovoapp Spain Platform S.L.", "category_raw":"Restauración y Hostelería", "total_amount":10.0, "base_amount":10.0, "tax_amount":0.0},
+        {"invoice_date":"2026-01-06", "vendor_name":"Uber Eats España S.L.", "category_raw":"Otros", "total_amount":20.0, "base_amount":20.0, "tax_amount":0.0},
+        {"invoice_date":"2026-01-07", "vendor_name":"LastShop, S.L.", "category_raw":"Otros", "total_amount":30.0, "base_amount":30.0, "tax_amount":0.0},
+    ]
+    out = build_cuenta_resultados(invoices, SALES, "2026-01-01", "2026-02-28")
+    assert out["totals"]["comisiones"] == 60.0
+    assert out["totals"]["otros_explotacion"] == 0.0
+
+
 def test_reference_sales_rows_channels_and_ytd_exclude_previous_december():
     sales = [
         {"invoice_date":"2025-12-10","total_amount":55.0,"base_amount":50.0,"tax_amount":5.0,"discount_amount":0.0},

@@ -98,11 +98,11 @@ class TestDashboardE2E:
         response = auth_page.goto(f"{BASE_URL}/", wait_until="networkidle")
         assert response.status == 200
         auth_page.locator('.nav-item[data-view="desglose"]').click()
+        auth_page.locator(".cr-workbook").wait_for(state="visible")
         filters_before = (
             auth_page.locator("#dg-from").input_value(),
             auth_page.locator("#dg-to").input_value(),
         )
-        auth_page.locator('.excel-tab[data-tab="pyg"]').click()
         auth_page.locator(".cr-workbook").wait_for(state="visible")
         auth_page.locator("#cr-body tr:not(:has(.muted))").first.wait_for(state="visible")
         assert (
@@ -118,6 +118,17 @@ class TestDashboardE2E:
             "Hoja5",
         ]
         assert auth_page.locator("#cr-body tr").count() >= 8
+        ebitda_row = auth_page.locator('#cr-body tr[data-code="ebitda"]')
+        assert ebitda_row.count() == 1
+        assert ebitda_row.locator("td").first.evaluate("el => getComputedStyle(el).backgroundColor") == "rgb(18, 25, 38)"
+        assert auth_page.locator("#cr-month-filter option").count() >= 9
+        auth_page.locator("#cr-month-filter").select_option("2026-03")
+        auth_page.locator('[data-cr-sheet="categorias"]').click()
+        month_headers = auth_page.locator("#cr-head .cr-head-month th").all_text_contents()
+        assert "mar-26" in month_headers and "YTD" in month_headers, month_headers
+        auth_page.locator('[data-cr-sheet="evolucion"]').click()
+        assert auth_page.locator("#cr-head .cr-head-month th").count() >= 10
+        auth_page.locator("#cr-month-filter").select_option("")
         auth_page.locator('[data-cr-sheet="evolucion"]').click()
         assert auth_page.locator("#cr-head .cr-head-month th").count() >= 3
         auth_page.locator('[data-cr-sheet="proveedores"]').click()
@@ -135,3 +146,14 @@ class TestDashboardE2E:
         sidebar = auth_page.locator("#sidebar")
         assert not sidebar.evaluate("el => el.classList.contains('open')")
         assert sidebar.evaluate("el => el.getBoundingClientRect().right") <= 0
+
+    def test_12_clean_dashboard_has_no_noise_surfaces(self, auth_page: Page):
+        response = auth_page.goto(f"{BASE_URL}/", wait_until="networkidle")
+        assert response.status == 200
+        auth_page.locator(".finance-overview").wait_for(state="visible")
+        assert auth_page.locator(".finance-metrics article").count() == 3
+        assert auth_page.locator("#kpis").evaluate("el => getComputedStyle(el).display") == "none"
+        assert auth_page.locator("#sidebar").evaluate("el => getComputedStyle(el).backgroundColor") == "rgb(18, 25, 38)"
+        assert auth_page.locator('.nav-item[data-view="alertas"]').count() == 0
+        assert auth_page.locator('#last-invoice-card').count() == 0
+        assert auth_page.locator('.home-secondary-noise:visible').count() == 0

@@ -265,6 +265,7 @@ def expense_filter(alias: str = "") -> str:
         f"{p('type')} = 'expense' AND {p('status')} != 'rejected' "
         f"AND {p('is_invoice')} = true "
         f"AND COALESCE({p('category_raw')}, '') NOT IN ('nomina', 'administrativo', 'basura') "
+        f"AND COALESCE({p('category_raw')}, '') NOT LIKE 'TEST_CAT_DEL_%%' "
         f"AND {p('invoice_date')} IS NOT NULL "
         f"AND {p('vendor_name')} IS NOT NULL"
     )
@@ -1189,6 +1190,7 @@ def api_gastos_pyg(
             WHERE i.invoice_date >= %s AND i.invoice_date <= %s
               {("AND i.source_account = %s" if p_cuenta else "")}
               AND i.status != 'void'
+              AND COALESCE(i.category_raw, '') NOT LIKE 'TEST_CAT_DEL_%%'
               AND i.is_invoice = true
             ORDER BY i.invoice_date
             LIMIT 20000
@@ -1293,7 +1295,7 @@ def api_cuenta_resultados(
     cache_key = _desglose_safe_cache_key("cuenta-resultados", [], "sum", df, dt, cuenta, None, None, None, user)
     cached = _cache_get(cache_key)
     if cached is not None: return cached
-    sql = """SELECT i.invoice_date::text AS invoice_date,i.vendor_name,COALESCE(c.name,i.category_raw) AS category_raw,i.total_amount,i.base_amount,i.tax_amount,i.source_account FROM invoices i LEFT JOIN categories c ON c.id=i.category_id WHERE i.invoice_date BETWEEN %s AND %s AND i.is_invoice=true AND i.status NOT IN ('rejected','duplicate','void')"""
+    sql = """SELECT i.invoice_date::text AS invoice_date,i.vendor_name,COALESCE(c.name,i.category_raw) AS category_raw,i.total_amount,i.base_amount,i.tax_amount,i.source_account FROM invoices i LEFT JOIN categories c ON c.id=i.category_id WHERE i.invoice_date BETWEEN %s AND %s AND i.is_invoice=true AND i.status NOT IN ('rejected','duplicate','void') AND COALESCE(i.category_raw, '') NOT LIKE 'TEST_CAT_DEL_%%'"""
     params = [df, dt]
     if cuenta: sql += " AND i.source_account=%s"; params.append(cuenta)
     invoice_rows = q(sql + " ORDER BY i.invoice_date LIMIT 50000", tuple(params))
@@ -1301,7 +1303,28 @@ def api_cuenta_resultados(
     channel_rows = []
     if not cuenta or cuenta.lower() == "principal":
         sales_rows = q("""SELECT COALESCE(finalizing_time,creation_time)::date::text AS invoice_date,'Last.app' AS vendor_name,'Ventas' AS category_raw,total_cents::numeric/100.0 AS total_amount,taxable_base_cents::numeric/100.0 AS base_amount,tax_cents::numeric/100.0 AS tax_amount,discount_total_cents::numeric/100.0 AS discount_amount FROM lastapp_bills WHERE deleted=false AND COALESCE(finalizing_time,creation_time)::date BETWEEN %s AND %s ORDER BY COALESCE(finalizing_time,creation_time) LIMIT 50000""", (df, dt))
-        channel_rows = q("""SELECT COALESCE(b.finalizing_time,b.creation_time)::date::text AS invoice_date,p.type AS channel,SUM(p.amount_cents)::numeric/100.0 AS amount_gross,SUM(p.amount_cents::numeric*b.taxable_base_cents/NULLIF(b.total_cents,0))/100.0 AS amount_net FROM lastapp_payments p JOIN lastapp_bills b ON b.id=p.bill_id WHERE p.deleted=false AND b.deleted=false AND COALESCE(b.finalizing_time,b.creation_time)::date BETWEEN %s AND %s GROUP BY 1,p.type ORDER BY 1,p.type""", (df, dt))
+        channel_rows = q("""WITH eligible_payments AS (
+              SELECT p.bill_id, p.type AS channel, p.amount_cents::numeric AS amount_cents,
+                     b.total_cents::numeric AS bill_total, b.taxable_base_cents::numeric AS taxable_base,
+                     COALESCE(b.finalizing_time,b.creation_time)::date AS sale_date
+              FROM lastapp_payments p
+              JOIN lastapp_bills b ON b.id=p.bill_id
+              WHERE p.deleted=false AND b.deleted=false
+                AND COALESCE(b.finalizing_time,b.creation_time)::date BETWEEN %s AND %s
+            ), bill_payment_totals AS (
+              SELECT bill_id, MAX(bill_total) AS bill_total, SUM(amount_cents) AS paid_total
+              FROM eligible_payments GROUP BY bill_id
+            )
+            SELECT ep.sale_date::text AS invoice_date, ep.channel,
+                   SUM(CASE WHEN bt.paid_total > bt.bill_total
+                            THEN ep.amount_cents * bt.bill_total / NULLIF(bt.paid_total,0)
+                            ELSE ep.amount_cents END)/100.0 AS amount_gross,
+                   SUM((CASE WHEN bt.paid_total > bt.bill_total
+                             THEN ep.amount_cents * bt.bill_total / NULLIF(bt.paid_total,0)
+                             ELSE ep.amount_cents END) * ep.taxable_base / NULLIF(ep.bill_total,0))/100.0 AS amount_net
+            FROM eligible_payments ep
+            JOIN bill_payment_totals bt ON bt.bill_id=ep.bill_id
+            GROUP BY ep.sale_date, ep.channel ORDER BY ep.sale_date, ep.channel""", (df, dt))
     out = build_cuenta_resultados(invoice_rows, sales_rows, df, dt, cuenta=cuenta, channel_rows=channel_rows)
     out["generated_at"] = _dt.utcnow().isoformat() + "Z"
     _cache_put(cache_key, out)
@@ -1819,12 +1842,9 @@ INDEX_HTML = """<!DOCTYPE html>
       <a class="nav-item active" data-view="dashboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg><span class="nav-label">Dashboard</span></a>
       <a class="nav-item" data-view="ventas"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg><span class="nav-label">Ventas</span></a>
       <a class="nav-item" data-view="gastos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg><span class="nav-label">Gastos</span></a>
-      <a class="nav-item" data-view="gastos-detalle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg><span class="nav-label">Detalle gastos</span></a>
-      <a class="nav-item" data-view="alertas"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg><span class="nav-label">Alertas</span><span class="nav-badge" id="nav-alert-badge"></span></a>
+
       <a class="nav-item" data-view="desglose"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg><span class="nav-label">Desglose</span><span class="kbd-inline">g → b</span></a>
-      <div class="nav-section-label">Restaurante</div>
-      <a class="nav-item" data-view="productos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18M16 10a4 4 0 0 1-8 0"/></svg><span class="nav-label">Productos</span></a>
-      <div class="nav-section-label">Sistema</div>
+
       <a class="nav-item" data-view="config"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span class="nav-label">Configuración</span></a>
     </nav>
     <div class="sidebar-foot">
@@ -1845,29 +1865,18 @@ INDEX_HTML = """<!DOCTYPE html>
 
    <!-- ── Main ── -->
    <main class="main">
-   <div id="last-invoice-card" data-loading="1">Cargando última factura extraída...</div>
-   <script>
-    // B3: Cargar la card server-rendered. Usa misma auth que el resto de la app.
-    window.addEventListener("load", () => {
-      if (typeof _fetchAuth !== "function") return;
-      _fetchAuth("/api/invoices/last-invoice-card")
-        .then(r => r.ok ? r.text() : Promise.reject(new Error("HTTP "+r.status)))
-        .then(html => { const el = document.getElementById("last-invoice-card"); if (el) el.innerHTML = html; })
-        .catch(() => { const el = document.getElementById("last-invoice-card"); if (el) el.innerHTML = ""; });
-    });
-   </script>
 
     <!-- ═══ Vista: Dashboard ═══ -->
     <section class="view active" data-view="dashboard">
-    <!-- Hero -->
-    <section class="hero">
-      <div>
-        <div class="hero-label"><span class="hero-icon">__ICON__euro__</span> Margen del mes</div>
-        <div class="hero-value pos" id="heroValue">0€</div>
-        <div style="margin-bottom:var(--s-2)"><span class="delta flat" id="heroDelta">—</span></div>
-        <div class="hero-meta" id="heroMeta"></div>
+    <!-- Resumen financiero estilo ERP -->
+    <section class="finance-overview">
+      <div class="finance-overview-head"><h1>Tus finanzas</h1><span>Mes actual</span></div>
+      <div class="finance-metrics">
+        <article><span>Ingresos</span><strong id="financeSales">—</strong><small id="financeSalesDelta">—</small></article>
+        <article><span>Gastos</span><strong id="financeExpenses">—</strong><small id="financeExpensesDelta">—</small></article>
+        <article><span>Resultado operativo</span><strong id="heroValue">—</strong><small id="heroDelta">—</small></article>
       </div>
-      <div class="hero-spark"><canvas id="heroSpark"></canvas></div>
+      <div class="hero-meta" id="heroMeta"></div>
     </section>
 
     <!-- KPIs -->
@@ -1882,14 +1891,14 @@ INDEX_HTML = """<!DOCTYPE html>
         <div class="card-body"><div class="chart-wrap tall"><canvas id="chart-canales"></canvas></div></div>
       </div>
 
-      <div class="card grid-full">
+      <div class="card grid-full home-secondary-noise">
         <div class="card-head"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg><h2>Tendencia diaria</h2><span class="subtitle">últimos 30 días</span>
           <div class="actions"><div class="seg-group"><button id="momToggle">vs mes anterior</button></div></div>
         </div>
         <div class="card-body"><div class="chart-wrap"><canvas id="chart-diario"></canvas></div></div>
       </div>
 
-      <div class="card">
+      <div class="card home-secondary-noise">
         <div class="card-head"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg><h2>Canales este mes</h2></div>
         <div class="card-body"><div class="bars" id="canal-mes"></div></div>
       </div>
@@ -1904,7 +1913,7 @@ INDEX_HTML = """<!DOCTYPE html>
         <div class="card-body"><div id="margen"></div></div>
       </div>
 
-      <div class="card">
+      <div class="card home-secondary-noise">
         <div class="card-head"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg><h2>Ingresos por mes</h2><div class="actions"><a class="icon-btn sm" href="/api/export/ingresos" title="Exportar CSV" download><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a></div></div>
         <div class="card-body" id="ingresos"></div>
       </div>
@@ -1919,10 +1928,7 @@ INDEX_HTML = """<!DOCTYPE html>
         <div class="card-body"><div class="bars" id="categorias"></div></div>
       </div>
 
-      <div class="card grid-full">
-        <div class="card-head"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h4"/></svg><h2>Últimas facturas</h2><div class="actions"><a class="icon-btn sm" href="/api/export/facturas" title="Exportar CSV" download><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a></div></div>
-        <div class="card-body" id="facturas"></div>
-      </div>
+
     </div>
     </section><!-- /view dashboard -->
 
@@ -2056,61 +2062,11 @@ INDEX_HTML = """<!DOCTYPE html>
       </div>
     </section>
 
-    <!-- ═══ Vista: Alertas (nueva v6) ═══ -->
-    <section class="view" data-view="alertas">
-      <div class="al-header">
-        <div>
-          <h2>__ICON__bell__ Alertas y anomalías</h2>
-          <span class="subtitle">Detector automático · Última actualización: <span id="al-generated">—</span></span>
-        </div>
-        <div class="al-header-actions">
-          <button class="btn ghost" id="al-bulk-ack" style="display:none">✓ Marcar todas como revisadas</button>
-          <div class="al-resumen" id="al-resumen"></div>
-        </div>
-      </div>
-      <div id="al-list" class="al-list">
-        <div class="skeleton-card" aria-hidden="true"></div>
-        <div class="skeleton-card" aria-hidden="true"></div>
-      </div>
-    </section>
 
     <!-- ═══ Vista: Desglose (nueva v8) ═══ -->
     <section class="view" data-view="desglose">
-      <!-- Tabs estilo Excel -->
-      <div class="excel-tabs" id="excel-tabs">
-        <button class="excel-tab active" data-tab="resumen">
-          <span class="excel-tab-ico">__ICON__layout-grid__</span>
-          <span>Resumen</span>
-        </button>
-        <button class="excel-tab" data-tab="analisis">
-          <span class="excel-tab-ico">__ICON__bar-chart-2__</span>
-          <span>Análisis (matriz)</span>
-        </button>
-        <button class="excel-tab" data-tab="top">
-          <span class="excel-tab-ico">__ICON__trophy__</span>
-          <span>Top N</span>
-        </button>
-        <button class="excel-tab" data-tab="calendario">
-          <span class="excel-tab-ico">__ICON__calendar__</span>
-          <span>Calendario</span>
-        </button>
-        <button class="excel-tab" data-tab="comparar">
-          <span class="excel-tab-ico">__ICON__scale__</span>
-          <span>Comparar</span>
-        </button>
-        <button class="excel-tab" data-tab="pyg">
-          <span class="excel-tab-ico">__ICON__coins__</span>
-          <span>Cuenta de resultados</span>
-        </button>
-        <div class="excel-tabs-spacer"></div>
-        <button class="excel-tab-excel" id="desglose-export-btn" title="Exportar pestaña activa a CSV">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          <span>CSV</span>
-        </button>
-      </div>
-
-      <!-- Filtros globales persistentes -->
-      <div class="card gd-filters">
+      <!-- Controles mínimos del libro -->
+      <div class="card gd-filters cr-toolbar">
         <div class="gd-filter-row">
           <label class="gd-field"><span>Desde</span><input type="date" id="dg-from"></label>
           <label class="gd-field"><span>Hasta</span><input type="date" id="dg-to"></label>
@@ -2121,7 +2077,7 @@ INDEX_HTML = """<!DOCTYPE html>
               <option value="secundaria">secundaria</option>
             </select>
           </label>
-          <button class="btn primary" id="dg-apply">__ICON__refresh-cw__ Aplicar a todas las pestañas</button>
+          <button class="btn primary" id="dg-apply">__ICON__refresh-cw__ Actualizar datos</button>
           <span class="dg-gen-at" id="dg-gen-at"></span>
         </div>
       </div>
@@ -2278,28 +2234,14 @@ INDEX_HTML = """<!DOCTYPE html>
       <!-- TAB: Libro financiero reconstruido desde la referencia Excel -->
       <div class="excel-panel" data-tab-panel="pyg">
         <div class="cr-workbook" id="cr-workbook">
-          <div class="cr-titlebar">
-            <div class="cr-quick-access" aria-hidden="true">⌄&nbsp;&nbsp;↶&nbsp;&nbsp;↷</div>
-            <strong>LIA029_Analisis Costes</strong>
-            <span>Guardado</span>
-            <div class="cr-window-actions" aria-hidden="true">—&nbsp;&nbsp;□&nbsp;&nbsp;×</div>
-          </div>
-          <div class="cr-ribbon-tabs" role="presentation">
-            <span>Archivo</span><span class="active">Inicio</span><span>Insertar</span><span>Dibujar</span><span>Disposición de página</span><span>Fórmulas</span><span>Datos</span><span>Revisar</span><span>Vista</span><span>Automatizar</span><span>Ayuda</span>
-          </div>
-          <div class="cr-ribbon" aria-hidden="true">
-            <div class="cr-ribbon-block"><b>Pegar</b><small>Portapapeles</small></div>
-            <div class="cr-ribbon-block cr-font-block"><b>Aptos&nbsp;&nbsp; 10</b><span>B&nbsp;&nbsp; I&nbsp;&nbsp; U&nbsp;&nbsp; ▦</span><small>Fuente</small></div>
-            <div class="cr-ribbon-block"><span>☰&nbsp;&nbsp;≡&nbsp;&nbsp;⇆</span><small>Alineación</small></div>
-            <div class="cr-ribbon-block"><b>General</b><span>%&nbsp;&nbsp;€&nbsp;&nbsp;,00</span><small>Número</small></div>
-            <div class="cr-ribbon-block"><span>▤&nbsp;&nbsp;▥&nbsp;&nbsp;▦</span><small>Estilos</small></div>
-          </div>
+
           <div class="cr-formula-row">
             <span class="cr-name-box" id="cr-name-box">A1</span><span class="cr-fx">fx</span><span class="cr-formula" id="cr-formula">A. Cuenta de resultados</span>
           </div>
           <div class="cr-meta-line">
             <span id="cr-meta">REAL · importes en € · fuente: Last.app + facturas</span>
-            <div class="cr-actions"><button class="cr-sheet-button" id="cr-expand-all">Expandir detalle</button><button class="cr-sheet-button primary" id="cr-reload">Actualizar</button></div>
+            <label class="cr-month-filter"><span>Separar por mes</span><select id="cr-month-filter"><option value="">Todos los meses</option></select></label>
+            <div class="cr-actions"><button class="cr-sheet-button" id="cr-expand-all">Expandir detalle</button></div>
           </div>
           <div class="cr-issues" id="cr-issues"></div>
           <div class="cr-grid-shell">

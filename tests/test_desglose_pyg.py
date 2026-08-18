@@ -82,6 +82,16 @@ class TestClassification:
         # Regex match
         assert classify_factura("Otro", "uber eats") == "comisiones"
 
+    def test_marketplace_legal_names_land_in_commissions(self):
+        assert classify_factura("Restauración y Hostelería", "Glovoapp Spain Platform S.L.") == "comisiones"
+        assert classify_factura("Otros", "Uber Eats España S.L.") == "comisiones"
+        assert classify_factura("Otros", "LastShop, S.L.") == "comisiones"
+
+    def test_marketplace_matching_rejects_similar_unrelated_names(self):
+        assert classify_factura("Otros", "Glovox S.L.") != "comisiones"
+        assert classify_factura("Otros", "LastShopping S.L.") != "comisiones"
+        assert classify_factura("Otros", "Uber Technologies Spain S.L.") != "comisiones"
+
     def test_clasificacion_personal(self):
         assert classify_factura("Nóminas", "Nómina Ana") == "personal"
         assert classify_factura("Seguridad Social", "TGSS") == "personal"

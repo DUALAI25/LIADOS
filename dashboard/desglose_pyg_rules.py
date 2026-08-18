@@ -55,11 +55,11 @@ DEFAULT_RULES: dict[str, dict[str, list[str]]] = {
             "Comisiones", "Marketplace", "Marketplaces", "Plataformas",
         ],
         "vendors_any": [
-            "Glovo", "Glovoapp", "Uber Eats", "UberEats", "Uber",
+            "Glovo", "Glovoapp", "Uber Eats", "UberEats",
             "LastShop", "Last Shop", "Just Eat", "Deliveroo",
             "PedidosYa", "DoorDash",
         ],
-        "vendor_regex": [r"^uber\s*eats$", r"^uber$", r".*deliveroo.*"],
+        "vendor_regex": [r"^(?:uber|uber\s+eats(?:\s+.*)?)$", r".*deliveroo.*"],
     },
     "personal": {
         "categories": [
@@ -150,7 +150,14 @@ def classify_factura(
             continue
         if rule.get("categories") and any(_norm(c) == cat_n for c in rule["categories"]):
             return bucket
-        if rule.get("vendors_any") and any(_norm(v) == ven_n for v in rule["vendors_any"]):
+        # Las facturas reales suelen incluir razón social, país o forma
+        # societaria después del nombre comercial (p.ej. Glovoapp Spain
+        # Platform S.L.). La regla debe casar el nombre normalizado como
+        # fragmento, no exigir igualdad literal.
+        if rule.get("vendors_any") and any(
+            re.search(r"(?<!\w)" + re.escape(_norm(v)) + r"(?!\w)", ven_n)
+            for v in rule["vendors_any"]
+        ):
             return bucket
         if _matches_vendor_regex(ven_n, rule.get("vendor_regex", [])):
             return bucket

@@ -18,6 +18,11 @@ def main():
         sales=next(x for x in data["rows"] if x["code"] == "ventas")
         channels={x["label"] for x in sales.get("children",[]) if x.get("kind") == "channel"}
         assert {"Uber", "Glovo", "Just Eat"}.issubset(channels), channels
+        parent_net = {"Restaurant", "Take away", "Delivery"}
+        net_sum = sum(float(x["values"].get("YTD") or 0) for x in sales["children"] if x.get("label") in parent_net)
+        gross_sum = sum(float(x["values"].get("YTD") or 0) for x in sales["children"] if x.get("label") in {f"{label} C/IVA" for label in parent_net})
+        assert abs(net_sum - float(data["totals"]["ventas_netas"])) < 0.02, (net_sum, data["totals"]["ventas_netas"])
+        assert abs(gross_sum - float(data["totals"]["ventas_brutas"])) < 0.02, (gross_sum, data["totals"]["ventas_brutas"])
         for code in ("ventas","food_cost","margen_bruto","margen_contribucion","personal","otros_explotacion","ebitda","resultado_ejercicio"): assert code in codes, code
         def provider_keys(row):
             keys=[]
@@ -27,7 +32,7 @@ def main():
         for row in data["rows"]:
             keys=provider_keys(row)
             assert len(keys)==len(set(keys)), row["code"]
-        print(f"HTTP {r.status}; columnas={len(data['columns'])}; filas={len(data['rows'])}; ventas={data['totals']['ventas_netas']}; EBITDA={data['totals']['ebitda']}; proveedores sin repetición=OK")
+        print(f"HTTP {r.status}; columnas={len(data['columns'])}; filas={len(data['rows'])}; ventas={data['totals']['ventas_netas']}; EBITDA={data['totals']['ebitda']}; canales conciliados=OK; proveedores sin repetición=OK")
         return 0
     finally:
         proc.terminate(); proc.wait(timeout=10)

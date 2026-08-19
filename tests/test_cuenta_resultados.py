@@ -27,11 +27,14 @@ def test_monthly_ytd_and_provider_breakdown():
  # Sin sub-clasificación de personal (las reglas no reconocen "Nóminas" → va a personal pero vendor "Nómina Ana" no contiene keywords)
  # Por tanto nóminas/SS/otros no se muestran como sub-filas reales
  # EBIT = EBITDA (amortización=0)
+     # EBIT = EBITDA (amortización=0)
  assert out["totals"]["ebitda"] == out["totals"]["ebit"]
- # Impuesto sociedades sin datos = 0
- assert out["totals"]["impuesto_sociedades"] == 0.0
- # Resultado ejercicio = Resultado antes de impuestos (sin impuesto ni financiero)
- assert out["totals"]["resultado_ejercicio"] == out["totals"]["resultado_antes_impuestos"]
+ # Impuesto sociedades = 25% sobre resultado_antes_impuestos si >0
+ if out["totals"]["resultado_antes_impuestos"] > 0:
+     assert abs(out["totals"]["impuesto_sociedades"] - out["totals"]["resultado_antes_impuestos"]*0.25) < 0.02
+     assert abs(out["totals"]["resultado_ejercicio"] - out["totals"]["resultado_antes_impuestos"]*0.75) < 0.02
+ else:
+     assert out["totals"]["impuesto_sociedades"] == 0.0
  food=next(r for r in out["rows"] if r["code"]=="food_cost")
  provider_group=next(r for r in food["children"] if r.get("kind")=="provider_group")
  providers=provider_group["children"]
@@ -92,10 +95,15 @@ def test_accounting_rows_only_real_values_no_fabrication():
     # Estructura principal siempre presente
     for code in ("ventas","food_cost","margen_bruto","comisiones","margen_contribucion","personal","ebitda","ebit","resultado_antes_impuestos","resultado_ejercicio"):
         assert code in rows, f"{code} debería estar"
-    # Amortización, financiero e impuesto: 0 hasta que haya datos
+    # Amortización, financiero: 0 hasta que haya datos
     assert rows["amortizacion"]["values"]["YTD"] == 0.0
     assert rows["resultado_financiero"]["values"]["YTD"] == 0.0
-    assert rows["impuesto_sociedades"]["values"]["YTD"] == 0.0
+    # Impuesto sociedades = 25% sobre resultado_antes_impuestos (cálculo legal estándar)
+    if rows["resultado_antes_impuestos"]["values"]["YTD"] > 0:
+        # El impuesto se muestra como gasto (valor negativo en el PYG)
+        assert rows["impuesto_sociedades"]["values"]["YTD"] == round(-rows["resultado_antes_impuestos"]["values"]["YTD"]*0.25, 2)
+    else:
+        assert rows["impuesto_sociedades"]["values"]["YTD"] == 0.0
     # Sub-filas solo si hay datos reales: en este test no hay facturas Glovo/Uber/LastShop,
     # así que comisiones no debe tener sub-filas (children=[])
     comis=rows["comisiones"]

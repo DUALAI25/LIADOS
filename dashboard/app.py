@@ -394,6 +394,39 @@ def api_gastos_por_categoria(user: str = Depends(get_current_user)):
     """)]
 
 
+
+
+@app.get("/api/gastos/csv-reference")
+def api_gastos_csv_reference(user: str = Depends(get_current_user)):
+    """Comparativa con histórico CSV (gastos-categorias.csv).
+
+    Devuelve el contenido del CSV histórico como referencia cruzada con la BD actual.
+    No modifica ni sobrescribe los datos reales del PYG; sirve solo como comparativa.
+    """
+    import csv as _csv
+    import os.path as _osp
+    csv_path = _osp.join(_osp.dirname(_osp.abspath(__file__)), "gastos-categorias.csv")
+    rows = []
+    if _osp.exists(csv_path):
+        with open(csv_path, encoding="utf-8-sig") as f:
+            for row in _csv.DictReader(f, delimiter=";"):
+                if row.get("categoria"):
+                    try:
+                        rows.append({
+                            "categoria": row["categoria"],
+                            "facturas": int(row["facturas"]),
+                            "total_eur": float(row["total_eur"]),
+                        })
+                    except (ValueError, KeyError):
+                        continue
+    return {
+        "source": "gastos-categorias.csv",
+        "rows": rows,
+        "total_facturas": sum(r["facturas"] for r in rows),
+        "total_eur": round(sum(r["total_eur"] for r in rows), 2),
+    }
+
+
 @app.get("/api/margen-por-mes")
 def api_margen_por_mes(user: str = Depends(get_current_user)):
     """Margen = ingresos (lastapp_bills) - gastos (invoices) por mes."""

@@ -105,6 +105,20 @@ def _provider_children(rows,months,bucket,rules):
         labels.setdefault(key,label); totals[key][f"{d.year:04d}-{d.month:02d}"]-=abs(_eur(row.get("total_amount")))
     return [{"code":f"{bucket}.provider.{key}","label":labels[key],"provider_key":key,"values":_values(months,totals[key]),"kind":"provider","level":1,"children":[],"availability":"real"} for key in sorted(totals,key=lambda k:(sum(totals[k].values()),labels[k].lower()))]
 
+def _all_real_vendors(rows,months,exclude_test=True):
+    """Genera serie mensual por proveedor para TODOS los vendors reales del sistema (sin filtro de bucket)."""
+    totals=defaultdict(lambda:defaultdict(float)); labels={}
+    for row in rows:
+        vendor=row.get("vendor_name") or row.get("vendor") or "Proveedor sin nombre"
+        d=_date_value(row.get("invoice_date"))
+        if not d: continue
+        amount=abs(_eur(row.get("total_amount")))
+        if amount==0: continue
+        label=provider_label(vendor); key=normalize_provider(label) or "proveedor sin nombre"
+        if exclude_test and "test_cat_del" in (row.get("category_raw") or "").lower(): continue
+        labels.setdefault(key,label); totals[key][f"{d.year:04d}-{d.month:02d}"]-=amount
+    return [{"code":f"all.provider.{key}","label":labels[key],"provider_key":key,"values":_values(months,totals[key]),"kind":"provider","level":1,"children":[],"availability":"real"} for key in sorted(totals,key=lambda k:-sum(abs(v) for v in totals[k].values()))]
+
 def _provider_group(code,months,providers):
     if not providers: return []
     children=[]
@@ -179,7 +193,7 @@ def _real_vendor_split_by_name(rows,months,name_keywords):
     return {key:dict(series[key]) for key in name_keywords}
 
 def _real_category_split(rows,months,target_category):
-    """Genera serie mensual real por nombre de categoría (no estimación)."""
+    """Genera serie mensual real por nombre de categoría (no estimación). Valores positivos (cantidad del gasto)."""
     series=defaultdict(float)
     for row in rows:
         cat=str(row.get("category_raw") or row.get("category") or "")
@@ -187,7 +201,7 @@ def _real_category_split(rows,months,target_category):
         d=_date_value(row.get("invoice_date"))
         if not d: continue
         m=f"{d.year:04d}-{d.month:02d}"
-        series[m]-=abs(_eur(row.get("total_amount")))
+        series[m]+=abs(_eur(row.get("total_amount")))
     return dict(series)
 
 def _real_vendor_personal_split(rows,months):
@@ -245,7 +259,9 @@ def build_cuenta_resultados(invoice_rows,sales_rows,period_from,period_to,cuenta
     # Restar SGG de "other" para evitar doble contabilización
     sgg_total={m:sum((s.get(m,0) for s in sgg_series.values())) for m in months}
     other={m:other[m]-sgg_total[m] for m in months}
-    margin_gross={m:net_before[m]-food[m] for m in months}; margin_contrib={m:margin_gross[m]-commissions[m]-marketing[m] for m in months}; ebitda={m:margin_contrib[m]-personal[m]-other[m]-sgg_total[m] for m in months}
+    # En Last.app: base_amount = base imponible POST-descuento. Márgenes sobre base real.
+    # NOTA: `other` ya tiene sgg_total restado, así que EBITDA resta solo `other` (no sgg_total otra vez)
+    margin_gross={m:net_after[m]-food[m] for m in months}; margin_contrib={m:margin_gross[m]-commissions[m]-marketing[m] for m in months}; ebitda={m:margin_contrib[m]-personal[m]-other[m] for m in months}
     channel_series=_channel_series(channel_rows,months); food_alloc=_allocate_cost(months,food,channel_series)
     margin_alloc={key:{m:channel_series[key+"_net"].get(m,0)+food_alloc[key].get(m,0) for m in months} for key in food_alloc}
     sales_children=[
@@ -291,25 +307,25 @@ def build_cuenta_resultados(invoice_rows,sales_rows,period_from,period_to,cuenta
     intereses={m:0.0 for m in months}; gastos_bancarios={m:0.0 for m in months}; dif_cambio={m:0.0 for m in months}
     resultado_financiero={m:intereses[m]+gastos_bancarios[m]+dif_cambio[m] for m in months}
     resultado_antes_impuestos={m:ebit[m]+resultado_financiero[m] for m in months}
-    impuesto_sociedades={m:0.0 for m in months}  # 0 hasta que haya activo/pasivo real cargado
+    impuesto_sociedades={m:resultado_antes_impuestos[m]*0.25 if resultado_antes_impuestos[m] > 0 else 0.0 for m in months}  # Tipo general del IS en España
     resultado_ejercicio={m:resultado_antes_impuestos[m]-impuesto_sociedades[m] for m in months}
 
     rows=[
         _row("ventas","1  Venta neta + descuentos",months,net_before,kind="section",section=True,children=sales_children),
         _row("food_cost","2  Aprovisionamientos",months,{m:-food[m] for m in months},kind="section",section=True,children=food_children),
-        _row("food_cost_pct","%",months,_ratio_values(months,food,net_before,sign=-1),kind="percentage",precomputed=True),
+        _row("food_cost_pct","%",months,_ratio_values(months,food,net_after,sign=-1),kind="percentage",precomputed=True),
         _row("margen_bruto","3  Margen bruto (Venta N Des) Aprov.",months,margin_gross,kind="subtotal",section=True,children=margin_children),
-        _row("margen_bruto_pct","%",months,_ratio_values(months,margin_gross,net_before),kind="percentage",precomputed=True),
+        _row("margen_bruto_pct","%",months,_ratio_values(months,margin_gross,net_after),kind="percentage",precomputed=True),
         _row("comisiones","4  Comisiones",months,{m:-commissions[m] for m in months},kind="section",section=True,children=comisiones_children),
-        _row("comisiones_pct","%",months,_ratio_values(months,commissions,net_before,sign=-1),kind="percentage",precomputed=True),
+        _row("comisiones_pct","%",months,_ratio_values(months,commissions,net_after,sign=-1),kind="percentage",precomputed=True),
         _row("margen_contribucion","5  Margen de Contribución",months,margin_contrib,kind="subtotal",section=True),
-        _row("margen_contribucion_pct","%",months,_ratio_values(months,margin_contrib,net_before),kind="percentage",precomputed=True),
+        _row("margen_contribucion_pct","%",months,_ratio_values(months,margin_contrib,net_after),kind="percentage",precomputed=True),
     ]
 
     # Márketing como sección solo si hay datos
     if marketing and any(v!=0 for v in marketing.values()):
         rows.append(_row("marketing","  Márketing",months,{m:-marketing[m] for m in months},kind="section",section=False))
-        rows.append(_row("marketing_pct","%",months,_ratio_values(months,marketing,net_before,sign=-1),kind="percentage",precomputed=True))
+        rows.append(_row("marketing_pct","%",months,_ratio_values(months,marketing,net_after,sign=-1),kind="percentage",precomputed=True))
 
     # SGG: cada categoría real se muestra como sub-fila
     sgg_total={m:sum((s.get(m) or 0) for s in sgg_series.values()) for m in months}
@@ -317,13 +333,22 @@ def build_cuenta_resultados(invoice_rows,sales_rows,period_from,period_to,cuenta
         sgg_children=[]
         for cat_name,series in sgg_series.items():
             if any(v!=0 for v in series.values()):
-                sgg_children.append(_row(f"sgg.{cat_name.lower().replace(' ','_').replace('\u00ed','i').replace('\u00e1','a')}",cat_name,months,series,kind="subcategory",level=1))
+                # series ahora es positivo (cantidad del gasto). Mostrar como negativo en PYG.
+                series_display={m:-series.get(m, 0) for m in months}
+                sgg_children.append(_row(f"sgg.{cat_name.lower().replace(' ','_').replace('\u00ed','i').replace('\u00e1','a')}",cat_name,months,series_display,kind="subcategory",level=1))
+
+        # Incluir TODOS los proveedores reales del sistema (no solo los de food/personal) como drill-down del SGG
+        all_real_vendors=_all_real_vendors(expense_rows,months)
+        # Mostrar top 30 proveedores reales
+        if all_real_vendors:
+            sgg_children.extend(all_real_vendors[:30])
         if sgg_children:
-            rows.append(_row("otros_gg_produccion","  Otros gg. producción",months,{m:-sgg_total[m] for m in months},kind="section",section=False,children=sgg_children))
-            rows.append(_row("otros_gg_produccion_pct","%",months,_ratio_values(months,sgg_total,net_before,sign=-1),kind="percentage",precomputed=True))
+            # sgg_total ahora es positivo (suma de gastos). Mostrar como negativo en PYG.
+            rows.append(_row("otros_gg_produccion","  Otros gg. producción",months,{m:-sgg_total[m] for m in months},kind="section",section=True,children=sgg_children))
+            rows.append(_row("otros_gg_produccion_pct","%",months,_ratio_values(months,sgg_total,net_after,sign=-1),kind="percentage",precomputed=True))
 
     rows.append(_row("resultado_explotacion","  Resultado bruto (Resultado Explotación)",months,margin_contrib,kind="subtotal",section=True))
-    rows.append(_row("resultado_explotacion_pct","%",months,_ratio_values(months,margin_contrib,net_before),kind="percentage",precomputed=True))
+    rows.append(_row("resultado_explotacion_pct","%",months,_ratio_values(months,margin_contrib,net_after),kind="percentage",precomputed=True))
 
     # Personal con sub-filas reales
     personal_children=[]
@@ -332,21 +357,21 @@ def build_cuenta_resultados(invoice_rows,sales_rows,period_from,period_to,cuenta
     if has_otros: personal_children.append(_row("personal.otros","Otros",months,otros_series,kind="subcategory",level=1))
     personal_children.extend(_provider_group("personal",months,_provider_children(expense_rows,months,"personal",rules)))
     rows.append(_row("personal","6  Gastos Personal",months,{m:-personal[m] for m in months},kind="section",section=True,children=personal_children))
-    rows.append(_row("personal_pct","%",months,_ratio_values(months,personal,net_before,sign=-1),kind="percentage",precomputed=True))
+    rows.append(_row("personal_pct","%",months,_ratio_values(months,personal,net_after,sign=-1),kind="percentage",precomputed=True))
 
     rows.append(_row("ebitda","7  EBITDA",months,ebitda,kind="subtotal",section=True))
-    rows.append(_row("ebitda_pct","%",months,_ratio_values(months,ebitda,net_before),kind="percentage",precomputed=True))
+    rows.append(_row("ebitda_pct","%",months,_ratio_values(months,ebitda,net_after),kind="percentage",precomputed=True))
 
     # Amortización y resto: filas con 0 reales (sin datos)
     rows.append(_row("amortizacion","8  Amortización",months,{m:-amortizacion_total[m] for m in months},kind="section",section=False))
     rows.append(_row("ebit","9  EBIT",months,ebit,kind="subtotal",section=True))
-    rows.append(_row("ebit_pct","%",months,_ratio_values(months,ebit,net_before),kind="percentage",precomputed=True))
+    rows.append(_row("ebit_pct","%",months,_ratio_values(months,ebit,net_after),kind="percentage",precomputed=True))
     rows.append(_row("resultado_financiero","10  Resultado financiero",months,resultado_financiero,kind="section",section=False))
     rows.append(_row("resultado_antes_impuestos","11  Resultado antes de impuestos",months,resultado_antes_impuestos,kind="subtotal",section=True))
-    rows.append(_row("resultado_antes_impuestos_pct","%",months,_ratio_values(months,resultado_antes_impuestos,net_before),kind="percentage",precomputed=True))
-    rows.append(_row("impuesto_sociedades","12  Impuesto sociedades",months,{m:-impuesto_sociedades[m] for m in months},kind="section",section=False))
+    rows.append(_row("resultado_antes_impuestos_pct","%",months,_ratio_values(months,resultado_antes_impuestos,net_after),kind="percentage",precomputed=True))
+    rows.append(_row("impuesto_sociedades","12  Impuesto sociedades (25%)",months,{m:-impuesto_sociedades[m] for m in months},kind="section",section=True))
     rows.append(_row("resultado_ejercicio","13  Resultado del ejercicio",months,resultado_ejercicio,kind="subtotal",section=True))
-    rows.append(_row("resultado_ejercicio_pct","%",months,_ratio_values(months,resultado_ejercicio,net_before),kind="percentage",precomputed=True))
+    rows.append(_row("resultado_ejercicio_pct","%",months,_ratio_values(months,resultado_ejercicio,net_after),kind="percentage",precomputed=True))
 
     ytd=_ytd_months(months); total=lambda series:round(sum(series.get(m,0) for m in ytd),2)
     totals={"ventas_netas_descuentos":total(net_before),"ventas_netas":total(net_after),"ventas_brutas":total(gross_after),"descuentos":total(discount_gross),"iva_ventas":total(tax),"iva_gastos":total(expense_tax),"food_cost":total(food),"comisiones":total(commissions),"personal":total(personal),"otros_explotacion":total(other),"marketing":total(marketing),"otros_gg_produccion":total(sgg_total),"margen_bruto":total(margin_gross),"margen_contribucion":total(margin_contrib),"ebitda":total(ebitda),"ebit":total(ebit),"resultado_financiero":total(resultado_financiero),"resultado_antes_impuestos":total(resultado_antes_impuestos),"impuesto_sociedades":total(impuesto_sociedades),"resultado_ejercicio":total(resultado_ejercicio)}
@@ -358,7 +383,7 @@ def build_cuenta_resultados(invoice_rows,sales_rows,period_from,period_to,cuenta
     totals["resultado_ejercicio_pct"]=round(totals["resultado_ejercicio"]/totals["ventas_netas_descuentos"],4) if totals["ventas_netas_descuentos"] else 0.0
 
     # Issues: solo informativo, NUNCA inventar
-    issues=[{"code":"channel_mapping","level":"info","message":"Restaurant=card+cash y Take away=shop; son tipos de pago, no el canal comercial original."},{"code":"food_cost_allocated","level":"info","message":"Food cost por canal está prorrateado según ventas netas por tipo de pago."}]
+    issues=[{"code":"channel_mapping","level":"info","message":"Restaurant=card+cash y Take away=shop; son tipos de pago, no el canal comercial original."},{"code":"food_cost_allocated","level":"info","message":"Food cost por canal está prorrateado según ventas netas por tipo de pago."},{"code":"impuesto_sociedades_25","level":"info","message":"Impuesto sociedades calculado al tipo general del 25% sobre el resultado antes de impuestos (estimación estándar en España, pendiente de carga fiscal real)."}]
     if not has_nominas and not has_ss and not has_otros and personal:
         issues.append({"code":"personal_subsin_datos","level":"info","message":"El total de Personal es real pero las sub-filas (Nóminas/Seguros sociales/Otros) no se muestran porque no hay clasificación por proveedor en facturas."})
     if not has_glovo and not has_uber and not has_lastshop and not has_justeat and commissions:
@@ -367,6 +392,5 @@ def build_cuenta_resultados(invoice_rows,sales_rows,period_from,period_to,cuenta
         issues.append({"code":"amortizacion_sin_datos","level":"info","message":"Amortización sin datos: requiere carga de activos fijos para mostrar valores reales."})
     if not any(v!=0 for v in resultado_financiero.values()):
         issues.append({"code":"financiero_sin_datos","level":"info","message":"Resultado financiero sin datos: requiere carga de extractos bancarios para mostrar valores reales."})
-    if not any(v!=0 for v in impuesto_sociedades.values()):
-        issues.append({"code":"impuesto_sin_datos","level":"info","message":"Impuesto sociedades sin datos: requiere carga de activos/pasivos fiscales para mostrar el cálculo real."})
+    
     return {"period":{"from":start.isoformat(),"to":end.isoformat()},"columns":months+["YTD"],"rows":rows,"totals":totals,"issues":issues,"rows_used":len(expense_rows)+len(sales_rows or [])}

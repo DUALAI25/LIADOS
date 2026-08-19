@@ -100,3 +100,35 @@ Run log: L1 (2026-08-19). 0 P0 cerrados. 1 P0 nuevo (working tree sucio post-com
 - **Tunnel tracker:** última URL `https://baby-org-weight-dave.trycloudflare.com` con `healthy: false` (timestamp 2026-08-18T18:35). El watchdog systemd timer está activo pero la URL reportada es de hace 11h — puede indicar que el tracker no se ha ejecutado o que la URL no responde. Verificar con `journalctl -u liados-tunnel-tracker --since today`.
 
 Run log: L1 (2026-08-19 05:43). 0 P0 cerrados. 2 P0 vigentes: working tree sucio + Gmail OAuth. 1 P0 escalado: SSH known_hosts a GitHub. Pendiente: commit/discard del working tree (decisión humana), arreglar SSH fingerprint, reautorizar Gmail, validar tunnel URL.
+
+---
+
+## Verification run 2026-08-19 10:45 (L1 report-only)
+
+- L1 ejecutada por agente cron (modo report-only, sin ediciones de código, sin push, sin reinicios).
+- **Working tree ACTUALIZADO — pasa de "simplificar P&L" a "PYG v2 + impuesto 25% + SGG real + drilldown proveedores".** 5 archivos, +347/-65, mtimes 08:28–10:38 Aug 19. Diff vs HEAD `de0b244`:
+  - `dashboard/desglose_pyg_rules.py` (+226/-65): reescrito a v2 con buckets reales del cliente (Suministros, Servicios Profesionales, Alquiler, Gastos Bancarios, Seguros, Impuestos y Tasas, Oficina, Software y SaaS) y comentario expandido con sub-nodos.
+  - `dashboard/cuenta_resultados.py` (+50/-18): `net_before` → `net_after` (ventas post-descuento) en todas las ratios; `_real_category_split` ahora acumula positivo (gasto real); EBITDA ya no resta `sgg_total` (porque `other` ya lo tiene restado); `impuesto_sociedades` calculado al 25% sobre resultado_antes_impuestos (era 0); sección "Otros gg. producción" ahora es `section=True` con drill-down de top 30 proveedores reales vía `_all_real_vendors`; `_all_real_vendors()` helper añadido; issue `impuesto_sin_datos` reemplazado por `impuesto_sociedades_25` (info).
+  - `dashboard/app.py` (+33/-0): nuevo endpoint `/api/gastos/csv-reference` que lee `gastos-categorias.csv` (12 categorías) como comparativa histórica con la BD.
+  - `tests/test_cuenta_resultados.py` (+18/-2): test_monthly_ytd ahora valida impuesto_sociedades = resultado_antes_impuestos × 0.25 si > 0; test_accounting_rows quita aserción rígida de impuesto_sociedades=0 y la hace condicional.
+  - `?? dashboard/gastos-categorias.csv` (318 B, 12 categorías: Suministros 244 fact/87k€, Restauración 67/20k€, etc. — histórico de comparación). **NO debería estar en el repo: es data de referencia, no código fuente.**
+- **HEAD:** `de0b244 fix(pyg): SGG extraido de facturas reales + anti doble-contabilizacion + keywords OR` (Jarvis 08:14). El árbol de trabajo contiene los siguientes commits sin push: `5d150ea feat(pyg): jerarquia completa`, `de0b244 fix(pyg): SGG extraido + anti doble-contabilizacion`. Ambos commiteados por Jarvis hoy 08:14 Aug 19 — `5d150ea` está en `main..HEAD` sin push (verificado: `git log origin/main..HEAD` no aplicable por SSH roto, pero cache de refs confirma `origin/main` en `8f14585` y HEAD local en `de0b244`).
+- **Sesión posthoc otra vez:** el árbol contiene trabajo substancial de PYG no humano (entre 08:14 y 10:38). El CSV histórico `gastos-categorias.csv` subido al árbol sugiere un agente con acceso write está operando fuera del protocolo humano-gated.
+- **Verificación segura (read-only) ejecutada por este run:**
+  - `py_compile` los 4 archivos modificados → EXIT=0.
+  - `pytest tests/test_cuenta_resultados.py` → **6/6 PASS** (incluye las aserciones nuevas del 25% IS).
+  - `curl /api/gastos/csv-reference` → 401 (requiere auth, esperado; el endpoint existe y responde).
+- **Crons automáticos nocturnos OK:**
+  - 03:00 backup: `db-20260819-0300.sql.gz` 2.24 MB, log `BACKUP OK: 2.1 MB`.
+  - 03:15 E2E: **233/233 PASS** contra `de0b244`, log `Tests: 233 | PASS: 233 | FAIL: 0`.
+  - 08:00 gmail-age: tokens 23.0d (production, <90d WARN / <180d CRIT) → **OK ambos**.
+  - 10:30 drive: secundaria falla con `Drive token no OK para secundaria: missing` (esperado, no es error).
+- **OAuth tokens OK 3/3** (último watchdog 10:00: gmail:principal, gmail:secundaria, drive:principal). Gmail collector **NO está en MISSING_TOKEN** — corre OK. STATE.md previo (línea 12, 20) era incorrecto: los tokens están vivos, lo que fallaba era el flujo de validación previa. **Esto RESUELVE el P0 "Gmail collector MISSING_TOKEN"** — los tokens tienen 23 días, están operativos.
+- **Dashboard health OK:** `/api/health` 200, v9.0.0. Uvicorn uptime ~33 min (reiniciado por watchdog 10:12 tras el run de tests). Memoria 99 MB estable.
+- **SSH a GitHub sigue roto** (`Host key verification failed`). Imposible saber si `de0b244` y `5d150ea` están pusheados a `origin/main`.
+- **Ramas stale (sin cambios desde último run):**
+  - `origin/feat/dashboard-v6-premium` (40 ahead, 5 behind) — sigue stale.
+  - `origin/feat/lastapp-official-mcp` (96 ahead, 0 behind, sin actividad) — sigue stale.
+  - `origin/feat/lastapp-integration` — referencia eliminada localmente.
+
+Run log: L1 (2026-08-19 10:45). 0 P0 cerrados. 1 P0 vigente: working tree con 5 archivos (más grande y más reciente que en el run 05:43 — sesión posthoc continúa). 1 P0 escalado: SSH known_hosts. 1 P0 resuelto: Gmail OAuth era falso positivo, tokens OK. Pendiente crítico: revisar y gate de la sesión posthoc no humana; commit + push con aprobación humana; arreglar SSH fingerprint para verificar push de los 2 commits PYG.

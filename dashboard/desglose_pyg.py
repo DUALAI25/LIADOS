@@ -15,8 +15,8 @@ API:
     build_pyg(rows, period_from, period_to, cuenta=None, rules=None) -> dict
         rows: lista de dicts con campos de factura (vendor_name, category_raw,
               source_account, invoice_date, total_amount, status).
-              total_amount se expresa en euros, unidad canónica de invoices y
-              lastapp_bills normalizado por el endpoint.
+              total_amount puede venir en céntimos (int) o euros (float);
+              se detecta por magnitud (>1000 = céntimos, se divide entre 100).
         period_from / period_to: 'YYYY-MM-DD' (inclusivo).
         cuenta: 'principal' / 'secundaria' / None = todas.
         rules: dict de reglas PYG (ver desglose_pyg_rules.DEFAULT_RULES).
@@ -61,19 +61,44 @@ class PygError(ValueError):
 
 
 # ── Sub-categorías por bucket ────────────────────────────────
-# Map bucket → lista de sub-categorías canónicas (para drill-down).
-# Cualquier `category_raw` que no esté en esta lista se agrupa en
-# el primer sub-categoría "__otros__".
+# v2 (2026-08-19): cada bucket tiene una lista canónica de sub-categorías
+# que se proyectan en la UI. El orden es el que aparece en el Excel del
+# cliente (PYG - SIN IVA, Resumen Ejecutivo).
+# Cualquier `category_raw` que no se mapee cae en "__otros__".
 SUBCATS = {
-    "aprovisionamientos": ["Alimentación", "Bebida", "Packaging", "__otros__"],
-    "comisiones": ["__todos__"],  # por vendor
-    "personal": ["Nóminas", "Seguridad Social", "__otros__"],
-    "otros_gastos_produccion": ["__todos__"],
+    "aprovisionamientos": [
+        "Alimentación", "Bebida", "Packaging", "__otros__",
+    ],
+    "comisiones": [
+        "Glovo", "Uber", "LastShop", "Just Eat", "__otros__",
+    ],
+    "personal": [
+        "Nóminas", "Seguridad Social", "__otros__",
+    ],
+    "otros_gastos_produccion": [
+        "Material oficina", "Envases", "Mantenimiento", "__otros__",
+    ],
+    # 5) Servicios y Suministros — coincide con las filas del vídeo:
+    #    Alquiler, Luz, Agua, Internet, Carbón, Asesoría lab,
+    #    Máquina del agua, Gasolina.
     "servicios": [
         "Alquiler", "Luz", "Agua", "Internet",
-        "Combustible", "Asesoría", "__otros__",
+        "Asesoría", "Combustible", "Carbón", "__otros__",
     ],
-    "otros_gastos": ["__todos__"],
+    # 6) Otros gastos de explotación — 7 sub-secciones del Excel:
+    #    1) Publicidad y Marketing
+    #    2) Material
+    #    3) Reparación y mantenimiento
+    #    4) Suministros
+    #    5) Gestión administrativa
+    #    6) Servicios de lavandería
+    #    7) Otros
+    "otros_gastos": [
+        "Publicidad y Marketing", "Oficina", "Software",
+        "Servicios Profesionales", "Restauración y Hostelería",
+        "Impuestos y Tasas", "Gastos Bancarios", "Seguros",
+        "__otros__",
+    ],
 }
 
 # Márgenes objetivo por sub-categoría (para cross-check fugas).
@@ -110,12 +135,31 @@ def _coerce_date(v) -> _date | None:
     return None
 
 
+def _is_intercompany(vendor_name: str | None) -> bool:
+    """Detecta si el vendor es una entidad del propio grupo (VAMOS AL LIO).
+
+    Las facturas entre sociedades del grupo (VAMOS AL LIO SL ↔ VAMOS AL
+    LÍO S.L. ↔ HAMBURGUESERIA VAMOS AL LIO ↔ LIADOS VAMOS AL LIO SL)
+    representan movimientos internos y no son gasto real para el PYG.
+    Devuelve True si parece intercompany.
+    """
+    if not vendor_name:
+        return False
+    v = str(vendor_name).strip().lower()
+    # Sociedad titular del cliente + sus vehículos
+    markers = [
+        "vamos al lio", "vamol al lio", "hamburgueseria vamos",
+        "liados vamos", "hamburgueseria", "restaurante liados",
+    ]
+    return any(m in v for m in markers)
+
+
 def _amount_eur(raw) -> float:
     """Convierte el importe canónico de producción a euros.
 
-    `invoices.total_amount` se almacena en euros. Los campos `*_cents` de
-    Last.app se convierten a euros en la consulta del endpoint antes de llegar
-    aquí; no se aplica heurística por magnitud.
+    `invoices.total_amount` se almacena en euros (DECIMAL(14,2)). Los campos
+    `*_cents` de Last.app se convierten a euros en la consulta del endpoint
+    antes de llegar aquí; no se aplica heurística por magnitud.
     """
     if raw is None:
         return 0.0
@@ -162,20 +206,110 @@ def _is_gasto(amount_eur: float, category_raw: str | None) -> bool:
     return True
 
 
-def _subcat(bucket: str, category_raw: str | None) -> str:
-    """Sub-categoría canónica para drill-down."""
+def _subcat(bucket: str, category_raw: str | None, vendor_name: str | None = "") -> str:
+    """Sub-categoría canónica para drill-down (v2).
+
+    Devuelve la sub-categoría del bucket usando heurísticas sobre
+    category_raw + vendor_name. Si no casa con ninguna, devuelve "__otros__".
+    Coincide con la lista SUBCATS[bucket].
+    """
     subs = SUBCATS.get(bucket, ["__todos__"])
     if subs == ["__todos__"]:
         return "__todos__"
-    if not category_raw:
+    cat = (str(category_raw) if category_raw else "").strip().lower()
+    if cat:
+        cat = _norm_accents(cat)
+    ven = (str(vendor_name) if vendor_name else "").strip().lower()
+    if ven:
+        ven = _norm_accents(ven)
+    cat_compact = cat.replace(" ", "")
+    ven_compact = ven.replace(" ", "")
+
+    # ── Matching por bucket ──
+    if bucket == "servicios":
+        if "alquil" in cat or "alquil" in ven or "hermanostonda" in ven_compact or "propietario" in ven:
+            return "Alquiler"
+        if any(k in ven for k in ["iberdrola", "endesa", "naturgy", "cye", "met energia", "metenergi"]):
+            return "Luz"
+        if any(k in ven for k in ["aqualia", "redexis", "efigas"]):
+            return "Agua"
+        if any(k in ven for k in ["telef", "movistar", "vodafone", "orange", "jazztel", "ionos"]):
+            return "Internet"
+        if any(k in ven for k in ["asesor", "cochera", "silca", "control y certific", "control y certif"]):
+            return "Asesoría"
+        if any(k in ven for k in ["repsol", "gestilan", "butano", "gasolina"]) or "gasolina" in cat:
+            return "Combustible"
+        if cat in ("carbon", "carbn"):
+            return "Carbón"
         return "__otros__"
-    cr_norm = str(category_raw).strip().lower()
-    for s in subs:
-        if s == "__otros__":
-            continue
-        if s.lower() == cr_norm:
-            return s
+
+    if bucket == "otros_gastos":
+        if "marketing" in cat or "publicidad" in cat:
+            return "Publicidad y Marketing"
+        if cat in ("oficina", "materialdeoficina"):
+            return "Oficina"
+        if "software" in cat:
+            return "Software"
+        if "impuesto" in cat:
+            return "Impuestos y Tasas"
+        if "bancario" in cat:
+            return "Gastos Bancarios"
+        if "seguro" in cat:
+            return "Seguros"
+        if "serviciosprofesional" in cat_compact or "profesional" in cat:
+            return "Servicios Profesionales"
+        if "restauracion" in cat or "hostele" in cat or "hosteleria" in cat:
+            return "Restauración y Hostelería"
+        return "__otros__"
+
+    if bucket == "otros_gastos_produccion":
+        if "envase" in ven or "rotapel" in ven or "bluco" in ven:
+            return "Envases"
+        if cat in ("oficina", "materialdeoficina", "materialdeoficinayoficios"):
+            return "Material oficina"
+        if any(k in ven for k in ["sanysan", "restatec", "instalacioneselectric", "danimobel"]):
+            return "Mantenimiento"
+        return "__otros__"
+
+    if bucket == "comisiones":
+        if "glovo" in ven:
+            return "Glovo"
+        if "uber" in ven:
+            return "Uber"
+        if "last.app" in ven or "lastshop" in ven or "last shop" in ven or "last.app" in ven.replace(" ", ""):
+            return "LastShop"
+        if "just" in ven and "eat" in ven:
+            return "Just Eat"
+        return "__otros__"
+
+    if bucket == "personal":
+        if "seguridadsocial" in cat_compact or "seguridad" in cat:
+            return "Seguridad Social"
+        if any(k in cat for k in ["nomina", "nominas", "sueldo", "salario", "personal"]):
+            return "Nóminas"
+        return "__otros__"
+
+    if bucket == "aprovisionamientos":
+        if cat in ("bebida", "drink"):
+            return "Bebida"
+        if cat in ("packaging", "envases"):
+            return "Packaging"
+        if "packaging" in ven or "envase" in ven:
+            return "Packaging"
+        if "bebida" in ven or "coca" in ven or "pepsi" in ven:
+            return "Bebida"
+        return "Alimentación"
+
     return "__otros__"
+
+
+def _norm_accents(s: str) -> str:
+    repl = (("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u"),
+            ("à", "a"), ("è", "e"), ("ì", "i"), ("ò", "o"), ("ù", "u"),
+            ("ñ", "n"), ("ü", "u"))
+    for a, b in repl:
+        s = s.replace(a, b)
+    return s
 
 
 # ── API principal ─────────────────────────────────────────
@@ -244,11 +378,18 @@ def build_pyg(
         elif _is_devolucion(cat) and amount > 0:
             devoluciones += amount
         elif _is_gasto(amount, cat):
+            # v2.1: Filtrar gastos con amount=0 (datos corruptos / cancelaciones)
+            if amount <= 0.005:
+                continue
+            # v2.1: Filtrar movimientos intercompany (VAMOS AL LIO ↔ LIADOS).
+            # Esas facturas no representan gasto real para el restaurante.
+            if _is_intercompany(r["vendor"]):
+                continue
             # Clasificar en bucket
             bucket = classify_factura(cat, r["vendor"], rules=rules)
             if bucket not in gastos:
                 bucket = "otros_gastos"
-            sub = _subcat(bucket, cat)
+            sub = _subcat(bucket, cat, r["vendor"])
             vendor = (r["vendor"] or "Sin vendor").strip() or "Sin vendor"
             gastos[bucket][sub][vendor] += abs(amount)
             bucket_totals[bucket] += abs(amount)

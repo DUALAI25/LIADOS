@@ -161,7 +161,9 @@ def _allocated_channel_rows(months,allocated,prefix,label_prefix=""):
     return rows
 
 def _real_vendor_split_by_name(rows,months,name_keywords):
-    """Genera series mensuales por marketplace real basado en nombre del vendor. SOLO datos reales."""
+    """Genera series mensuales por marketplace real basado en nombre del vendor. SOLO datos reales.
+
+    Cada keyword es una lista de substrings (OR)."""
     series={key:defaultdict(float) for key in name_keywords}
     for row in rows:
         vendor=row.get("vendor_name") or ""
@@ -170,8 +172,8 @@ def _real_vendor_split_by_name(rows,months,name_keywords):
         if not d: continue
         m=f"{d.year:04d}-{d.month:02d}"
         amount=abs(_eur(row.get("total_amount")))
-        for key,kw in name_keywords.items():
-            if kw in norm:
+        for key,kws in name_keywords.items():
+            if any(kw in norm for kw in kws):
                 series[key][m]-=amount
                 break
     return {key:dict(series[key]) for key in name_keywords}
@@ -233,7 +235,17 @@ def build_cuenta_resultados(invoice_rows,sales_rows,period_from,period_to,cuenta
         target="food_cost" if bucket=="aprovisionamientos" else "comisiones" if bucket=="comisiones" else "personal" if bucket=="personal" else "marketing" if bucket=="marketing" else "otros_explotacion"
         buckets[target][m]+=amount; expense_tax[m]+=_eur(row.get("tax_amount")); expense_rows.append(row)
     food={m:buckets["food_cost"].get(m,0) for m in months}; commissions={m:buckets["comisiones"].get(m,0) for m in months}; personal={m:buckets["personal"].get(m,0) for m in months}; other={m:buckets["otros_explotacion"].get(m,0) for m in months}; marketing={m:buckets["marketing"].get(m,0) for m in months}
-    margin_gross={m:net_before[m]-food[m] for m in months}; margin_contrib={m:margin_gross[m]-commissions[m]-marketing for m in months}; ebitda={m:margin_contrib[m]-personal[m]-other[m] for m in months}
+    # SGG: estas categorías se extraen del bucket "otros_explotacion" para mostrarlas en "Otros gg. producción"
+    sgg_categories=("Suministros","Servicios Profesionales","Alquiler","Gastos Bancarios","Seguros","Impuestos y Tasas","Oficina","Software y SaaS")
+    sgg_series={}
+    for cat_name in sgg_categories:
+        series=_real_category_split(expense_rows,months,cat_name)
+        if any(v!=0 for v in series.values()):
+            sgg_series[cat_name]=series
+    # Restar SGG de "other" para evitar doble contabilización
+    sgg_total={m:sum((s.get(m,0) for s in sgg_series.values())) for m in months}
+    other={m:other[m]-sgg_total[m] for m in months}
+    margin_gross={m:net_before[m]-food[m] for m in months}; margin_contrib={m:margin_gross[m]-commissions[m]-marketing[m] for m in months}; ebitda={m:margin_contrib[m]-personal[m]-other[m]-sgg_total[m] for m in months}
     channel_series=_channel_series(channel_rows,months); food_alloc=_allocate_cost(months,food,channel_series)
     margin_alloc={key:{m:channel_series[key+"_net"].get(m,0)+food_alloc[key].get(m,0) for m in months} for key in food_alloc}
     sales_children=[
@@ -247,15 +259,17 @@ def build_cuenta_resultados(invoice_rows,sales_rows,period_from,period_to,cuenta
     margin_children=_allocated_channel_rows(months,margin_alloc,"margen_bruto")
 
     # === Comisiones SOLO por marketplace REAL (vendor_name) ===
-    comisiones_real=_real_vendor_split_by_name(expense_rows,months,{"glovo":"glovo","uber":"uber_eats","lastshop":"last_shop","justeat":"justeat"})
+    comisiones_real=_real_vendor_split_by_name(expense_rows,months,{"glovo":["glovo"],"uber":["uber eats","uber_eats"],"lastshop":["last shop","lastshop"],"justeat":["just eat","justeat"]})
     glovo_series=comisiones_real["glovo"]
     uber_series=comisiones_real["uber"]
     lastshop_series=comisiones_real["lastshop"]
     justeat_series=comisiones_real["justeat"]
-    has_glovo=any(v!=0 for v in glovo_series.values())
-    has_uber=any(v!=0 for v in uber_series.values())
-    has_lastshop=any(v!=0 for v in lastshop_series.values())
-    has_justeat=any(v!=0 for v in justeat_series.values())
+    total_comisiones_real=sum((commissions.get(m,0) for m in months))
+    # Sub-fila solo si tiene datos en el YTD Y las comisiones son >0
+    has_glovo=any(v!=0 for v in glovo_series.values()) and total_comisiones_real > 0
+    has_uber=any(v!=0 for v in uber_series.values()) and total_comisiones_real > 0
+    has_lastshop=any(v!=0 for v in lastshop_series.values()) and total_comisiones_real > 0
+    has_justeat=any(v!=0 for v in justeat_series.values()) and total_comisiones_real > 0
     comisiones_children=[]
     if has_glovo: comisiones_children.append(_row("comisiones.glovo","Glovo",months,glovo_series,kind="subcategory",level=1))
     if has_uber: comisiones_children.append(_row("comisiones.uber","Uber Eats",months,uber_series,kind="subcategory",level=1))
@@ -264,13 +278,6 @@ def build_cuenta_resultados(invoice_rows,sales_rows,period_from,period_to,cuenta
 
     # Márketing: sub-categorías reales
     marketing_series=_real_category_split(expense_rows,months,"Marketing y Publicidad")
-
-    # SGG: solo categorías reales presentes en facturas
-    sgg_series={}
-    for cat_name in ("Suministros","Servicios Profesionales","Alquiler","Gastos Bancarios","Seguros","Impuestos y Tasas","Oficina","Software y SaaS"):
-        series=_real_category_split(expense_rows,months,cat_name)
-        if any(v!=0 for v in series.values()):
-            sgg_series[cat_name]=series
 
     # Personal: split real por vendor_name
     nominas_series, ss_series, otros_series=_real_vendor_personal_split(expense_rows,months)
@@ -300,7 +307,7 @@ def build_cuenta_resultados(invoice_rows,sales_rows,period_from,period_to,cuenta
     ]
 
     # Márketing como sección solo si hay datos
-    if marketing or has_glovo:
+    if marketing and any(v!=0 for v in marketing.values()):
         rows.append(_row("marketing","  Márketing",months,{m:-marketing[m] for m in months},kind="section",section=False))
         rows.append(_row("marketing_pct","%",months,_ratio_values(months,marketing,net_before,sign=-1),kind="percentage",precomputed=True))
 
@@ -309,9 +316,11 @@ def build_cuenta_resultados(invoice_rows,sales_rows,period_from,period_to,cuenta
     if sgg_series:
         sgg_children=[]
         for cat_name,series in sgg_series.items():
-            sgg_children.append(_row(f"sgg.{cat_name.lower().replace(' ','_').replace('\u00ed','i').replace('\u00e1','a')}",cat_name,months,series,kind="subcategory",level=1))
-        rows.append(_row("otros_gg_produccion","  Otros gg. producción",months,{m:-sgg_total[m] for m in months},kind="section",section=False,children=sgg_children))
-        rows.append(_row("otros_gg_produccion_pct","%",months,_ratio_values(months,sgg_total,net_before,sign=-1),kind="percentage",precomputed=True))
+            if any(v!=0 for v in series.values()):
+                sgg_children.append(_row(f"sgg.{cat_name.lower().replace(' ','_').replace('\u00ed','i').replace('\u00e1','a')}",cat_name,months,series,kind="subcategory",level=1))
+        if sgg_children:
+            rows.append(_row("otros_gg_produccion","  Otros gg. producción",months,{m:-sgg_total[m] for m in months},kind="section",section=False,children=sgg_children))
+            rows.append(_row("otros_gg_produccion_pct","%",months,_ratio_values(months,sgg_total,net_before,sign=-1),kind="percentage",precomputed=True))
 
     rows.append(_row("resultado_explotacion","  Resultado bruto (Resultado Explotación)",months,margin_contrib,kind="subtotal",section=True))
     rows.append(_row("resultado_explotacion_pct","%",months,_ratio_values(months,margin_contrib,net_before),kind="percentage",precomputed=True))

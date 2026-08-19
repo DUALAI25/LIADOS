@@ -23,7 +23,7 @@ def main():
         gross_sum = sum(float(x["values"].get("YTD") or 0) for x in sales["children"] if x.get("label") in {f"{label} C/IVA" for label in parent_net})
         assert abs(net_sum - float(data["totals"]["ventas_netas"])) < 0.02, (net_sum, data["totals"]["ventas_netas"])
         assert abs(gross_sum - float(data["totals"]["ventas_brutas"])) < 0.02, (gross_sum, data["totals"]["ventas_brutas"])
-        for code in ("comisiones","marketing","ebit","amortizacion","resultado_financiero","resultado_antes_impuestos","impuesto_sociedades","resultado_ejercicio"): assert code in codes, code
+        for code in ("comisiones","ebit","amortizacion","resultado_financiero","resultado_antes_impuestos","impuesto_sociedades","resultado_ejercicio"): assert code in codes, code
         def provider_keys(row):
             keys=[]
             if row.get("provider_key"): keys.append(row["provider_key"])

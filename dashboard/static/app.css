@@ -1903,6 +1903,18 @@ body { background: var(--holded-canvas); color: var(--holded-text); }
 .cr-kind-percentage td { background: #fbfcfe; color: #7b8797; }
 .cr-kind-sales_detail td, .cr-kind-provider td, .cr-kind-provider_group td, .cr-kind-channel td, .cr-kind-channel_allocated td { background: #f6f8fb; color: #2b3545; }
 .cr-table tr[data-code="ebitda"] td { background: var(--holded-navy); color: #fff; border-color: var(--holded-navy); font-weight: 800; }
+.cr-table tr[data-code="ebitda"]:hover td { background: #1a2435; color: #fff; border-color: #1a2435; }
+.cr-table tr:hover td { filter: none; }
+.cr-table .cr-kind-section:hover td,
+.cr-table .cr-kind-subtotal:hover td,
+.cr-table .cr-kind-sales_primary:hover td { background: #e0eaff; color: #173b7a; border-color: #cddafc; }
+.cr-table .cr-kind-percentage:hover td { background: #f4f7fb; color: #7b8797; }
+.cr-table .cr-kind-sales_detail:hover td,
+.cr-table .cr-kind-provider:hover td,
+.cr-table .cr-kind-provider_group:hover td,
+.cr-table .cr-kind-channel:hover td,
+.cr-table .cr-kind-channel_allocated:hover td { background: #eaeff5; color: #2b3545; }
+
 .cr-table td.cr-selected { box-shadow: inset 0 0 0 2px var(--holded-blue); }
 .cr-table td.cr-selected::after { background: var(--holded-blue); }
 .cr-sheetbar { background: var(--holded-surface); color: var(--holded-muted); border-top: 1px solid var(--holded-border); min-height: 44px; }

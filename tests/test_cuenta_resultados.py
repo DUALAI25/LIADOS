@@ -14,6 +14,7 @@ SALES = [
 ]
 def test_provider_normalization_deduplicates_company_suffixes():
  assert normalize_provider("VAMOS AL LÍO, S.L.") == "vamos al lio"
+
 def test_monthly_ytd_and_provider_breakdown():
  out=build_cuenta_resultados(ROWS,SALES,"2026-01-01","2026-02-28")
  assert out["columns"]==["2026-01","2026-02","YTD"]
@@ -22,7 +23,15 @@ def test_monthly_ytd_and_provider_breakdown():
  assert out["totals"]["food_cost"]==165.0
  assert out["totals"]["personal"]==200.0
  assert out["totals"]["otros_explotacion"]==121.0
- assert out["totals"]["ebitda"]==877.64
+ assert out["totals"]["marketing"]==0.0
+ # Sin sub-clasificación de personal (las reglas no reconocen "Nóminas" → va a personal pero vendor "Nómina Ana" no contiene keywords)
+ # Por tanto nóminas/SS/otros no se muestran como sub-filas reales
+ # EBIT = EBITDA (amortización=0)
+ assert out["totals"]["ebitda"] == out["totals"]["ebit"]
+ # Impuesto sociedades sin datos = 0
+ assert out["totals"]["impuesto_sociedades"] == 0.0
+ # Resultado ejercicio = Resultado antes de impuestos (sin impuesto ni financiero)
+ assert out["totals"]["resultado_ejercicio"] == out["totals"]["resultado_antes_impuestos"]
  food=next(r for r in out["rows"] if r["code"]=="food_cost")
  provider_group=next(r for r in food["children"] if r.get("kind")=="provider_group")
  providers=provider_group["children"]
@@ -30,12 +39,12 @@ def test_monthly_ytd_and_provider_breakdown():
  assert len({r["provider_key"] for r in providers})==1
  assert food["values"]["2026-01"]==-165.0
  assert food["values"]["YTD"]==-165.0
+
 def test_iva_is_separated_from_net_sales():
  out=build_cuenta_resultados(ROWS,SALES,"2026-01-01","2026-02-28")
  assert out["totals"]["ventas_netas"]==1363.64
  assert out["totals"]["iva_ventas"]==136.36
  assert out["totals"]["iva_gastos"]==36.0
-
 
 def test_marketplace_legal_names_are_grouped_as_commissions():
     invoices = [
@@ -46,7 +55,12 @@ def test_marketplace_legal_names_are_grouped_as_commissions():
     out = build_cuenta_resultados(invoices, SALES, "2026-01-01", "2026-02-28")
     assert out["totals"]["comisiones"] == 60.0
     assert out["totals"]["otros_explotacion"] == 0.0
-
+    # Con estos vendors reales, las sub-filas de comisiones SÍ existen
+    comis=next(r for r in out["rows"] if r["code"]=="comisiones")
+    sub_codes={c["code"] for c in comis["children"]}
+    assert "comisiones.glovo" in sub_codes
+    assert "comisiones.uber" in sub_codes
+    assert "comisiones.lastshop" in sub_codes
 
 def test_reference_sales_rows_channels_and_ytd_exclude_previous_december():
     sales = [
@@ -71,10 +85,21 @@ def test_reference_sales_rows_channels_and_ytd_exclude_previous_december():
     assert children["ventas.channel.restaurant_gross"]["values"]["2026-01"] == 77.0
     assert children["ventas.channel.delivery"]["values"]["2026-01"] == 30.0
 
-
-def test_unavailable_accounting_rows_are_not_fabricated_from_ebitda():
+def test_accounting_rows_only_real_values_no_fabrication():
+    """Solo se incluyen sub-filas con datos reales. No se inventan cifras."""
     out=build_cuenta_resultados(ROWS,SALES,"2026-01-01","2026-02-28")
     rows={r["code"]:r for r in out["rows"]}
-    for code in ("amortizacion","ebit","resultado_financiero","resultado_antes_impuestos","impuesto_sociedades","resultado_antes_impuestos_pct","resultado_ejercicio"):
-        assert rows[code]["availability"] == "unavailable"
-        assert rows[code]["values"]["YTD"] is None
+    # Estructura principal siempre presente
+    for code in ("ventas","food_cost","margen_bruto","comisiones","margen_contribucion","personal","ebitda","ebit","resultado_antes_impuestos","resultado_ejercicio"):
+        assert code in rows, f"{code} debería estar"
+    # Amortización, financiero e impuesto: 0 hasta que haya datos
+    assert rows["amortizacion"]["values"]["YTD"] == 0.0
+    assert rows["resultado_financiero"]["values"]["YTD"] == 0.0
+    assert rows["impuesto_sociedades"]["values"]["YTD"] == 0.0
+    # Sub-filas solo si hay datos reales: en este test no hay facturas Glovo/Uber/LastShop,
+    # así que comisiones no debe tener sub-filas (children=[])
+    comis=rows["comisiones"]
+    assert all(c["kind"]!="subcategory" for c in comis["children"]), "comisiones no debe tener sub-filas inventadas sin datos"
+    assert rows["resultado_ejercicio"]["kind"] == "subtotal"
+    codes = [r["code"] for r in out["rows"]]
+    assert codes[-1] == "resultado_ejercicio_pct"

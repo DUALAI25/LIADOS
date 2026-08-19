@@ -2506,34 +2506,25 @@ function crColumnName(index) {
   return name;
 }
 
-function crRenderRow(row, columns, parentCode=null, rowNumber=1) {
+function crRenderRow(row, columns, parentCode=null) {
   const percentage = row.kind === 'percentage';
   const unavailable = row.availability === 'unavailable';
   const classes = [`cr-kind-${row.kind || 'line'}`, row.section ? 'cr-section' : '', parentCode ? 'cr-child' : ''].filter(Boolean).join(' ');
   const parentAttr = parentCode ? ` data-parent="${esc(parentCode)}" style="display:none"` : '';
   const code = esc(row.code);
   let html = `<tr class="${classes}" data-code="${code}"${parentAttr}>`;
-  html += `<td class="cr-row-num">${rowNumber}</td>`;
-  html += `<td class="cr-label" style="padding-left:${12 + (row.level||0)*18}px">${row.children && row.children.length ? `<button class="cr-chevron" aria-label="Mostrar desglose">+</button>` : ''}<span>${esc(row.label)}</span>${unavailable ? '<small class="cr-na">N/D</small>' : ''}</td>`;
+  html += `<td class="cr-label" style="padding-left:${16 + (row.level||0)*18}px">${row.children && row.children.length ? `<button class="cr-chevron" aria-label="Mostrar desglose">+</button>` : ''}<span>${esc(row.label)}</span>${unavailable ? '<small class="cr-na">N/D</small>' : ''}</td>`;
   columns.forEach(col => {
     const value = unavailable ? null : (row.values || {})[col];
-    html += `<td class="cr-num ${value < 0 ? 'cr-negative' : ''}" data-formula="${value == null ? '' : esc(String(value))}">${crNumber(value, percentage)}</td>`;
+    html += `<td class="cr-num ${value < 0 ? 'cr-negative' : ''}">${crNumber(value, percentage)}</td>`;
   });
   html += '</tr>';
-  (row.children || []).forEach((child, index) => { html += crRenderRow(child, columns, row.code, `${rowNumber}.${index + 1}`); });
+  (row.children || []).forEach(child => { html += crRenderRow(child, columns, row.code); });
   return html;
 }
 
 function crTableHead(columns, title) {
-  const letters = ['A', ...columns.map((_, i) => crColumnName(i + 1))];
-  const years = columns.map(c => c === 'YTD' ? 'YTD' : c.slice(0,4));
-  const monthNumbers = columns.map(c => c === 'YTD' ? 'YTD' : Number(c.slice(5,7)));
-  return `<tr class="cr-col-letters"><th class="cr-corner"></th>${letters.map(l => `<th>${l}</th>`).join('')}</tr>` +
-    `<tr class="cr-head-period"><th></th><th></th>${columns.map(c => `<th>${c === 'YTD' ? 'YTD' : crMonthLabel(c)}</th>`).join('')}</tr>` +
-    `<tr class="cr-head-real"><th></th><th></th>${columns.map(() => '<th>REAL</th>').join('')}</tr>` +
-    `<tr class="cr-head-year"><th></th><th>${esc(title)}</th>${years.map(y => `<th>${y}</th>`).join('')}</tr>` +
-    `<tr class="cr-head-index"><th></th><th></th>${monthNumbers.map(m => `<th>${m}</th>`).join('')}</tr>` +
-    `<tr class="cr-head-month"><th></th><th>€</th>${columns.map(c => `<th>${c === 'YTD' ? 'YTD' : crMonthLabel(c)}</th>`).join('')}</tr>`;
+  return `<tr class="cr-head-month"><th>${esc(title)}</th>${columns.map(c => `<th>${c === 'YTD' ? 'YTD' : crMonthLabel(c)}</th>`).join('')}</tr>`;
 }
 
 function crCollectProviders(rows, columns) {
@@ -2553,13 +2544,6 @@ function crCollectProviders(rows, columns) {
 
 function crCategoryRows(rows) {
   return (rows || []).filter(row => row.section || row.kind === 'percentage').map(row => ({...row, children: row.children || []}));
-}
-
-function crBlankSheet() {
-  const head = $('#cr-head'), body = $('#cr-body');
-  const columns = Array.from({length:13}, (_,i) => crColumnName(i + 1));
-  head.innerHTML = `<tr class="cr-col-letters"><th class="cr-corner"></th><th>A</th>${columns.map(c=>`<th>${c}</th>`).join('')}</tr>`;
-  body.innerHTML = Array.from({length:32},(_,r) => `<tr><td class="cr-row-num">${r+1}</td><td class="cr-label cr-empty-cell"></td>${columns.map(()=>'<td class="cr-num cr-empty-cell"></td>').join('')}</tr>`).join('');
 }
 
 function crRenderSheet(sheet=CR.sheet) {
@@ -2587,16 +2571,13 @@ function crRenderSheet(sheet=CR.sheet) {
     rows = crCategoryRows(CR.data.rows || []);
     if (CR.month) columns = [CR.month, 'YTD'];
     title = 'Por Categorías';
-  } else if (sheet === 'hoja5') {
-    crBlankSheet();
-    $('#cr-formula').textContent = '';
-    $('#cr-name-box').textContent = 'A1';
-    return;
   }
   $('#cr-head').innerHTML = crTableHead(columns, title);
-  $('#cr-body').innerHTML = rows.map((row,index) => crRenderRow(row, columns, null, index + 1)).join('') || '<tr><td class="cr-row-num">1</td><td class="muted">Sin datos para esta hoja.</td></tr>';
-  $('#cr-formula').textContent = title;
-  $('#cr-name-box').textContent = 'A1';
+  const body = $('#cr-body');
+  body.innerHTML = rows.map(row => crRenderRow(row, columns)).join('') || `<tr><td colspan="${columns.length + 1}" class="muted">Sin datos para esta vista.</td></tr>`;
+  body.classList.remove('cr-sheet-enter');
+  void body.offsetWidth;
+  body.classList.add('cr-sheet-enter');
 }
 async function loadCuentaResultados() {
   const today = new Date().toISOString().slice(0,10);
@@ -2647,11 +2628,6 @@ async function loadCuentaResultados() {
       if (cell) {
         $$('#cr-body td.cr-selected').forEach(el => el.classList.remove('cr-selected'));
         cell.classList.add('cr-selected');
-        const row = cell.closest('tr');
-        const rowIndex = [...body.children].indexOf(row) + 1;
-        const colIndex = [...row.children].indexOf(cell);
-        $('#cr-name-box').textContent = `${crColumnName(Math.max(0,colIndex-1))}${rowIndex}`;
-        $('#cr-formula').textContent = cell.dataset.formula || cell.textContent.trim();
       }
       const button = event.target.closest('.cr-chevron');
       if (!button) return;

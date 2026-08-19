@@ -2235,9 +2235,7 @@ INDEX_HTML = """<!DOCTYPE html>
       <div class="excel-panel" data-tab-panel="pyg">
         <div class="cr-workbook" id="cr-workbook">
 
-          <div class="cr-formula-row">
-            <span class="cr-name-box" id="cr-name-box">A1</span><span class="cr-fx">fx</span><span class="cr-formula" id="cr-formula">A. Cuenta de resultados</span>
-          </div>
+
           <div class="cr-meta-line">
             <span id="cr-meta">REAL · importes en € · fuente: Last.app + facturas</span>
             <label class="cr-month-filter"><span>Separar por mes</span><select id="cr-month-filter"><option value="">Todos los meses</option></select></label>
@@ -2251,18 +2249,13 @@ INDEX_HTML = """<!DOCTYPE html>
             </table>
           </div>
           <div class="cr-sheetbar">
-            <button class="cr-sheet-nav" aria-label="Navegar hojas">◀&nbsp;&nbsp;▶</button>
             <div class="cr-sheet-tabs" role="tablist" aria-label="Hojas del libro">
               <button class="cr-sheet-tab cr-tab-red active" data-cr-sheet="resumen" role="tab">Resumen Ejecutivo</button>
               <button class="cr-sheet-tab cr-tab-blue" data-cr-sheet="evolucion" role="tab">Evolución Mensual</button>
               <button class="cr-sheet-tab cr-tab-green" data-cr-sheet="proveedores" role="tab">Análisis Proveedores</button>
               <button class="cr-sheet-tab cr-tab-orange" data-cr-sheet="categorias" role="tab">Por Categorías</button>
-              <button class="cr-sheet-tab cr-tab-neutral" data-cr-sheet="hoja5" role="tab">Hoja5</button>
             </div>
-            <span class="cr-sheet-add" aria-hidden="true">⊕</span>
-            <span class="cr-zoom" aria-hidden="true">100%&nbsp;&nbsp;−━━●━━＋</span>
           </div>
-          <div class="cr-statusbar"><span>Listo</span><span id="cr-selection-status">REAL · datos sincronizados</span></div>
         </div>
       </div>
 

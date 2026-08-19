@@ -115,9 +115,10 @@ class TestDashboardE2E:
             "Evolución Mensual",
             "Análisis Proveedores",
             "Por Categorías",
-            "Hoja5",
         ]
         assert auth_page.locator("#cr-body tr").count() >= 8
+        assert auth_page.locator(".cr-row-num").count() == 0
+        assert auth_page.locator(".cr-col-letters").count() == 0
         ebitda_row = auth_page.locator('#cr-body tr[data-code="ebitda"]')
         assert ebitda_row.count() == 1
         assert ebitda_row.locator("td").first.evaluate("el => getComputedStyle(el).backgroundColor") == "rgb(18, 25, 38)"
@@ -135,8 +136,6 @@ class TestDashboardE2E:
         assert auth_page.locator("#cr-body tr").count() >= 1
         auth_page.locator('[data-cr-sheet="categorias"]').click()
         assert auth_page.locator("#cr-body tr").count() >= 6
-        auth_page.locator('[data-cr-sheet="hoja5"]').click()
-        assert auth_page.locator("#cr-body tr").count() == 32
 
         auth_page.set_viewport_size({"width": 390, "height": 844})
         auth_page.locator("#sidebarToggle").click()
@@ -152,6 +151,7 @@ class TestDashboardE2E:
         assert response.status == 200
         auth_page.locator(".finance-overview").wait_for(state="visible")
         assert auth_page.locator(".finance-metrics article").count() == 3
+        assert auth_page.locator(".finance-overview").evaluate("el => getComputedStyle(el).backgroundColor") == "rgb(242, 245, 249)"
         assert auth_page.locator("#kpis").evaluate("el => getComputedStyle(el).display") == "none"
         assert auth_page.locator("#sidebar").evaluate("el => getComputedStyle(el).backgroundColor") == "rgb(18, 25, 38)"
         assert auth_page.locator('.nav-item[data-view="alertas"]').count() == 0

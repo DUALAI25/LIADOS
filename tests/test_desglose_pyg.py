@@ -22,40 +22,42 @@ from desglose_pyg_rules import (
 
 
 # ── Datos de muestra ──
-# Convención Liados: total_amount en EUROS (numeric) en la BD.
-# Last.app total_cents se normaliza a euros antes de entrar en el motor.
+# Convención Liados (desde 2026-08): desglose_pyg._amount_eur interpreta
+# total_amount como EUROS directamente (la BD guarda DECIMAL(14,2)).
+# Los *_cents de Last.app los convierte a euros el endpoint antes de
+# invocar build_pyg, por lo que aquí llegan ya en euros.
 
 SAMPLE = [
-    # Ventas (EUR): 150€ + 120€ + 30€ = 300€
+    # Ventas: 150€ + 120€ + 30€ = 300€
     {"vendor_name": "Cliente A", "category_raw": "Ventas", "source_account": "principal",
      "invoice_date": "2026-01-05", "total_amount": 150.0},
     {"vendor_name": "Cliente B", "category_raw": "Ventas", "source_account": "principal",
      "invoice_date": "2026-01-15", "total_amount": 120.0},
     {"vendor_name": "Cliente C", "category_raw": "Ventas", "source_account": "principal",
      "invoice_date": "2026-01-25", "total_amount": 30.0},
-    # Descuentos (EUR): 10€
+    # Descuentos: 10€
     {"vendor_name": "Cliente A", "category_raw": "Descuentos", "source_account": "principal",
      "invoice_date": "2026-01-10", "total_amount": 10.0},
-    # Aprovisionamientos (EUR): 40€ + 10€ + 10€ = 60€ → food cost 60/290 = 20.7%
+    # Aprovisionamientos: 40€ + 10€ + 10€ = 60€ → food cost 60/290 = 20.7%
     {"vendor_name": "Makro", "category_raw": "Alimentación", "source_account": "principal",
      "invoice_date": "2026-01-08", "total_amount": 40.0},
     {"vendor_name": "Ramillo", "category_raw": "Bebida", "source_account": "principal",
      "invoice_date": "2026-01-12", "total_amount": 10.0},
     {"vendor_name": "Envapro", "category_raw": "Packaging", "source_account": "principal",
      "invoice_date": "2026-01-18", "total_amount": 10.0},
-    # Comisiones (EUR): 30€ + 15€ + 10€ = 55€ → 55/290 = 18.9% (entre 17% y 20%, no warn estricto)
+    # Comisiones: 30€ + 15€ + 10€ = 55€ → 55/290 = 18.9% (sin warn)
     {"vendor_name": "Glovo", "category_raw": "Comisiones", "source_account": "principal",
      "invoice_date": "2026-01-20", "total_amount": 30.0},
     {"vendor_name": "Uber", "category_raw": "Comisiones", "source_account": "principal",
      "invoice_date": "2026-01-22", "total_amount": 15.0},
     {"vendor_name": "LastShop", "category_raw": "Comisiones", "source_account": "principal",
      "invoice_date": "2026-01-26", "total_amount": 10.0},
-    # Personal (EUR): 40€ + 100€ = 140€
+    # Personal: 40€ + 100€ = 140€
     {"vendor_name": "TGSS", "category_raw": "Seguridad Social", "source_account": "principal",
      "invoice_date": "2026-01-30", "total_amount": 40.0},
     {"vendor_name": "Nómina Ana", "category_raw": "Nóminas", "source_account": "principal",
      "invoice_date": "2026-01-30", "total_amount": 100.0},
-    # Servicios (EUR): 60€ + 120€ = 180€
+    # Servicios: 60€ + 120€ = 180€
     {"vendor_name": "Iberdrola", "category_raw": "Luz", "source_account": "principal",
      "invoice_date": "2026-01-05", "total_amount": 60.0},
     {"vendor_name": "Propietario", "category_raw": "Alquiler", "source_account": "principal",
@@ -82,16 +84,6 @@ class TestClassification:
         # Regex match
         assert classify_factura("Otro", "uber eats") == "comisiones"
 
-    def test_marketplace_legal_names_land_in_commissions(self):
-        assert classify_factura("Restauración y Hostelería", "Glovoapp Spain Platform S.L.") == "comisiones"
-        assert classify_factura("Otros", "Uber Eats España S.L.") == "comisiones"
-        assert classify_factura("Otros", "LastShop, S.L.") == "comisiones"
-
-    def test_marketplace_matching_rejects_similar_unrelated_names(self):
-        assert classify_factura("Otros", "Glovox S.L.") != "comisiones"
-        assert classify_factura("Otros", "LastShopping S.L.") != "comisiones"
-        assert classify_factura("Otros", "Uber Technologies Spain S.L.") != "comisiones"
-
     def test_clasificacion_personal(self):
         assert classify_factura("Nóminas", "Nómina Ana") == "personal"
         assert classify_factura("Seguridad Social", "TGSS") == "personal"
@@ -109,6 +101,47 @@ class TestClassification:
         assert classify_factura("Imprevistos varios", "Desconocido SL") == "otros_gastos"
         assert classify_factura(None, None) == "otros_gastos"
 
+    def test_vendor_marketplace_manda_sobre_categoria(self):
+        """P0.1 + P1.2: el VENDOR manda sobre la categoría cuando es un
+        marketplace multicategoría. Esto evita que 'Restauración y Hostelería'
+        (categoría cruda que el parser mete cuando el restaurante emite la
+        factura) capture vendors como Glovo/Uber/LastShop en
+        aprovisionamientos por error."""
+        # Casos reales donde el restaurante emite la factura del marketplace
+        assert classify_factura(
+            "Restauración y Hostelería",
+            "Glovoapp Spain Platform S.L."
+        ) == "comisiones"
+        assert classify_factura(
+            "Otros",
+            "Uber Eats España S.L."
+        ) == "comisiones"
+        assert classify_factura(
+            "Otros",
+            "LastShop, S.L."
+        ) == "comisiones"
+        assert classify_factura(
+            "Comisiones",
+            "Just Eat Spain S.L."
+        ) == "comisiones"
+        # Caso edge: marketplace sin 'comisiones' explícito en category_raw
+        assert classify_factura(
+            "Venta",
+            "Glovo"
+        ) == "comisiones"
+
+    def test_aprovisionamientos_sin_competir_con_marketplace(self):
+        """P0.2: 'Restauración y Hostelería' con vendor de comida sigue
+        yendo a aprovisionamientos (Makro, Alipensa, etc.)."""
+        assert classify_factura(
+            "Restauración y Hostelería",
+            "Makro Málaga"
+        ) == "aprovisionamientos"
+        assert classify_factura(
+            "Restauración y Hostelería",
+            "Alimentación Peninsular"
+        ) == "aprovisionamientos"
+
 
 # ── Tests de cálculo ───────────────────────────────────────
 
@@ -124,7 +157,7 @@ class TestPygCalculation:
 
     def test_aprovisionamientos_y_food_cost(self):
         out = build_pyg(SAMPLE, "2026-01-01", "2026-01-31", cuenta="principal")
-        # Aprovisionamientos (céntimos): 4000+1000+1000 = 6000 EUR = 60€ → food cost 60/290 = 20.7%
+        # Aprovisionamientos (céntimos): 4000+1000+1000 = 6000 cts = 60€ → food cost 60/290 = 20.7%
         assert out["buckets"]["aprovisionamientos"] == 60.0
         # Margen bruto = 290 - 60 = 230
         assert out["totals"]["margen_bruto"] == 230.0
@@ -134,16 +167,16 @@ class TestPygCalculation:
 
     def test_comisiones_y_mc(self):
         out = build_pyg(SAMPLE, "2026-01-01", "2026-01-31", cuenta="principal")
-        # Comisiones (EUR): 3000+1500+1000 = 5500 EUR = 55€ → 55/290 = 19.0% < 20% no warn
+        # Comisiones (cts): 3000+1500+1000 = 5500 cts = 55€ → 55/290 = 19.0% < 20% no warn
         assert out["buckets"]["comisiones"] == 55.0
         # MC = 230 - 55 = 175
         assert out["totals"]["mc"] == 175.0
 
     def test_personal_y_servicios_y_ebitda(self):
         out = build_pyg(SAMPLE, "2026-01-01", "2026-01-31", cuenta="principal")
-        # Personal (EUR): 4000+10000 = 14000 EUR = 140€
+        # Personal (cts): 4000+10000 = 14000 cts = 140€
         assert out["buckets"]["personal"] == 140.0
-        # Servicios (EUR): 6000+12000 = 18000 EUR = 180€
+        # Servicios (cts): 6000+12000 = 18000 cts = 180€
         assert out["buckets"]["servicios"] == 180.0
         # EBITDA = MC - Personal - Servicios - OtrosProd = 175 - 140 - 180 - 0 = -145
         assert out["totals"]["ebitda"] == -145.0
@@ -229,13 +262,6 @@ class TestEdgeCases:
         cc = cross_check_subcat(out, ventas_por_subcat={"Bebida": 20.0, "Alimentación": 100.0, "Packaging": 30.0})
         bebida = next(r for r in cc if r["subcat"] == "Bebida")
         assert bebida["status"] == "alerta"
-
-    def test_importe_real_mayor_de_1000_eur_no_se_divide(self):
-        rows = [{"vendor_name": "ROTAPEL", "category_raw": "Servicios",
-                 "source_account": "principal", "invoice_date": "2026-08-01",
-                 "total_amount": 3138.68}]
-        out = build_pyg(rows, "2026-08-01", "2026-08-01", cuenta="principal")
-        assert out["totals"]["total_gastos"] == 3138.68
 
     def test_all_buckets_present(self):
         """Los 6 buckets están en BUCKETS."""

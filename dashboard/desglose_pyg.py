@@ -43,14 +43,36 @@ try:
         DEFAULT_RULES,
         BUCKETS,
         classify_factura,
+        classify_factura_v2,
         load_rules,
+        detect_duplicate,
+    )
+    from .taxonomy import (
+        CATEGORIES as OFFICIAL_CATEGORIES,
+        HARD_FLAGS,
+        CONFIDENCE_AUTO_CLASSIFY,
+        CONFIDENCE_REVIEW,
+        needs_multicategory_check,
+        is_capex_suspect,
+        is_financial_expense,
     )
 except (ImportError, ValueError):
     from desglose_pyg_rules import (
         DEFAULT_RULES,
         BUCKETS,
         classify_factura,
+        classify_factura_v2,
         load_rules,
+        detect_duplicate,
+    )
+    from taxonomy import (
+        CATEGORIES as OFFICIAL_CATEGORIES,
+        HARD_FLAGS,
+        CONFIDENCE_AUTO_CLASSIFY,
+        CONFIDENCE_REVIEW,
+        needs_multicategory_check,
+        is_capex_suspect,
+        is_financial_expense,
     )
 
 
@@ -60,7 +82,71 @@ class PygError(ValueError):
     """Error en input o configuración del PYG."""
 
 
-# ── Sub-categorías por bucket ────────────────────────────────
+# ── Bloques PYG oficiales (según spec del cliente) ───────────
+# Estructura canónica del PYG SIN IVA:
+#
+#   Ventas N-Descuentos (Ingresos)
+#   Aprovisionamientos
+#   ├─ Alimentación
+#   ├─ Bebida
+#   └─ Packaging
+#   Margen Bruto
+#   Comisiones
+#   ├─ Glovo
+#   ├─ Uber
+#   └─ LastShop
+#   Margen de Contribución
+#   Personal
+#   Otros gastos de explotación
+#   ├─ Servicios y Suministros
+#   ├─ Publicidad y Marketing
+#   └─ Gastos Generales
+#   EBITDA
+#   ── (capa posterior) ──
+#   Amortización
+#   EBIT
+#   Resultado financiero
+#   Resultado antes de impuestos
+#   Impuesto sobre beneficios
+#   Resultado del ejercicio
+PYG_BLOCKS_ORDER: tuple[str, ...] = (
+    "ventas",
+    "aprovisionamientos",
+    "margen_bruto",
+    "comisiones",
+    "mc",
+    "personal",
+    "otros_gastos_explotacion",
+    "ebitda",
+    "amortizacion",
+    "ebit",
+    "resultado_financiero",
+    "resultado_antes_impuestos",
+    "impuesto_beneficios",
+    "resultado_ejercicio",
+)
+
+
+# Mapeo: bloque PYG canónico → etiqueta humana
+PYG_BLOCK_LABELS: dict[str, str] = {
+    "ventas": "Ventas N-Descuentos",
+    "aprovisionamientos": "Aprovisionamientos",
+    "margen_bruto": "Margen Bruto",
+    "comisiones": "Comisiones",
+    "mc": "Margen de Contribución",
+    "personal": "Personal",
+    "otros_gastos_explotacion": "Otros gastos de explotación",
+    "ebitda": "EBITDA",
+    "amortizacion": "Amortización",
+    "ebit": "EBIT (Resultado de Explotación)",
+    "resultado_financiero": "Resultado financiero",
+    "resultado_antes_impuestos": "Resultado antes de impuestos",
+    "impuesto_beneficios": "Impuesto sobre beneficios",
+    "resultado_ejercicio": "Resultado del ejercicio",
+}
+
+
+# ── Sub-categorías por bucket (legacy, compatibilidad) ───────
 # v2 (2026-08-19): cada bucket tiene una lista canónica de sub-categorías
 # que se proyectan en la UI. El orden es el que aparece en el Excel del
 # cliente (PYG - SIN IVA, Resumen Ejecutivo).
@@ -636,3 +722,1020 @@ def cross_check_subcat(
                 "status": "sin_dato_venta",
             })
     return out
+
+
+# ── v3 (Guía v2.0 §30): Esquema JSON de salida ────────────────
+
+def build_pyg_v2_doc(
+    rows: Iterable[dict],
+    period_from: str,
+    period_to: str,
+    cuenta: str | None = None,
+    rules: dict | None = None,
+) -> dict:
+    """Produce el esquema JSON v2.0 (Guía §30) para un periodo.
+
+    Cada factura se clasifica con `classify_factura_v2` y se audita
+    después con `audit_classification`. Devuelve:
+
+        {
+          "schema_version": "liados-improvement-v2.0",
+          "mode": "IMPROVE_EXISTING_SYSTEM",
+          "period": {...},
+          "cuenta": ...,
+          "documents": [<doc>],   # uno por factura
+          "summary": {<resumen agregado>},
+          "totals": {<métricas globales>},
+          "issues": [<avisos>],
+          "audit_summary": {<resumen de auditoría>}
+        }
+
+    Cada `document` contiene los campos del esquema de la guía:
+      status, supplier, document, amounts, classifications[],
+      confidence, flags, audit, system_improvement.
+    """
+    if rules is None:
+        rules = load_rules()
+
+    try:
+        d_from = _dt.strptime(period_from, "%Y-%m-%d").date()
+        d_to = _dt.strptime(period_to, "%Y-%m-%d").date()
+    except ValueError as e:
+        raise PygError(f"Fechas inválidas: {period_from} / {period_to}") from e
+    if d_from > d_to:
+        raise PygError(f"period_from > period_to: {period_from} > {period_to}")
+
+    documents: list[dict] = []
+    seen_fingerprints: set[tuple] = set()
+    audit_decisions = {"pass": 0, "review": 0, "non_pyg": 0,
+                        "duplicate_blocked": 0}
+
+    for r in rows or []:
+        if not r:
+            continue
+        d = _coerce_date(r.get("invoice_date"))
+        if d is None:
+            continue
+        if d < d_from or d > d_to:
+            continue
+        if cuenta is not None:
+            src = (r.get("source_account") or r.get("account") or "").strip().lower()
+            if cuenta.lower() not in src and src != cuenta.lower():
+                if not src.startswith(cuenta.lower()):
+                    continue
+        amount = _amount_eur(r.get("total_amount"))
+        vendor = (r.get("vendor_name") or r.get("vendor") or "").strip()
+        cat = r.get("category_raw") or r.get("category") or ""
+        concept = r.get("concept") or r.get("description") or ""
+
+        # Intercompany → NON_PYG directo
+        if _is_intercompany(vendor):
+            documents.append({
+                "schema_version": "liados-improvement-v2.0",
+                "mode": "IMPROVE_EXISTING_SYSTEM",
+                "document_id": r.get("invoice_id")
+                              or f"{vendor}-{r.get('invoice_number', '')}-{d}",
+                "status": "NON_PYG",
+                "supplier": {"name": vendor, "tax_id": None},
+                "document": {
+                    "type": r.get("doc_type"),
+                    "invoice_number": r.get("invoice_number"),
+                    "issue_date": str(d),
+                    "accounting_date": None,
+                    "reporting_month": f"{d.year:04d}-{d.month:02d}",
+                },
+                "amounts": {
+                    "net": abs(amount),
+                    "vat": None,
+                    "gross": abs(amount),
+                },
+                "classifications": [],
+                "system_improvement": {
+                    "issue_detected": False,
+                    "issue_type": "INTERCOMPANY",
+                    "proposal": None,
+                    "requires_human_approval": False,
+                },
+                "confidence": {
+                    "extraction": 1.0,
+                    "classification": 1.0,
+                    "audit": 1.0,
+                },
+                "flags": [],
+                "audit": {
+                    "decision": "non_pyg",
+                    "notes": ["movimiento intercompany; no es gasto real"],
+                },
+            })
+            audit_decisions["non_pyg"] += 1
+            continue
+
+        # Duplicados
+        dup = detect_duplicate(
+            invoice_id=r.get("invoice_id"),
+            nif_cif=r.get("vendor_tax_id"),
+            invoice_number=r.get("invoice_number"),
+            serie=r.get("invoice_series"),
+            issue_date=str(d),
+            base=r.get("base_amount"),
+            vat=r.get("vat_amount"),
+            total=r.get("total_amount"),
+            seen=seen_fingerprints,
+        )
+        if dup["is_duplicate"]:
+            documents.append({
+                "schema_version": "liados-improvement-v2.0",
+                "mode": "IMPROVE_EXISTING_SYSTEM",
+                "document_id": r.get("invoice_id")
+                              or f"{vendor}-{r.get('invoice_number', '')}-{d}",
+                "status": "DUPLICATE_BLOCKED",
+                "supplier": {"name": vendor, "tax_id": r.get("vendor_tax_id")},
+                "document": {
+                    "type": r.get("doc_type"),
+                    "invoice_number": r.get("invoice_number"),
+                    "issue_date": str(d),
+                },
+                "amounts": {"net": abs(amount), "vat": None,
+                             "gross": abs(amount)},
+                "classifications": [],
+                "confidence": {"extraction": 0.95, "classification": 1.0,
+                                "audit": 1.0},
+                "flags": ["POSSIBLE_DUPLICATE"],
+                "audit": {
+                    "decision": "duplicate_blocked",
+                    "notes": ["fingerprint duplicado por proveedor+número"],
+                },
+            })
+            audit_decisions["duplicate_blocked"] += 1
+            continue
+
+        # Clasificación v2.0
+        cls = classify_factura_v2(
+            category_raw=cat or None,
+            vendor_name=vendor or None,
+            concept=concept or None,
+            rules=rules,
+        )
+
+        # Audit posterior (13 chequeos, guía §27)
+        audit = audit_classification(cls, r, vendor, cat, concept, amount)
+
+        # Status final
+        cls_conf = cls["confidence"]["classification"]
+        audit_conf = audit["confidence"]["audit"]
+        # Hard flags que NO bloquean auto-clasificación (guía §26:
+        # son alertas, no bloqueos cuando la evidencia es sólida).
+        advisory_only = {"TAX_EXTRACTION_UNCERTAIN",
+                          "UNKNOWN_DOCUMENT_TYPE"}
+        blocking_flags = (
+            set(cls["flags"]) | set(audit["flags"])
+        ) - advisory_only
+
+        if (cls_conf < CONFIDENCE_AUTO_CLASSIFY
+                or audit_conf < CONFIDENCE_AUTO_CLASSIFY
+                or blocking_flags):
+            status = "MANUAL_REVIEW"
+            decision = "manual_review"
+            audit_decisions["review"] += 1
+        else:
+            status = "CLASSIFIED"
+            decision = "pass"
+            audit_decisions["pass"] += 1
+
+        # Montar doc según esquema §30
+        doc = {
+            "schema_version": "liados-improvement-v2.0",
+            "mode": "IMPROVE_EXISTING_SYSTEM",
+            "document_id": r.get("invoice_id")
+                          or f"{vendor}-{r.get('invoice_number', '')}-{d}",
+            "status": status,
+            "supplier": {
+                "name": vendor,
+                "tax_id": r.get("vendor_tax_id"),
+            },
+            "document": {
+                "type": r.get("doc_type"),
+                "invoice_number": r.get("invoice_number"),
+                "serie": r.get("invoice_series"),
+                "issue_date": str(d),
+                "accounting_date": str(d),
+                "reporting_month": f"{d.year:04d}-{d.month:02d}",
+            },
+            "amounts": {
+                "net": r.get("base_amount"),
+                "vat": r.get("vat_amount"),
+                "gross": abs(amount),
+            },
+            "classifications": [
+                {
+                    "line_id": r.get("invoice_id") or "single",
+                    "original_description": cls["original_description"],
+                    "normalized_concept": cls["normalized_concept"],
+                    "expense_category": cls["expense_category"],
+                    "semantic_subcategory": cls["semantic_subcategory"],
+                    "pyg_block": cls["pyg_block"],
+                    "pyg_category": cls["pyg_category"],
+                    "pyg_subcategory": cls["pyg_subcategory"],
+                    "net_amount": r.get("base_amount") or abs(amount),
+                    "reason": cls["reason"],
+                    "evidence": cls["evidence"],
+                }
+            ],
+            "system_improvement": {
+                "issue_detected": bool(audit["improvement_proposal"]),
+                "issue_type": audit["improvement_type"],
+                "proposal": audit["improvement_proposal"],
+                "requires_human_approval": True,
+            },
+            "confidence": cls["confidence"],
+            "flags": list(set(cls["flags"] + audit["flags"])),
+            "audit": {
+                "decision": decision,
+                "notes": audit["notes"],
+            },
+        }
+        documents.append(doc)
+
+    # Resumen
+    totals = {
+        "documents_total": len(documents),
+        "classified": audit_decisions["pass"],
+        "manual_review": audit_decisions["review"],
+        "non_pyg": audit_decisions["non_pyg"],
+        "duplicates_blocked": audit_decisions["duplicate_blocked"],
+    }
+    issues = _aggregate_issues(documents)
+
+    return {
+        "schema_version": "liados-improvement-v2.0",
+        "mode": "IMPROVE_EXISTING_SYSTEM",
+        "period": {"from": period_from, "to": period_to},
+        "cuenta": cuenta,
+        "documents": documents,
+        "totals": totals,
+        "audit_summary": audit_decisions,
+        "issues": issues,
+    }
+
+
+# ── v3 (Guía v2.0 §27): Auditoría posterior (13 chequeos) ─────
+
+def audit_classification(
+    cls: dict,
+    row: dict,
+    vendor: str,
+    cat: str,
+    concept: str,
+    amount: float,
+) -> dict:
+    """Aplica los 13 chequeos de la guía §27.
+
+    Devuelve: {
+      "flags": [<hard flags nuevas>],
+      "notes": [<notas humanas>],
+      "confidence": {"audit": float},
+      "improvement_proposal": str | None,
+      "improvement_type": str | None,
+    }
+    """
+    flags: list[str] = []
+    notes: list[str] = []
+    improvement_proposal: str | None = None
+    improvement_type: str | None = None
+
+    # 1. INSUFFICIENT_CONCEPT (categoría sin línea ni concepto)
+    if not cat and not concept:
+        flags.append("INSUFFICIENT_CONCEPT")
+        notes.append("Sin categoría ni concepto: no se puede clasificar")
+
+    # 2. AMBIGUOUS_VENDOR (multicategoría sin concepto)
+    if needs_multicategory_check(vendor) and not concept:
+        flags.append("AMBIGUOUS_VENDOR")
+        notes.append(
+            f"vendor {vendor} es multicategoría; falta concepto"
+        )
+
+    # 3. POTENTIAL_CAPEX (palabras clave de activo durable)
+    if is_capex_suspect(concept or cat):
+        flags.append("POTENTIAL_CAPEX")
+        notes.append("posible activo (CAPEX), no gasto corriente")
+        improvement_proposal = (
+            "Sugerir crear categoría CAPEX o separar como activo"
+        )
+        improvement_type = "CAPEX_DETECTED"
+
+    # 4. FINANCIAL_EXPENSE (intereses)
+    if is_financial_expense(concept or cat):
+        flags.append("FINANCIAL_EXPENSE")
+        notes.append("interés/coste financiero: fuera de EBITDA")
+        improvement_proposal = (
+            "Mover fuera de EBITDA en el PYG; OUTSIDE_VIDEO_PYG"
+        )
+        improvement_type = "FINANCIAL_OUTSIDE_EBITDA"
+
+    # 5. TOTAL_MISMATCH (base+iva ≠ total cuando están los 3 campos)
+    base = row.get("base_amount")
+    vat = row.get("vat_amount")
+    if base is not None and vat is not None and amount:
+        diff = abs((base + vat) - abs(amount))
+        if diff > 0.05:
+            flags.append("TOTAL_MISMATCH")
+            notes.append(
+                f"base+iva={base+vat:.2f} ≠ total={abs(amount):.2f}"
+            )
+
+    # 6. UNKNOWN_TAX / TAX_EXTRACTION_UNCERTAIN
+    if amount and (base is None or vat is None):
+        flags.append("TAX_EXTRACTION_UNCERTAIN")
+        notes.append(
+            "no se pudo extraer IVA/base; PYG debe ir SIN IVA"
+        )
+
+    # 7. UNMATCHED_CREDIT_NOTE (categoría devolución sin factura original)
+    if cat and cat.lower() in ("devolucion", "abono", "abonos",
+                                "retorno", "factura rectificativa"):
+        if not row.get("original_invoice_id"):
+            flags.append("UNMATCHED_CREDIT_NOTE")
+            notes.append(
+                "abono sin factura original vinculada"
+            )
+
+    # 8. CROSS_PERIOD_MATERIAL (servicio que cubre varios meses)
+    if row.get("cross_period") is True:
+        flags.append("CROSS_PERIOD_MATERIAL")
+        notes.append("servicio cross-period; revisar periodificación")
+
+    # 9. UNKNOWN_CATEGORY_MAPPING
+    if cls.get("expense_category") == "Otros" and "UNKNOWN_CATEGORY_MAPPING" in cls["flags"]:
+        flags.append("UNKNOWN_CATEGORY_MAPPING")
+        notes.append(
+            "categoría operativa no resoluble automáticamente"
+        )
+        improvement_proposal = (
+            "Proponer manualmente la categoría operativa correcta"
+        )
+        improvement_type = "UNCLEAR_CATEGORY"
+
+    # 10. MIXED_LINES_UNRESOLVED (vendor multicategoría + concepto ambiguo)
+    if needs_multicategory_check(vendor) and concept:
+        # Si el concepto no encaja con el bucket asignado, flag
+        con_n = _norm_accents((concept or cat or "")).lower()
+        if cls["bucket"] == "comisiones" and any(
+            k in con_n for k in ("visibilidad", "campana", "promocion",
+                                  "publicidad")
+        ):
+            flags.append("MIXED_LINES_UNRESOLVED")
+            notes.append(
+                "vendor comisiones con concepto de visibilidad → "
+                "debería ir a marketing"
+            )
+            improvement_proposal = (
+                "Reclasificar como Marketing y Publicidad"
+            )
+            improvement_type = "VENDOR_BUCKET_MISMATCH"
+        if cls["bucket"] in ("aprovisionamientos", "otros_gastos_produccion") \
+                and any(k in con_n for k in ("publicidad", "carteleria",
+                                              "promocional")):
+            flags.append("MIXED_LINES_UNRESOLVED")
+            notes.append(
+                "Rotapel/Envapro con concepto publicitario → "
+                "Marketing, no Packaging"
+            )
+            improvement_proposal = (
+                "Reclasificar como Marketing y Publicidad"
+            )
+            improvement_type = "VENDOR_BUCKET_MISMATCH"
+
+    # 11. POSSIBLE_DUPLICATE — ya se chequea arriba, no duplicamos
+    # 12. UNKNOWN_DOCUMENT_TYPE
+    if not row.get("doc_type"):
+        notes.append("doc_type ausente; no impide clasificación")
+
+    # 13. coherencia histórica (no la aplicamos aquí; saldría de un
+    #     estado externo mantenido por la app)
+
+    # Confianza auditor
+    audit_conf = 0.95
+    # Flags advisory no degradan la confianza (son anotaciones, no
+    # alertas duras para el auditor).
+    hard_for_audit = [f for f in flags
+                       if f not in ("TAX_EXTRACTION_UNCERTAIN",
+                                     "UNKNOWN_DOCUMENT_TYPE")]
+    if hard_for_audit:
+        audit_conf -= 0.20 * len(hard_for_audit)
+    audit_conf = max(audit_conf, 0.50)
+
+    return {
+        "flags": flags,
+        "notes": notes,
+        "confidence": {"audit": round(audit_conf, 3)},
+        "improvement_proposal": improvement_proposal,
+        "improvement_type": improvement_type,
+    }
+
+
+def _aggregate_issues(documents: list[dict]) -> list[dict]:
+    """Cuenta flags duros por tipo y devuelve issues agregados."""
+    flag_counts: dict[str, int] = {}
+    for d in documents:
+        for f in d.get("flags", []):
+            flag_counts[f] = flag_counts.get(f, 0) + 1
+
+    out: list[dict] = []
+    for f in HARD_FLAGS:
+        cnt = flag_counts.get(f, 0)
+        if cnt > 0:
+            out.append({
+                "level": "warn",
+                "code": f,
+                "message": f"{f}: {cnt} documentos afectados",
+            })
+    return out
+
+
+
+# ── v4 (P0.1): build_pyg_canonical ───────────────────────────────────
+# Jerarquía EXACTA del cliente (P0.1, P0.2, P0.3, P0.4, P0.5, P0.6, P0.9)
+# Esta función reemplaza la versión jerárquica de build_pyg con la
+# estructura de 4 dimensiones independientes:
+#   - PYG (jerarquía financiera)
+#   - Categoría analítica (dimensión)
+#   - Proveedor (dimensión)
+#   - Canal (dimensión)
+# Mantenemos `build_pyg` original 100% compatible (la app.py actual
+# sigue usándola); `build_pyg_canonical` es la nueva API.
+
+def _canonical_sub_aprovisionamientos(
+    bucket: str, cat: str | None, vendor: str | None,
+    concept: str | None = None, description: str | None = None,
+) -> str:
+    """Sub-categoría canónica de Aprovisionamientos.
+
+    Resolución:
+      1. Si concept/description contiene palabras de bebida (refresco,
+         coca, pepsi, zumos, cerveza, vino, agua embotellada) → Bebida.
+      2. Si concept/description contiene palabras de packaging
+         (cajas, bolsas, envases, vasos, tapas, takeaway, delivery) →
+         Packaging.
+      3. Si category_raw ya marca Bebida/Packaging → Bebida/Packaging.
+      4. Si vendor sugiere packaging (Rotapel, Envapro, Envases para
+         Profesionales) → Packaging.
+      5. Default → Alimentación.
+
+    Esto evita que 55 facturas de Makro (todas 'Alimentación') bloqueen
+    el sub-desglose Bebida/Packaging que existe conceptualmente.
+    """
+    cat_l = (cat or "").strip().lower()
+    ven_l = (vendor or "").strip().lower()
+    con_l = ((concept or "") + " " + (description or "")).strip().lower()
+
+    BEBI = ("bebida", "refresco", "refrescos", "coca", "pepsi", "fanta",
+            "zumo", "zumos", "cerveza", "vino", "agua embotellada", "drink")
+    PACK = ("packaging", "cajas", "bolsas", "envase", "envases", "vasos",
+            "tapas", "recipientes", "envoltorios", "takeaway", "delivery")
+    ALI  = ("alimento", "alimentos", "carne", "pescado", "verdura", "fruta",
+            "panader", "lacteo", "lácteo", "queso", "aceite", "salsa",
+            "comida", "mercader", "mercanc", "materia prima")
+
+    # 1) Bebida por concepto
+    if any(k in con_l for k in BEBI):
+        return "Bebida"
+    if cat_l in ("bebida", "drink", "bebidas"):
+        return "Bebida"
+    if any(k in ven_l for k in ("coca", "pepsi", "fanta")):
+        return "Bebida"
+
+    # 2) Packaging por concepto
+    if any(k in con_l for k in PACK):
+        return "Packaging"
+    if cat_l in ("packaging", "envases"):
+        return "Packaging"
+    if any(k in ven_l for k in ("rotapel", "envapro", "envases",
+                                 "packaging")):
+        return "Packaging"
+
+    # 3) Si concept sugiere alimentación explícitamente
+    if any(k in con_l for k in ALI):
+        return "Alimentación"
+
+    # 4) Default: Alimentación
+    return "Alimentación"
+
+
+def _canonical_sub_comisiones(vendor: str | None) -> str:
+    """Sub-categoría canónica de Comisiones: Glovo / Uber / LastShop / Just Eat / Otros."""
+    ven_l = (vendor or "").strip().lower()
+    if "glovo" in ven_l:
+        return "Glovo"
+    if "uber" in ven_l:
+        return "Uber"
+    if "last" in ven_l and ("app" in ven_l or "shop" in ven_l):
+        return "LastShop"
+    if "just" in ven_l and "eat" in ven_l:
+        return "Just Eat"
+    return "Otros"
+
+
+def _canonical_sub_otros_gastos(
+    bucket: str, cat: str | None, vendor: str | None
+) -> str:
+    """Mapea a: Servicios y Suministros / Publicidad y Marketing / Gastos Generales.
+
+    Reglas (P0.3):
+    - Publicidad y Marketing: vendor o categoría con 'marketing', 'publicidad',
+      'meta ads', 'google ads', 'visibilidad', 'campana', 'rotapel/Envapro
+      con concepto publicitario'.
+    - Servicios y Suministros: bucket 'servicios' o categorías de Suministros
+      (Luz, Agua, Internet, Alquiler, Asesoría, etc.).
+    - Gastos Generales: el resto (Material oficina, Reparación, Seguros,
+      Software, Impuestos, Bancarios, etc.).
+    """
+    cat_l = (cat or "").strip().lower()
+    ven_l = (vendor or "").strip().lower()
+
+    # Marketing primero
+    if "marketing" in cat_l or "publicidad" in cat_l or "ads" in cat_l:
+        return "Publicidad y Marketing"
+    if "visibilidad" in ven_l or "campana" in ven_l or "marketing" in ven_l:
+        return "Publicidad y Marketing"
+
+    # Servicios y Suministros (no marketing)
+    if "suministr" in cat_l or "luz" in cat_l or "agua" in cat_l or "alquiler" in cat_l:
+        return "Servicios y Suministros"
+    if any(k in ven_l for k in [
+        "iberdrola", "endesa", "naturgy", "aqualia", "movistar", "vodafone",
+        "orange", "telef", "hermanos tonda", "propietario",
+    ]):
+        return "Servicios y Suministros"
+
+    # Gastos Generales (catch-all)
+    return "Gastos Generales"
+
+
+def build_pyg_canonical(
+    rows: Iterable[dict],
+    period_from: str,
+    period_to: str,
+    cuenta: str | None = None,
+    rules: dict | None = None,
+) -> dict:
+    """PYG jerárquico canónico (P0.1).
+
+    Devuelve:
+        {
+          "period": {"from": ..., "to": ...},
+          "cuenta": ...,
+          "report_status": "RECONCILED" | "RECONCILED_WITH_WARNINGS" |
+                           "INVALID_RECONCILIATION",
+          "totals": {
+            "ventas_netas", "margen_bruto", "mc", "ebitda",
+            "ebit", "resultado_ejercicio", ...
+          },
+          "lines": [
+            {"code", "label", "value", "pct", "level", "kind", "children"},
+          ],
+          "drilldown": {
+            "proveedores": [{"name", "value", "pyg_path", "facturas"}],
+            "categorias": [{"name", "value", "pyg_path"}],
+            "canales": [{"name", "value", "pyg_path"}],
+          },
+          "issues": [...],
+          "reconciliation": {"status", "errors", "warnings", "derived"},
+        }
+
+    Esta función:
+    - Aplica el árbol EXACTO del PYG canónico (P0.1).
+    - NO mezcla categorías con sub-categorías PYG (P0.3).
+    - NO usa canales como categorías PYG (P0.8).
+    - Aísla IVA fuera del PYG (P0.4).
+    - Reconcilía MBruto, MC, EBITDA (P0.5, P0.6).
+    - Sin fila "Beneficio" que duplica MC (P0.9).
+    """
+    if rules is None:
+        rules = load_rules()
+
+    try:
+        d_from = _dt.strptime(period_from, "%Y-%m-%d").date()
+        d_to = _dt.strptime(period_to, "%Y-%m-%d").date()
+    except ValueError as e:
+        raise PygError(f"Fechas inválidas: {period_from} / {period_to}") from e
+    if d_from > d_to:
+        raise PygError(f"period_from > period_to: {period_from} > {period_to}")
+
+    # Limpiar filas
+    clean_rows = []
+    for r in rows or []:
+        if not r:
+            continue
+        d = _coerce_date(r.get("invoice_date"))
+        if d is None:
+            continue
+        if d < d_from or d > d_to:
+            continue
+        if cuenta is not None:
+            src = (r.get("source_account") or r.get("account") or "").strip().lower()
+            if cuenta.lower() not in src and src != cuenta.lower():
+                if not src.startswith(cuenta.lower()):
+                    continue
+        amount = _amount_eur(r.get("total_amount"))
+        clean_rows.append({
+            "date": d,
+            "amount": amount,
+            "category": r.get("category_raw") or r.get("category") or "",
+            "vendor": r.get("vendor_name") or r.get("vendor") or "",
+            "channel": r.get("channel") or r.get("canal") or "",
+            "iva": r.get("iva_amount") or r.get("vat") or 0.0,
+            "base": r.get("base_amount") or r.get("net") or None,
+            "concept": r.get("concept") or "",
+            "description": r.get("description") or "",
+        })
+
+    # ── Clasificar filas en bloques PYG canónicos ─────────────
+    # Cada fila → (pyg_block, pyg_subcategory, contribution_to_pyg)
+    # Bloques canónicos:
+    #   ventas, aprovisionamientos, comisiones, personal,
+    #   servicios_y_suministros, publicidad_y_marketing, gastos_generales,
+    #   amortizacion, resultado_financiero, impuesto_beneficios,
+    #   fuera_pyg (NON_PYG, CAPEX, INTERCOMPANY, IVA, manual_review)
+    ventas_brutas = 0.0
+    descuentos = 0.0
+    devoluciones = 0.0
+    alimentos = 0.0
+    bebidas = 0.0
+    packaging = 0.0
+    com_glovo = 0.0
+    com_uber = 0.0
+    com_lastshop = 0.0
+    com_justeat = 0.0
+    com_otros = 0.0
+    personal = 0.0
+    servicios_y_suministros = 0.0
+    publicidad_y_marketing = 0.0
+    gastos_generales = 0.0
+    amortizacion = 0.0
+    resultado_financiero = 0.0
+    impuesto_beneficios = 0.0
+    iva_total = 0.0
+    bloqueado_pyg = 0.0
+    capex_bloqueado = 0.0  # POTENTIAL_CAPEX → cola de revisión
+    intercompany_bloqueado = 0.0  # NON_PYG → fuera del PYG
+
+    # Drill-down por dimensión
+    proveedores: dict[str, dict] = {}  # name → {value, facturas, pyg_paths}
+    categorias: dict[str, dict] = {}  # cat → {value, pyg_paths}
+    canales: dict[str, dict] = {}  # canal → {value, pyg_paths}
+
+    for r in clean_rows:
+        cat = r["category"]
+        vendor = r["vendor"]
+        amount = r["amount"]
+        base = r["base"]
+        iva = r["iva"]
+        channel = r["channel"].strip() or "Sin canal"
+
+        if iva and iva > 0:
+            # iva puede venir como Decimal de la BD
+            iva_total += float(abs(iva))
+
+        # ── Ingresos / descuentos / devoluciones ──
+        if _is_venta(cat) and amount > 0:
+            ventas_brutas += amount
+            _track_dim(categorias, "Ventas", amount, "ventas")
+            _track_dim(canales, channel, amount, "ventas")
+            _track_dim(proveedores, "Ventas clientes", amount, "ventas")
+            continue
+        if _is_descuento(cat) and amount > 0:
+            descuentos += amount
+            continue
+        if _is_devolucion(cat) and amount > 0:
+            devoluciones += amount
+            continue
+
+        # ── Gastos ──
+        if not _is_gasto(amount, cat):
+            continue
+        if amount <= 0.005:
+            continue
+        if _is_intercompany(vendor):
+            intercompany_bloqueado += float(abs(amount))
+            continue
+
+        # Si tiene IVA extraído, usar base_amount como base imponible real
+        # (sin IVA). Si no, usar amount como base.
+        # OJO: la BD devuelve Decimal, no float — convertir explícitamente.
+        net = float(abs(base)) if base is not None else float(abs(amount))
+
+        bucket = classify_factura(cat, vendor, rules=rules)
+        concept = r["concept"]
+        description = r["description"]
+        sub = (_canonical_sub_aprovisionamientos(bucket, cat, vendor,
+                                                 concept, description)
+               if bucket == "aprovisionamientos"
+               else _canonical_sub_comisiones(vendor)
+               if bucket == "comisiones"
+               else _canonical_sub_otros_gastos(bucket, cat, vendor))
+
+        # CAPEX → POTENTIAL_CAPEX (cola de revisión, NO OPEX)
+        if is_capex_suspect(cat) or is_capex_suspect(vendor):
+            capex_bloqueado += net
+            continue
+        # Financiero → fuera de EBITDA
+        if is_financial_expense(cat) or is_financial_expense(vendor):
+            resultado_financiero += net
+            continue
+
+        # Bucket → bloque PYG canónico
+        if bucket == "aprovisionamientos":
+            if sub == "Alimentación":
+                alimentos += net
+            elif sub == "Bebida":
+                bebidas += net
+            elif sub == "Packaging":
+                packaging += net
+            else:
+                alimentos += net  # fallback
+        elif bucket == "comisiones":
+            if sub == "Glovo":
+                com_glovo += net
+            elif sub == "Uber":
+                com_uber += net
+            elif sub == "LastShop":
+                com_lastshop += net
+            elif sub == "Just Eat":
+                com_justeat += net
+            else:
+                com_otros += net
+        elif bucket == "personal":
+            personal += net
+        elif bucket == "servicios":
+            servicios_y_suministros += net
+        elif bucket == "otros_gastos":
+            if sub == "Servicios y Suministros":
+                servicios_y_suministros += net
+            elif sub == "Publicidad y Marketing":
+                publicidad_y_marketing += net
+            else:
+                gastos_generales += net
+        elif bucket == "otros_gastos_produccion":
+            # '4) Otros gastos de producción' del vídeo anterior.
+            # Por la nueva spec, se reagrupa en 'Otros gastos de explotación'
+            # (Gastos Generales).
+            gastos_generales += net
+        else:
+            # Catch-all
+            gastos_generales += net
+
+        # Track dimensiones
+        _track_dim(proveedores, vendor, net,
+                   "PYG " + _bucket_to_pyg_block(bucket))
+        _track_dim(categorias, cat or "Sin categoría", net,
+                   "PYG " + _bucket_to_pyg_block(bucket))
+        _track_dim(canales, channel, net,
+                   "PYG " + _bucket_to_pyg_block(bucket))
+
+    # ── Construir PygBreakdown y reconciliar ────────────────
+    import importlib
+    try:
+        _pr = importlib.import_module("pyg_reconciliation")
+    except (ImportError, ModuleNotFoundError):
+        try:
+            _pr = importlib.import_module("dashboard.pyg_reconciliation")
+        except (ImportError, ModuleNotFoundError):
+            _pr = importlib.import_module(".pyg_reconciliation", __name__)
+    PygBreakdown = _pr.PygBreakdown
+    reconcile = _pr.reconcile
+    build_breakdown_from_classified = _pr.build_breakdown_from_classified
+    RECON_OK = _pr.RECON_OK
+    RECON_WARN = _pr.RECON_WARN
+    RECON_FAIL = _pr.RECON_FAIL
+    ventas_netas = _pr.ventas_netas
+    aprovisionamientos_total = _pr.aprovisionamientos_total
+    comisiones_total = _pr.comisiones_total
+    otros_gastos_explotacion_total = _pr.otros_gastos_explotacion_total
+    margen_bruto = _pr.margen_bruto
+    mc = _pr.mc
+    ebitda = _pr.ebitda
+    ebit = _pr.ebit
+    resultado_antes_impuestos = _pr.resultado_antes_impuestos
+    resultado_ejercicio = _pr.resultado_ejercicio
+
+    # Construir breakdown desde los inputs acumulados
+    b = PygBreakdown(
+        ventas_brutas=ventas_brutas,
+        descuentos=descuentos,
+        devoluciones=devoluciones,
+        alimentacion=alimentos,
+        bebida=bebidas,
+        packaging=packaging,
+        comision_glovo=com_glovo,
+        comision_uber=com_uber,
+        comision_lastshop=com_lastshop,
+        comision_just_eat=com_justeat,
+        comision_otros=com_otros,
+        personal_total=personal,
+        servicios_y_suministros=servicios_y_suministros,
+        publicidad_y_marketing=publicidad_y_marketing,
+        gastos_generales=gastos_generales,
+        amortizacion=amortizacion,
+        resultado_financiero=resultado_financiero,
+        impuesto_beneficios=impuesto_beneficios,
+        iva_total=iva_total,
+        bloqueado_pyg=bloqueado_pyg,
+        capex_bloqueado=capex_bloqueado,
+        intercompany_bloqueado=intercompany_bloqueado,
+    )
+
+    r = reconcile(b)
+
+    # ── Construir jerarquía con la estructura del cliente ─────────
+    lines: list[dict] = []
+
+    def add(code, label, value, level=0, kind="line", pct=None,
+            children=None, highlight=None):
+        lines.append({
+            "code": code, "label": label, "value": round(value, 2),
+            "pct": pct, "level": level, "kind": kind,
+            "children": children or [],
+            "highlight": highlight,
+        })
+
+    # ── Ingresos ──
+    if ventas_brutas > 0:
+        add("ventas_brutas", "Ventas brutas", ventas_brutas, level=0, kind="data")
+    if descuentos > 0:
+        add("descuentos", "Descuentos", -descuentos, level=0, kind="data")
+    if devoluciones > 0:
+        add("devoluciones", "Devoluciones", -devoluciones, level=0, kind="data")
+    add("ventas_netas", "Ventas N-Descuentos", ventas_netas(b),
+        level=0, kind="subtotal", highlight="yellow",
+        pct=1.0 if ventas_netas(b) > 0 else None)
+
+    # ── Aprovisionamientos ──
+    if aprovisionamientos_total(b) > 0.001:
+        children = []
+        if alimentos > 0.001:
+            children.append({"label": "Alimentación", "value": round(alimentos, 2)})
+        if bebidas > 0.001:
+            children.append({"label": "Bebida", "value": round(bebidas, 2)})
+        if packaging > 0.001:
+            children.append({"label": "Packaging", "value": round(packaging, 2)})
+        add("aprovisionamientos", "Aprovisionamientos",
+            aprovisionamientos_total(b), level=1, kind="section",
+            pct=aprovisionamientos_total(b) / ventas_netas(b)
+            if ventas_netas(b) else 0.0,
+            children=children)
+
+    # ── Margen Bruto ──
+    add("margen_bruto", "Margen Bruto", margen_bruto(b),
+        level=0, kind="subtotal", highlight="yellow",
+        pct=margen_bruto(b) / ventas_netas(b) if ventas_netas(b) else 0.0)
+
+    # ── Comisiones ──
+    if comisiones_total(b) > 0.001:
+        children = []
+        if com_glovo > 0.001:
+            children.append({"label": "Glovo", "value": round(com_glovo, 2)})
+        if com_uber > 0.001:
+            children.append({"label": "Uber", "value": round(com_uber, 2)})
+        if com_lastshop > 0.001:
+            children.append({"label": "LastShop",
+                              "value": round(com_lastshop, 2)})
+        if com_justeat > 0.001:
+            children.append({"label": "Just Eat",
+                              "value": round(com_justeat, 2)})
+        if com_otros > 0.001:
+            children.append({"label": "Otros",
+                              "value": round(com_otros, 2)})
+        add("comisiones", "Comisiones", comisiones_total(b),
+            level=1, kind="section",
+            pct=comisiones_total(b) / ventas_netas(b)
+            if ventas_netas(b) else 0.0,
+            children=children)
+
+    # ── Margen de Contribución ──
+    add("mc", "Margen de Contribución", mc(b),
+        level=0, kind="subtotal", highlight="yellow",
+        pct=mc(b) / ventas_netas(b) if ventas_netas(b) else 0.0)
+
+    # ── Personal ──
+    if personal > 0.001:
+        add("personal", "Personal", personal, level=1, kind="section",
+            pct=personal / ventas_netas(b) if ventas_netas(b) else 0.0)
+
+    # ── Otros gastos de explotación ──
+    if otros_gastos_explotacion_total(b) > 0.001:
+        children = []
+        if servicios_y_suministros > 0.001:
+            children.append({"label": "Servicios y Suministros",
+                              "value": round(servicios_y_suministros, 2)})
+        if publicidad_y_marketing > 0.001:
+            children.append({"label": "Publicidad y Marketing",
+                              "value": round(publicidad_y_marketing, 2)})
+        if gastos_generales > 0.001:
+            children.append({"label": "Gastos Generales",
+                              "value": round(gastos_generales, 2)})
+        add("otros_gastos_explotacion", "Otros gastos de explotación",
+            otros_gastos_explotacion_total(b), level=1, kind="section",
+            pct=otros_gastos_explotacion_total(b) / ventas_netas(b)
+            if ventas_netas(b) else 0.0,
+            children=children)
+
+    # ── EBITDA ──
+    add("ebitda", "EBITDA", ebitda(b),
+        level=0, kind="kpi", highlight="green",
+        pct=ebitda(b) / ventas_netas(b) if ventas_netas(b) else 0.0)
+
+    # ── Capa posterior: Amortización, EBIT, Financiero, RAI, IS, Resultado ──
+    if amortizacion > 0.001:
+        add("amortizacion", "Amortización", amortizacion,
+            level=1, kind="data")
+    if resultado_financiero > 0.001:
+        add("resultado_financiero", "Resultado financiero",
+            -resultado_financiero, level=1, kind="data")
+    if amortizacion > 0.001 or resultado_financiero > 0.001:
+        add("ebit", "EBIT", ebit(b),
+            level=0, kind="subtotal", highlight="yellow",
+            pct=ebit(b) / ventas_netas(b) if ventas_netas(b) else 0.0)
+    if resultado_financiero > 0.001 or amortizacion > 0.001:
+        add("resultado_antes_impuestos", "Resultado antes de impuestos",
+            resultado_antes_impuestos(b), level=0, kind="subtotal",
+            highlight="yellow",
+            pct=resultado_antes_impuestos(b) / ventas_netas(b)
+            if ventas_netas(b) else 0.0)
+    if impuesto_beneficios > 0.001:
+        add("impuesto_beneficios", "Impuesto sobre beneficios",
+            -impuesto_beneficios, level=1, kind="data")
+        add("resultado_ejercicio", "Resultado del ejercicio",
+            resultado_ejercicio(b), level=0, kind="kpi",
+            highlight="green",
+            pct=resultado_ejercicio(b) / ventas_netas(b)
+            if ventas_netas(b) else 0.0)
+
+    return {
+        "period": {"from": period_from, "to": period_to},
+        "cuenta": cuenta,
+        "report_status": r.status,
+        "totals": {
+            "ventas_brutas": round(ventas_brutas, 2),
+            "descuentos": round(descuentos, 2),
+            "devoluciones": round(devoluciones, 2),
+            "ventas_netas": round(ventas_netas(b), 2),
+            "aprovisionamientos": round(aprovisionamientos_total(b), 2),
+            "margen_bruto": round(margen_bruto(b), 2),
+            "comisiones": round(comisiones_total(b), 2),
+            "mc": round(mc(b), 2),
+            "personal": round(personal, 2),
+            "otros_gastos_explotacion":
+                round(otros_gastos_explotacion_total(b), 2),
+            "ebitda": round(ebitda(b), 2),
+            "amortizacion": round(amortizacion, 2),
+            "ebit": round(ebit(b), 2),
+            "resultado_financiero": round(resultado_financiero, 2),
+            "resultado_antes_impuestos": round(resultado_antes_impuestos(b), 2),
+            "impuesto_beneficios": round(impuesto_beneficios, 2),
+            "resultado_ejercicio": round(resultado_ejercicio(b), 2),
+            "iva_total": round(iva_total, 2),
+            "bloqueado_pyg": round(bloqueado_pyg, 2),
+            "capex_bloqueado": round(capex_bloqueado, 2),
+            "intercompany_bloqueado": round(intercompany_bloqueado, 2),
+        },
+        "lines": lines,
+        "drilldown": {
+            "proveedores": sorted(proveedores.values(),
+                                  key=lambda d: -d["value"])[:20],
+            "categorias": sorted(categorias.values(),
+                                 key=lambda d: -d["value"])[:20],
+            "canales": sorted(canales.values(),
+                              key=lambda d: -d["value"])[:20],
+        },
+        "issues": [],
+        "reconciliation": {
+            "status": r.status,
+            "errors": r.errors,
+            "warnings": r.warnings,
+            "derived": r.derived,
+        },
+        "rows_used": len(clean_rows),
+    }
+
+
+def _track_dim(store, key, value, pyg_path):
+    """Agrega valor en una dimensión (proveedor / categoría / canal)."""
+    if key not in store:
+        store[key] = {"name": key, "value": 0.0, "pyg_paths": set()}
+    store[key]["value"] += value
+    store[key]["pyg_paths"].add(pyg_path)
+
+
+# Inyectar helper como atributo del módulo para que build_pyg_canonical
+# pueda usarlo. (Python permite esto en runtime.)
+import sys as _sys
+_sys.modules[__name__]._track_dim = _track_dim
+_sys.modules[__name__]._bucket_to_pyg_block = lambda b: {
+    "aprovisionamientos": "Aprovisionamientos",
+    "comisiones": "Comisiones",
+    "personal": "Personal",
+    "servicios": "Servicios y Suministros",
+    "otros_gastos": "Otros gastos de explotación",
+    "otros_gastos_produccion": "Otros gastos de explotación",
+}.get(b, b)

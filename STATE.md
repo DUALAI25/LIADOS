@@ -132,3 +132,131 @@ Run log: L1 (2026-08-19 05:43). 0 P0 cerrados. 2 P0 vigentes: working tree sucio
   - `origin/feat/lastapp-integration` — referencia eliminada localmente.
 
 Run log: L1 (2026-08-19 10:45). 0 P0 cerrados. 1 P0 vigente: working tree con 5 archivos (más grande y más reciente que en el run 05:43 — sesión posthoc continúa). 1 P0 escalado: SSH known_hosts. 1 P0 resuelto: Gmail OAuth era falso positivo, tokens OK. Pendiente crítico: revisar y gate de la sesión posthoc no humana; commit + push con aprobación humana; arreglar SSH fingerprint para verificar push de los 2 commits PYG.
+
+## Verification run 2026-08-19 15:50 (L1 report-only)
+
+- L1 ejecutada por agente cron (modo report-only, sin ediciones de código, sin push, sin reinicios).
+- **🚨 P0 detectado — REGRESIÓN EN MAIN COMMITEADO (3925344):** 2 unit tests pytest fallan en la suite que NO ejecuta el cron E2E:
+  - `tests/test_cuenta_resultados.py::test_marketplace_legal_names_are_grouped_as_commissions` → `comisiones = 50.0` (esperado 60.0).
+  - `tests/test_desglose_pyg.py::TestClassification::test_marketplace_legal_names_land_in_commissions` → `classify_factura('Restauración y Hostelería','Glovoapp Spain Platform S.L.') == 'comisiones'` falla porque devuelve `'aprovisionamientos'`.
+  - **Causa:** commit `3925344 feat(pyg): endpoint csv-reference + buckets video cliente + IS 25% + _all_real_vendors` (Jarvis, pusheado) amplió `desglose_pyg_rules.py:aprovisionamientos.categories` incluyendo `"Restauración y Hostelería"` y `"Suministros cocina"`, con la lógica v3 "La sub-clasificación posterior lo afinará". Pero la sub-clasificación NO se ejecuta en el camino `classify_factura() → cuenta_resultados`, así que Glovo (`category_raw='Restauración y Hostelería'`) ahora cae en `aprovisionamientos` (10€) en vez de `comisiones` (60€ esperados con los 3 vendors del test).
+  - **Por qué el cron no lo detectó:** `run_e2e.sh` solo ejecuta `tests/test_api.py` (233 checks de endpoints HTTPS). `test_cuenta_resultados.py` y `test_desglose_pyg.py` están en el repo pero no se invocan ni en cron ni en CI. La regresión es **invisible a la verificación automática** desde el push.
+- **Git state:** local HEAD `3925344` = `origin/main` (refs cacheadas actualizadas 11:12 Aug 19). `git ls-remote` falla con `Host key verification failed` para el usuario `hermes-liados` (`git@github.com: Permission denied (publickey)`). La rama está sincronizada local/remoto según cache, pero no se puede verificar push independiente.
+- **Working tree ACTUALIZADO — 5 archivos (+830/-115), mtime 11:29:4x Aug 19 (sesión posthoc continúa, 4to día consecutivo):**
+  - `dashboard/taxonomy.py` (NUEVO, 14 KB / 369 líneas): taxonomía oficial "Guía Liados v2.0" — 11 categorías, 8 bloques PYG, 13 hard flags, sinónimos, multicategory vendors. Data-only module.
+  - `dashboard/desglose_pyg_rules.py` (+379/-115): refactor v3 — importa taxonomy, añade `classify_factura_v2`, `detect_duplicate`, normaliza conceptos, añade "Restauración y Hostelería" a aprovisionamientos (causa raíz del test regression).
+  - `dashboard/desglose_pyg.py` (+451/-0): v3 schema layer — `build_pyg_v2_doc`, `audit_classification`, `_aggregate_issues`, hard flags handling, confidence scoring.
+  - `tests/test_desglose_pyg_v2.py` (NUEVO, 24 KB): 13 test classes cubriendo taxonomía oficial, clasificación v2, hard flags, auditoría, CAPEX/financiero/multicategoría, esquema JSON, "casos §32".
+  - `tests/smoke_desglose_pyg_v2.py` (NUEVO, 6 KB): smoke test end-to-end con 14 facturas sintéticas representativas del cliente Liados.
+  - `py_compile` los 3 archivos modificados → EXIT=0. `pytest tests/test_desglose_pyg_v2.py` → PASS (sus tests no chocan con la regresión porque usan datos sintéticos que sí clasifican correctamente).
+- **Crons automáticos nocturnos OK:**
+  - 03:00 backup: `db-20260819-0300.sql.gz` 2.24 MB, log `BACKUP OK: 2.1 MB`.
+  - 03:15 E2E: **233/233 PASS** contra `3925344`. Log `/var/log/liados-e2e.log` 59 KB (incluye todos los `=== v9.0 PRO ===` bloques).
+  - 08:00 gmail-age: tokens 23.0d (production, <90d WARN) → **OK ambos** — gap del 2026-08-10 ya cerrado.
+  - 15:00 drive: principal OK (refresh 401, 0 archivos en 3 carpetas — esperado, no hay Drive activo para sincronizar). Secundaria `missing` (esperado, sin autorizar).
+- **OAuth tokens 3/3 OK** (watchdog hourly). Gmail collector OK. STATE.md previo que reportaba MISSING_TOKEN era falso positivo confirmado.
+- **Dashboard health OK:** `/api/health` 200, v9.0.0. Uvicorn 4h20m uptime, 106 MB RSS, sin restarts anómalos.
+- **Tunnel tracker:** timer activo cada 5 min (last run 15:50:01, exit 0). URL `baby-org-weight-dave.trycloudflare.com` responde 200 a `/login`, 401 a `/` (esperado). State file `data/.current_tunnel_url` tiene `checked_at: 2026-08-18T18:35:12` (stale 21h) pero esto es **by design** — `tunnel_url_tracker.py` solo escribe cuando la URL cambia. El `healthy: false` flag nunca se actualiza en estado estable (code review issue, no bug runtime).
+- **SSH a github.com:** `Host key verification failed` (cambio reciente). SSH directa: `git@github.com: Permission denied (publickey)` para hermes-liados — sin clave SSH deploy.
+- **Ramas stale (sin cambios):**
+  - `origin/feat/dashboard-v6-premium` `7a20c3e` — refs cache 2026-08-18 18:50.
+  - `origin/feat/lastapp-official-mcp` `e63195a` — refs cache 2026-08-18 18:50.
+
+Run log: L1 (2026-08-19 15:50). 0 P0 cerrados. **2 P0 nuevos críticos:**
+1. **REGRESIÓN en main commiteado** (test_cuenta_resultados + test_desglose_pyg fallan) — invisible al cron E2E porque solo corre test_api.py.
+2. **Working tree crece cada día** (sesión posthoc no humana): +830 líneas en 5 archivos, 4to día consecutivo sin gate humano.
+
+3 P0 vigentes: SSH fingerprint github; ramas stale (decisión humana); OAuth Drive secundaria (esperado, no es error).
+**Acción humana inmediata recomendada (en orden):**
+1. **Fix regresión PYG (urgente):** revertir en `3925344` el cambio que añade `"Restauración y Hostelería"` y `"Suministros cocina"` a `aprovisionamientos.categories` — o añadir vendor_regex para `Glovo|Uber Eats` con bucket=comisiones antes de category match. Requiere worktree (regla AGENTS.md L2).
+2. **Ampliar `run_e2e.sh`** para ejecutar también `pytest tests/test_cuenta_resultados.py tests/test_desglose_pyg.py tests/test_desglose_pyg_v2.py` (1 línea más, sin browser). Esto habría detectado la regresión.
+3. **Decisión sobre working tree de 5 archivos:** taxonomía v3 + esquema JSON es trabajo sustantivo; pero sesión posthoc sigue acumulando archivos sin gate humano. Revisar y gate ANTES de que se vuelva inmovible.
+4. **Arreglar SSH fingerprint github** (`ssh -o StrictHostKeyChecking=accept-new git@github.com` desde root, o regenerar `~/.ssh/known_hosts`).
+5. **Decidir destino de las 2 ramas stale:** rebase o cerrar.
+6. **Code review menor:** `tunnel_url_tracker.save_state()` solo se invoca cuando la URL cambia → añadir rama `else` que actualice `checked_at` y `healthy` cada poll.
+
+## Verification run 2026-08-19 20:55 (L1 report-only)
+
+- L1 ejecutada por agente cron (modo report-only, sin ediciones de código, sin push, sin reinicios).
+- **REGRESIÓN PYG PERSISTE** — `pytest tests/test_cuenta_resultados.py tests/test_desglose_pyg.py tests/test_desglose_pyg_v2.py` (vía `.venv` correcta) → **2 failed, 84 passed**:
+  - `tests/test_cuenta_resultados.py::test_marketplace_legal_names_are_grouped_as_commissions` → `comisiones = 50.0` (esperado 60.0).
+  - `tests/test_desglose_pyg.py::TestClassification::test_marketplace_legal_names_land_in_commissions` → `classify_factura('Restauración y Hostelería','Glovoapp Spain Platform S.L.')` devuelve `'aprovisionamientos'` (esperado `'comisiones'`).
+  - Mismos fallos que el run 15:50 — la regresión está en `main` commiteado desde el push de `3925344` y **no se ha corregido**.
+- **E2E cron path OK (verificado en vivo):** `bash tests/run_e2e.sh https://localhost:9121` ejecutado desde root → **233/233 PASS** (`/var/log/liados-e2e.log` 59 KB, último run 03:15). El cron E2E **sigue sin detectar** la regresión porque solo corre `test_api.py` (endpoints HTTPS). El fallo `Permission denied: '.env'` ocurrió solo en mi run manual como `hermes-liados` (uid 999); el cron como root no lo ve.
+- **Git state estable:** local HEAD `3925344` = `origin/main` (refs cacheadas). Working tree sigue sucio: 4 archivos modificados (STATE.md, desglose_pyg.py, desglose_pyg_rules.py, loop-run-log.md) + 3 nuevos (taxonomy.py, smoke_desglose_pyg_v2.py, test_desglose_pyg_v2.py). Diff +770/-115. `py_compile` los 3 archivos Python del PYG v2 → OK. `git check-ignore` confirma backups/ data/ .env/ credentials/ excluidos.
+- **SSH a github.com:** `Permission denied (publickey)` para hermes-liados — sin clave SSH deploy. No se puede verificar push independiente.
+- **Crons automáticos nocturnos OK:**
+  - 03:00 backup: `db-20260819-0300.sql.gz` 2.24 MB, log `BACKUP OK: 2.1 MB`.
+  - 03:15 E2E: **233/233 PASS** contra `3925344`.
+  - 08:00 gmail-age: 23.0d tokens OK.
+  - 15:00 drive: principal OK 0 archivos (esperado), secundaria `missing` (esperado).
+  - 20:00 oauth-watchdog: **3/3 OK** (gmail:principal, gmail:secundaria, drive:principal).
+- **Dashboard health OK:** `/api/health` 200, v9.0.0. Uvicorn 9h25m uptime, 107 MB RSS, sin restarts anómalos. HTTPS-local 9121 → 200, tunnel `baby-org-weight-dave.trycloudflare.com` → 200 a `/login`.
+- **Tunnel tracker:** systemd timer activo cada 5 min, último run 20:54:05 exit 0 (URL sin cambios). State file stale por diseño (solo escribe en cambios).
+- **Watchdog:** systemd timer activo cada 1 min, último run 20:55:15 exit 0 (hermes-liados sin permiso de journal, no accesible).
+- **Ramas stale (sin cambios):** `origin/feat/dashboard-v6-premium`, `origin/feat/lastapp-official-mcp`.
+
+Run log: L1 (2026-08-19 20:55). 0 P0 cerrados. 4 P0 vigentes (regresión PYG, working tree posthoc, SSH github, ramas stale). 1 P0 resuelto (Gmail MISSING_TOKEN — último run siguió marcando tokens OK). Ninguna edición de código, ningún push, ningún reinicio destructivo.
+
+## Verification run 2026-08-20 01:55 (L1 report-only)
+
+- L1 ejecutada por agente cron (modo report-only, sin ediciones de código, sin push, sin reinicios).
+- **REGRESIÓN PYG PERSISTE en main commiteado (`3925344`)** — pytest verificado en vivo vía `.venv`: **2 failed, 84 passed**:
+  - `tests/test_cuenta_resultados.py::test_marketplace_legal_names_are_grouped_as_commissions` → `comisiones = 50.0` (esperado 60.0).
+  - `tests/test_desglose_pyg.py::TestClassification::test_marketplace_legal_names_land_in_commissions` → `classify_factura('Restauración y Hostelería','Glovoapp Spain Platform S.L.')` devuelve `'aprovisionamientos'` (esperado `'comisiones'`).
+  - Misma regresión reportada en runs 15:50 y 20:55 — sin cambios desde entonces.
+- **Cron E2E sigue sin detectar la regresión** (vive en `test_api.py` solo): 233/233 PASS verificado en `/var/log/liados-e2e.log.1` (1875 líneas, último run 03:15). Log `.log` actual en 0 bytes (rotado 00:00). Próximo run 03:15 hoy.
+- **Working tree crece otra vez** — mimos archivos que run 20:55 pero con diff mayor: +908/-115 (vs +830/-115 en 20:55). Diff adicional viene de la edición de STATE.md + loop-run-log.md por este run. Estado de los archivos:
+  - `M STATE.md` (este run, +65)
+  - `M dashboard/desglose_pyg.py` (+451)
+  - `M dashboard/desglose_pyg_rules.py` (+379/-115)
+  - `M loop-run-log.md` (+13)
+  - `?? dashboard/taxonomy.py` (369 líneas)
+  - `?? tests/smoke_desglose_pyg_v2.py` (133 líneas)
+  - `?? tests/test_desglose_pyg_v2.py` (582 líneas)
+  - Los 5 archivos de la sesión posthoc (taxonomy + v2 schema + tests) **sin gate humano** desde 2026-08-19 11:29 (5to día consecutivo).
+- **Git state estable:** local HEAD `3925344` = `origin/main` (refs cacheadas). `git ls-remote origin` falla: `Permission denied (publickey)` para hermes-liados — sin clave SSH deploy.
+- **Crons automáticos OK:**
+  - 03:00 backup: `db-20260819-0300.sql.gz` 2.2 MB. (Último backup automático OK; el de hoy 2026-08-20 aún no — se ejecutará a 03:00 hoy).
+  - 03:15 E2E: 233/233 PASS contra `3925344`.
+  - 08:00 gmail-age: 23.0d OK ambos tokens.
+  - 01:00 oauth-watchdog: 3/3 OK.
+  - 01:30 drive: principal OK 0 archivos (esperado), secundaria `missing` (esperado).
+- **Dashboard health OK:** `/api/health` 200 v9.0.0. Uvicorn uptime 14h26m, 107 MB RSS, sin restarts anómalos. HTTPS 9121 + proxy 9122 OK.
+- **Watchdog systemd timers OK:** `liados-watchdog.timer` (cada 1min, last 01:56:56 exit 0) y `liados-tunnel-tracker.timer` (cada 5min, last 01:53:35 exit 0).
+- **Tunnel tracker:** state file stale desde 2026-08-18T18:35:12 (37h) — **by design**, solo escribe en cambios de URL. URL `baby-org-weight-dave.trycloudflare.com` responde 200 a `/login`. `healthy: false` flag nunca se actualiza en estado estable (code review issue pre-existente, no es regresión runtime).
+- **Diagnóstico regresión confirmado (nivel código):** en `dashboard/desglose_pyg_rules.py` línea 84, el bucket `aprovisionamientos` ahora incluye `"Restauración y Hostelería"` como categoría — y `classify_factura()` evalúa buckets en orden (`BUCKETS[0] = aprovisionamientos`). Glovo (`category_raw='Restauración y Hostelería'`) cae en aprovisionamientos ANTES de llegar al bucket `comisiones` (línea 305 que tiene vendors Glovo/Uber). **Fix mínimo:** revertir la inclusión de `"Restauración y Hostelería"` y `"Suministros cocina"` en `aprovisionamientos.categories`, o añadir vendor-first check antes de category match. Requiere worktree (regla AGENTS.md L2).
+- **Ramas stale (sin cambios):** `origin/feat/dashboard-v6-premium`, `origin/feat/lastapp-official-mcp`.
+
+## Verification run 2026-08-20 06:58 (L1 report-only)
+
+- L1 ejecutada por agente cron (modo report-only, sin ediciones de código, sin push, sin reinicios).
+- **REGRESIÓN PYG PERSISTE en main commiteado (`3925344`)** — pytest verificado en vivo vía `.venv`: **2 failed, 84 passed** (mismos tests que runs 15:50/20:55/01:55, sin cambios):
+  - `tests/test_cuenta_resultados.py::test_marketplace_legal_names_are_grouped_as_commissions` → `comisiones = 50.0` (esperado 60.0).
+  - `tests/test_desglose_pyg.py::TestClassification::test_marketplace_legal_names_land_in_commissions` → `classify_factura('Restauración y Hostelería','Glovoapp Spain Platform S.L.')` devuelve `'aprovisionamientos'` (esperado `'comisiones'`).
+  - Diagnóstico línea exacto: `dashboard/desglose_pyg_rules.py:84` añade `"Restauración y Hostelería"` a `aprovisionamientos.categories` → Glovo cae en bucket[0]=aprovisionamientos antes de llegar al bucket comisiones en :305 que tiene vendors Glovo/Uber. `import dashboard.desglose_pyg, dashboard.desglose_pyg_rules, dashboard.taxonomy` → OK (no hay regresión de import).
+- **E2E cron 03:15 OK pero ciego a la regresión:** `tail /var/log/liados-e2e.log` → `RESULT: PASS` + `Tests: 233 | PASS: 233 | FAIL: 0` (20 KB, último run 03:15). El cron sigue corriendo solo `test_api.py`; `test_cuenta_resultados.py`/`test_desglose_pyg.py`/`test_desglose_pyg_v2.py` NO se invocan en cron ni CI. Esta regresión es **invisible a la verificación automática** desde que se pusheó `3925344`.
+- **Backup cron 03:00 OK:** `db-20260820-0300.sql.gz` 2.26 MB generado, log `BACKUP OK: 2.2 MB`. 13 backups en `backups/`, el más reciente hoy.
+- **OAuth tokens 3/3 OK** (watchdog hourly verificado vía `/var/log/liados-oauth-watchdog.log`). Gmail age 23.0d OK ambos. Drive principal 0 archivos (esperado), secundaria `missing` (esperado).
+- **Working tree crece otra vez (6to día consecutivo de sesión posthoc no humana):** mismos 7 archivos que run 01:55 + `STATE.md`/`loop-run-log.md` actualizados por este run. Diff tracked: `+965/-115` (vs `+908/-115` en 01:55). Mtime de los 5 archivos posthoc sin cambios desde `2026-08-19 11:29:43` (≈19h sin actividad posthoc — posible pausa o que el agente ya no esté activo en esta sesión). Sin gate humano.
+- **Git state estable:** local HEAD `3925344` = `origin/main` (refs cacheadas). No se intenta `git ls-remote` (SSH roto conocido). Working tree sucio confirmado.
+- **Dashboard health OK:** `/api/health` 200 v9.0.0. Uvicorn uptime 19h45m (PID 120252 desde Aug19 11:13), 107 MB RSS, sin restarts anómalos. Puertos `9121` (dashboard HTTPS) + `9122` (proxy) + `5432` (Postgres) + `9000` (MinIO) escuchando.
+- **Watchdog systemd timers OK:** `liados-watchdog.timer` (cada 1min, last 06:58:21) y `liados-tunnel-tracker.timer` (cada 5min, last 06:58:21) — ambos `ACTIVATES` próximos, sin errores.
+- **Tunnel tracker:** state file stale desde `2026-08-18T18:35:12` (≈36h) — by design (solo escribe en cambios de URL). URL `https://baby-org-weight-dave.trycloudflare.com` → HTTP 200 a `/login` (verificado ahora). `healthy: false` flag nunca se actualiza en estado estable (code review issue pre-existente, no es regresión runtime).
+- **Crons `/etc/cron.d/liados` y `/etc/cron.d/liados-e2e`:** ambos correctos. Backup 03:00 → `backup_wrapper.py`. E2E 03:15 → `run_e2e.sh https://localhost:9121`. Secuenciados OK.
+- **Ramas stale (sin cambios):** `origin/feat/dashboard-v6-premium`, `origin/feat/lastapp-official-mcp`.
+
+Run log: L1 (2026-08-20 06:58). 0 P0 cerrados. **4 P0 vigentes (mismos que 01:55):**
+1. **REGRESIÓN PYG en main commiteado** — `3925344` rompe 2 tests, invisible al cron E2E. Lleva 15h sin cambios (último push conocido 11:12 Aug 19).
+2. **Working tree crece 6to día consecutivo** — sesión posthoc no humana, sin gate. Los 5 archivos sin cambios desde 11:29 Aug 19 (pausa aparente, pero sin commit humano).
+3. **SSH fingerprint github** — `Permission denied (publickey)` para hermes-liados.
+4. **Ramas stale** — `feat/dashboard-v6-premium`, `feat/lastapp-official-mcp`.
+
+**Acción humana inmediata recomendada (sin cambios vs 01:55):**
+1. **Fix regresión PYG (urgente):** revertir `"Restauración y Hostelería"`/`"Suministros cocina"` de `aprovisionamientos.categories` en `desglose_pyg_rules.py:84` O añadir vendor-first check para `Glovo|Uber Eats` antes de category match. Worktree obligatorio.
+2. **Ampliar `run_e2e.sh`** para ejecutar `pytest tests/test_cuenta_resultados.py tests/test_desglose_pyg.py tests/test_desglose_pyg_v2.py` además de `test_api.py` — habría detectado la regresión.
+3. **Gate del working tree posthoc** (5 archivos, 6to día) — decidir commit+push o `git checkout --` para descartar. Pausa aparente desde 11:29 Aug 19; ventana para actuar.
+4. **Arreglar SSH fingerprint github** — `ssh -o StrictHostKeyChecking=accept-new git@github.com` desde root, o regenerar `~/.ssh/known_hosts`.
+5. **Decidir destino de las 2 ramas stale** — rebase o cerrar.
+
+Sin push, sin reinicios, sin ediciones de código en este run.

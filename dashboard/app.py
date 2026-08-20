@@ -53,10 +53,10 @@ async def _security_headers(request: Request, call_next):
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("X-Frame-Options", "DENY")
     resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    # CSP: assets self-hosted para que el dashboard no dependa de CDNs.
+    # CSP: self para todo lo nuestro, cdn.jsdelivr.net solo para Chart.js
     csp = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline'; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data:; "
         "font-src 'self'; "
@@ -265,7 +265,6 @@ def expense_filter(alias: str = "") -> str:
         f"{p('type')} = 'expense' AND {p('status')} != 'rejected' "
         f"AND {p('is_invoice')} = true "
         f"AND COALESCE({p('category_raw')}, '') NOT IN ('nomina', 'administrativo', 'basura') "
-        f"AND COALESCE({p('category_raw')}, '') NOT LIKE 'TEST_CAT_DEL_%%' "
         f"AND {p('invoice_date')} IS NOT NULL "
         f"AND {p('vendor_name')} IS NOT NULL"
     )
@@ -394,42 +393,20 @@ def api_gastos_por_categoria(user: str = Depends(get_current_user)):
     """)]
 
 
-
-
-@app.get("/api/gastos/csv-reference")
-def api_gastos_csv_reference(user: str = Depends(get_current_user)):
-    """Comparativa con histórico CSV (gastos-categorias.csv).
-
-    Devuelve el contenido del CSV histórico como referencia cruzada con la BD actual.
-    No modifica ni sobrescribe los datos reales del PYG; sirve solo como comparativa.
-    """
-    import csv as _csv
-    import os.path as _osp
-    csv_path = _osp.join(_osp.dirname(_osp.abspath(__file__)), "gastos-categorias.csv")
-    rows = []
-    if _osp.exists(csv_path):
-        with open(csv_path, encoding="utf-8-sig") as f:
-            for row in _csv.DictReader(f, delimiter=";"):
-                if row.get("categoria"):
-                    try:
-                        rows.append({
-                            "categoria": row["categoria"],
-                            "facturas": int(row["facturas"]),
-                            "total_eur": float(row["total_eur"]),
-                        })
-                    except (ValueError, KeyError):
-                        continue
-    return {
-        "source": "gastos-categorias.csv",
-        "rows": rows,
-        "total_facturas": sum(r["facturas"] for r in rows),
-        "total_eur": round(sum(r["total_eur"] for r in rows), 2),
-    }
-
-
 @app.get("/api/margen-por-mes")
 def api_margen_por_mes(user: str = Depends(get_current_user)):
-    """Margen = ingresos (lastapp_bills) - gastos (invoices) por mes."""
+    """Margen = ingresos (lastapp_bills) - gastos (invoices) por mes.
+
+    v2 (P0.7 + P0.10): cada fila lleva period_key ('YYYY-MM') + display_label
+    ('MMM-YY'). NUNCA '0', 'undefined', 'null', ''. Incluye YTD explícito
+    cuando el período seleccionado está dentro del año natural en curso.
+    """
+    from datetime import date as _date_app
+    from dashboard.pyg_periods import (
+        period_key_from_date, fill_month_gaps, build_monthly_row,
+        build_ytd_row, ytd_dates, is_valid_period_key,
+    )
+
     ingresos = {r["mes"]: float(r["total_eur"]) for r in q("""
         SELECT to_char(creation_time, 'YYYY-MM') as mes,
                coalesce(sum(total_cents), 0)/100.0 as total_eur
@@ -449,16 +426,37 @@ def api_margen_por_mes(user: str = Depends(get_current_user)):
     gastos = {}
     for r in gastos_raw:
         m = r["mes"]
-        if m:
+        if m and is_valid_period_key(m):
             gastos[m] = float(r["total_eur"])
 
-    meses = sorted(set(list(ingresos.keys()) + list(gastos.keys())))
-    result = []
-    for m in meses:
-        ing = ingresos.get(m, 0)
-        gas = gastos.get(m, 0)
-        result.append({"mes": m, "ingresos": ing, "gastos": gas, "margen": ing - gas})
-    return result
+    # Serie continua (rellena huecos mensuales)
+    today = _date_app.today()
+    keys = fill_month_gaps(
+        list(set(list(ingresos.keys()) + list(gastos.keys()))),
+        end_reference=today,
+    )
+
+    monthly = []
+    ing_total_ytd = 0.0
+    gas_total_ytd = 0.0
+    for m in keys:
+        ing = ingresos.get(m, 0.0)
+        gas = gastos.get(m, 0.0)
+        row = build_monthly_row(m, ingresos=ing, gastos=gas)
+        monthly.append(row)
+        # YTD del año en curso
+        if int(m[0:4]) == today.year:
+            ing_total_ytd += ing
+            gas_total_ytd += gas
+
+    out = {"monthly": monthly, "ytd": None}
+    if today.month > 1 or any(int(k[0:4]) == today.year for k in keys):
+        out["ytd"] = build_ytd_row(
+            today.year,
+            ingresos=ing_total_ytd,
+            gastos=gas_total_ytd,
+        )
+    return out
 
 
 @app.get("/api/facturas-recientes")
@@ -1209,7 +1207,6 @@ def api_gastos_pyg(
     rules = load_rules()
 
     def _fetch_rows(p_from, p_to, p_cuenta):
-        # Gastos: invoices.total_amount ya está en euros.
         sql = f"""
             SELECT
               i.invoice_date::text as invoice_date,
@@ -1223,35 +1220,11 @@ def api_gastos_pyg(
             WHERE i.invoice_date >= %s AND i.invoice_date <= %s
               {("AND i.source_account = %s" if p_cuenta else "")}
               AND i.status != 'void'
-              AND COALESCE(i.category_raw, '') NOT LIKE 'TEST_CAT_DEL_%%'
-              AND i.is_invoice = true
             ORDER BY i.invoice_date
             LIMIT 20000
         """
         pp = [p_from, p_to] + ([p_cuenta] if p_cuenta else [])
-        rows = q(sql, tuple(pp))
-
-        # Ingresos: Last.app almacena total_cents; el PYG trabaja en euros.
-        # Las ventas se atribuyen a principal porque Last.app es la fuente TPV
-        # única del cliente. Una cuenta secundaria no incluye ventas TPV.
-        if p_cuenta is None or str(p_cuenta).lower() == "principal":
-            sales_sql = """
-                SELECT
-                  COALESCE(finalizing_time, creation_time)::date::text as invoice_date,
-                  'Last.app' as vendor_name,
-                  CASE WHEN total_cents < 0 THEN 'Devoluciones' ELSE 'Ventas' END as category_raw,
-                  'principal' as source_account,
-                  ABS(total_cents)::numeric / 100.0 as total_amount,
-                  'classified' as status
-                FROM lastapp_bills
-                WHERE deleted = false
-                  AND COALESCE(finalizing_time, creation_time)::date >= %s
-                  AND COALESCE(finalizing_time, creation_time)::date <= %s
-                ORDER BY COALESCE(finalizing_time, creation_time)
-                LIMIT 20000
-            """
-            rows.extend(q(sales_sql, (p_from, p_to)))
-        return rows
+        return q(sql, tuple(pp))
 
     raw_rows = _fetch_rows(df, dt, cuenta)
     rows = [{
@@ -1312,55 +1285,85 @@ def api_gastos_pyg(
     return out
 
 
-@app.get("/api/gastos/cuenta-resultados")
-def api_cuenta_resultados(
+@app.get("/api/gastos/pyg-canonical")
+def api_gastos_pyg_canonical(
     date_from: str = Query(None, description="YYYY-MM-DD"),
     date_to: str = Query(None, description="YYYY-MM-DD"),
-    cuenta: str = Query(None),
+    cuenta: str = Query(None, description="Filtrar por source_account"),
     user: str = Depends(get_current_user),
 ):
-    """Cuenta de resultados mensual estilo Excel, con YTD y proveedores deduplicados."""
-    from dashboard.cuenta_resultados import build_cuenta_resultados
-    df, dt = _parse_period(date_from, date_to)
-    if not df: df = date(date.today().year, 1, 1)
-    if not dt: dt = date.today()
-    df, dt = df.isoformat(), dt.isoformat()
-    cache_key = _desglose_safe_cache_key("cuenta-resultados", [], "sum", df, dt, cuenta, None, None, None, user)
-    cached = _cache_get(cache_key)
-    if cached is not None: return cached
-    sql = """SELECT i.invoice_date::text AS invoice_date,i.vendor_name,COALESCE(c.name,i.category_raw) AS category_raw,i.total_amount,i.base_amount,i.tax_amount,i.source_account FROM invoices i LEFT JOIN categories c ON c.id=i.category_id WHERE i.invoice_date BETWEEN %s AND %s AND i.is_invoice=true AND i.status NOT IN ('rejected','duplicate','void') AND COALESCE(i.category_raw, '') NOT LIKE 'TEST_CAT_DEL_%%'"""
-    params = [df, dt]
-    if cuenta: sql += " AND i.source_account=%s"; params.append(cuenta)
-    invoice_rows = q(sql + " ORDER BY i.invoice_date LIMIT 50000", tuple(params))
-    sales_rows = []
-    channel_rows = []
-    if not cuenta or cuenta.lower() == "principal":
-        sales_rows = q("""SELECT COALESCE(finalizing_time,creation_time)::date::text AS invoice_date,'Last.app' AS vendor_name,'Ventas' AS category_raw,total_cents::numeric/100.0 AS total_amount,taxable_base_cents::numeric/100.0 AS base_amount,tax_cents::numeric/100.0 AS tax_amount,discount_total_cents::numeric/100.0 AS discount_amount FROM lastapp_bills WHERE deleted=false AND COALESCE(finalizing_time,creation_time)::date BETWEEN %s AND %s ORDER BY COALESCE(finalizing_time,creation_time) LIMIT 50000""", (df, dt))
-        channel_rows = q("""WITH eligible_payments AS (
-              SELECT p.bill_id, p.type AS channel, p.amount_cents::numeric AS amount_cents,
-                     b.total_cents::numeric AS bill_total, b.taxable_base_cents::numeric AS taxable_base,
-                     COALESCE(b.finalizing_time,b.creation_time)::date AS sale_date
-              FROM lastapp_payments p
-              JOIN lastapp_bills b ON b.id=p.bill_id
-              WHERE p.deleted=false AND b.deleted=false
-                AND COALESCE(b.finalizing_time,b.creation_time)::date BETWEEN %s AND %s
-            ), bill_payment_totals AS (
-              SELECT bill_id, MAX(bill_total) AS bill_total, SUM(amount_cents) AS paid_total
-              FROM eligible_payments GROUP BY bill_id
-            )
-            SELECT ep.sale_date::text AS invoice_date, ep.channel,
-                   SUM(CASE WHEN bt.paid_total > bt.bill_total
-                            THEN ep.amount_cents * bt.bill_total / NULLIF(bt.paid_total,0)
-                            ELSE ep.amount_cents END)/100.0 AS amount_gross,
-                   SUM((CASE WHEN bt.paid_total > bt.bill_total
-                             THEN ep.amount_cents * bt.bill_total / NULLIF(bt.paid_total,0)
-                             ELSE ep.amount_cents END) * ep.taxable_base / NULLIF(ep.bill_total,0))/100.0 AS amount_net
-            FROM eligible_payments ep
-            JOIN bill_payment_totals bt ON bt.bill_id=ep.bill_id
-            GROUP BY ep.sale_date, ep.channel ORDER BY ep.sale_date, ep.channel""", (df, dt))
-    out = build_cuenta_resultados(invoice_rows, sales_rows, df, dt, cuenta=cuenta, channel_rows=channel_rows)
-    out["generated_at"] = _dt.utcnow().isoformat() + "Z"
-    _cache_put(cache_key, out)
+    """v4 (P0.1): PYG canónico con reconciliación y 4 dimensiones.
+
+    Devuelve:
+      - report_status: RECONCILED | RECONCILED_WITH_WARNINGS | INVALID_RECONCILIATION
+      - totals: ventas_netas, margen_bruto, mc, ebitda, ebit, resultado_ejercicio,
+                iva_total, bloqueado_pyg
+      - lines: jerarquía EXACTA del PYG del cliente (P0.1)
+      - drilldown: proveedores, categorias, canales (P0.8)
+      - reconciliation: errors + warnings + derived
+    """
+    from datetime import date as _date_c, timedelta
+    from dashboard.desglose_pyg import build_pyg_canonical
+    from dashboard.desglose_pyg_rules import load_rules
+    from dashboard.pyg_periods import split_ytd_and_period
+
+    today = _date_c.today()
+    if not date_from:
+        date_from = (today - timedelta(days=30)).isoformat()
+    if not date_to:
+        date_to = today.isoformat()
+
+    rules = load_rules()
+
+    def _fetch_rows(p_from, p_to, p_cuenta):
+        sql = f"""
+            SELECT
+              i.invoice_date::text as invoice_date,
+              i.vendor_name as vendor_name,
+              COALESCE(c.name, i.category_raw) as category_raw,
+              i.source_account as source_account,
+              i.total_amount as total_amount,
+              i.base_amount as base_amount,
+              i.tax_amount as tax_amount,
+              i.description as description,
+              i.status as status,
+              i.invoice_number as invoice_number,
+              i.vendor_tax_id as vendor_tax_id
+            FROM invoices i
+            LEFT JOIN categories c ON c.id = i.category_id
+            WHERE i.invoice_date >= %s AND i.invoice_date <= %s
+              {("AND i.source_account = %s" if p_cuenta else "")}
+              AND i.status != 'void'
+            ORDER BY i.invoice_date
+            LIMIT 20000
+        """
+        pp = [p_from, p_to] + ([p_cuenta] if p_cuenta else [])
+        return q(sql, tuple(pp))
+
+    raw_rows = _fetch_rows(date_from, date_to, cuenta)
+    rows = []
+    for r in raw_rows:
+        rows.append({
+            "invoice_date": r["invoice_date"],
+            "vendor_name": r["vendor_name"] or "",
+            "category_raw": r["category_raw"] or "",
+            "source_account": r["source_account"] or "",
+            "total_amount": r["total_amount"],
+            "base_amount": r["base_amount"],
+            "iva_amount": r["tax_amount"],
+            "description": r["description"] or "",
+            "channel": "Sin canal",  # invoices no tienen canal; se infiere por separado
+            "invoice_number": r["invoice_number"],
+            "vendor_tax_id": r["vendor_tax_id"],
+        })
+
+    out = build_pyg_canonical(rows, date_from, date_to, cuenta=cuenta, rules=rules)
+
+    # Añadir ventanas YTD vs Período (P0.10)
+    d_from = _date_c.fromisoformat(date_from) if isinstance(date_from, str) else date_from
+    d_to = _date_c.fromisoformat(date_to) if isinstance(date_to, str) else date_to
+    out["period_windows"] = split_ytd_and_period(d_from, d_to)
+
     return out
 
 
@@ -1793,59 +1796,6 @@ def api_alertas_ack_list(user: str = Depends(get_current_user)):
     return _list_acks(q_fn=q, limit=100)
 
 
-# v9-premium: icon paths espejo del static/icons.js (Lucide, ISC).
-# Usado por el servidor para renderizar placeholders __ICON__name__ en INDEX_HTML.
-_ICON_PATHS = {
-    'menu': '<line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>',
-    'search': '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
-    'x': '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
-    'check': '<polyline points="20 6 9 17 4 12"/>',
-    'chevron-left': '<polyline points="15 18 9 12 15 6"/>',
-    'chevron-right': '<polyline points="9 18 15 12 9 6"/>',
-    'chevron-down': '<polyline points="6 9 12 15 18 9"/>',
-    'filter': '<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>',
-    'refresh-cw': '<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>',
-    'download': '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
-    'eye': '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
-    'info': '<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>',
-    'help-circle': '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
-    'utensils': '<path d="M3 2v7c0 1.1.9 2 2 2h0a2 2 0 0 0 2-2V2"/><path d="M7 2v7c0 1.1.9 2 2 2h0a2 2 0 0 0 2-2V2"/><path d="M14 2v20M14 9h6"/>',
-    'building-2': '<path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18"/><path d="M6 12H4a2 2 0 0 0-2 2v8h20v-8a2 2 0 0 0-2-2h-2"/><path d="M10 6h4M10 10h4M10 14h4M10 18h4"/>',
-    'trending-up': '<polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/>',
-    'trending-down': '<polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/>',
-    'euro': '<path d="M4 10h12"/><path d="M4 14h9"/><path d="M19 6a7.7 7.7 0 0 0-5.2-2A7.9 7.9 0 0 0 6 12a7.9 7.9 0 0 0 7.8 8c2 0 3.8-.8 5.2-2"/>',
-    'coins': '<circle cx="8" cy="8" r="6"/><path d="M18.09 10.37A6 6 0 1 1 10.34 18"/><path d="M7 6h1v4"/><path d="M16.71 13.88l.7.71-2.82 2.82"/>',
-    'percent': '<line x1="19" y1="5" x2="5" y2="19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/>',
-    'receipt': '<path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z"/><path d="M8 7h8M8 11h8M8 15h6"/>',
-    'bar-chart-2': '<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>',
-    'bar-chart-3': '<path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>',
-    'pie-chart': '<path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/>',
-    'layout-grid': '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>',
-    'trophy': '<path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/>',
-    'calendar': '<rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>',
-    'scale': '<path d="M12 3v18"/><path d="M3 7h6l-3 7h6l-3-7"/><path d="M21 7h-6l3 7h-6l3-7"/>',
-    'package': '<line x1="16.5" y1="9.4" x2="7.5" y2="4.21"/><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/>',
-    'package-2': '<path d="M3 9h18v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9Z"/><path d="M3 9V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v4"/><path d="M12 13v6"/>',
-    'credit-card': '<rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/>',
-    'banknote': '<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2"/><path d="M6 12h.01M18 12h.01"/>',
-    'car': '<path d="M14 16H9m10 0h3v-3.15a1 1 0 0 0-.84-.99L16 11l-2.7-3.6a1 1 0 0 0-.8-.4H5.24a2 2 0 0 0-1.8 1.1l-.8 1.63A6 6 0 0 0 2 12.42V16h2"/><circle cx="6.5" cy="16.5" r="2.5"/><circle cx="16.5" cy="16.5" r="2.5"/>',
-    'shopping-bag': '<path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/>',
-    'shopping-cart': '<circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/>',
-    'bike': '<circle cx="5.5" cy="17.5" r="3.5"/><circle cx="18.5" cy="17.5" r="3.5"/><path d="M15 6a1 1 0 100-2h-1l-1 2h2l-2 4h-2"/><path d="M5.5 17.5L9 11h6l3 6.5"/>',
-    'alert-triangle': '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
-    'bell': '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
-    'settings': '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
-    'plug': '<path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v4a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z"/>',
-    'wrench': '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>',
-    'moon': '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>',
-    'sun': '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>',
-    'message-circle': '<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>',
-    'sparkles': '<path d="M12 3l1.45 4.36L18 9l-4.55 1.64L12 15l-1.45-4.36L6 9l4.55-1.64z"/><path d="M19 14l.7 2.1L22 17l-2.3.9L19 20l-.7-2.1L16 17l2.3-.9z"/><path d="M5 14l.7 2.1L8 17l-2.3.9L5 20l-.7-2.1L2 17l2.3-.9z"/>',
-    'mail': '<path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/>',
-    'cog': '<path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
-    'file-text': '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>',
-}
-
 INDEX_HTML = """<!DOCTYPE html>
 <html lang="es" data-theme="dark">
 <head>
@@ -1858,7 +1808,7 @@ INDEX_HTML = """<!DOCTYPE html>
 <title>Liados · Dashboard</title>
 <link rel="stylesheet" href="/static/tokens.css">
 <link rel="stylesheet" href="/static/app.css">
-<script src="/static/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
 <div class="app" id="app">
@@ -1867,22 +1817,25 @@ INDEX_HTML = """<!DOCTYPE html>
   <!-- ── Sidebar ── -->
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-head">
-      <div class="logo logo-vl">__ICON__utensils__{cls:"ico-strong"}</div>
-      <div class="brand"><strong>VAMOS</strong> AL LÍO<small>Liados · Restauración</small></div>
+      <div class="logo"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2h8M9 2v6.5a5.5 5.5 0 0 0 6 5.48M9 8.5a5.5 5.5 0 0 1-6 5.48M5.5 14h13M12 19v3"/></svg></div>
+      <div class="brand">Liados<small>Analytics</small></div>
     </div>
     <nav class="sidebar-nav">
       <div class="nav-section-label">Operativa</div>
       <a class="nav-item active" data-view="dashboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg><span class="nav-label">Dashboard</span></a>
       <a class="nav-item" data-view="ventas"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg><span class="nav-label">Ventas</span></a>
       <a class="nav-item" data-view="gastos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg><span class="nav-label">Gastos</span></a>
-
+      <a class="nav-item" data-view="gastos-detalle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg><span class="nav-label">Detalle gastos</span></a>
+      <a class="nav-item" data-view="alertas"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg><span class="nav-label">Alertas</span><span class="nav-badge" id="nav-alert-badge"></span></a>
       <a class="nav-item" data-view="desglose"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg><span class="nav-label">Desglose</span><span class="kbd-inline">g → b</span></a>
-
+      <div class="nav-section-label">Restaurante</div>
+      <a class="nav-item" data-view="productos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18M16 10a4 4 0 0 1-8 0"/></svg><span class="nav-label">Productos</span></a>
+      <div class="nav-section-label">Sistema</div>
       <a class="nav-item" data-view="config"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span class="nav-label">Configuración</span></a>
     </nav>
     <div class="sidebar-foot">
       <span class="live-dot"></span>
-      <div class="foot-text">Datos en vivo<br><b id="syncTime">cargando…</b><small>VAMOS AL LÍO · Restauración</small></div>
+      <div class="foot-text">Datos en vivo<br><b id="syncTime">cargando…</b></div>
     </div>
   </aside>
 
@@ -1898,18 +1851,26 @@ INDEX_HTML = """<!DOCTYPE html>
 
    <!-- ── Main ── -->
    <main class="main">
+   <div id="last-invoice-card" data-loading="1">Cargando última factura extraída...</div>
+   <script>
+    // B3: Cargar la card server-rendered. Usa misma auth que el resto de la app.
+    _fetchAuth("/api/invoices/last-invoice-card")
+      .then(r => r.ok ? r.text() : Promise.reject(new Error("HTTP "+r.status)))
+      .then(html => { const el = document.getElementById("last-invoice-card"); if (el) el.innerHTML = html; })
+      .catch(() => { const el = document.getElementById("last-invoice-card"); if (el) el.innerHTML = ""; });
+   </script>
 
     <!-- ═══ Vista: Dashboard ═══ -->
     <section class="view active" data-view="dashboard">
-    <!-- Resumen financiero estilo ERP -->
-    <section class="finance-overview">
-      <div class="finance-overview-head"><h1>Tus finanzas</h1><span>Mes actual</span></div>
-      <div class="finance-metrics">
-        <article><span>Ingresos</span><strong id="financeSales">—</strong><small id="financeSalesDelta">—</small></article>
-        <article><span>Gastos</span><strong id="financeExpenses">—</strong><small id="financeExpensesDelta">—</small></article>
-        <article><span>Resultado operativo</span><strong id="heroValue">—</strong><small id="heroDelta">—</small></article>
+    <!-- Hero -->
+    <section class="hero">
+      <div>
+        <div class="hero-label">💰 Margen del mes</div>
+        <div class="hero-value pos" id="heroValue">0€</div>
+        <div style="margin-bottom:var(--s-2)"><span class="delta flat" id="heroDelta">—</span></div>
+        <div class="hero-meta" id="heroMeta"></div>
       </div>
-      <div class="hero-meta" id="heroMeta"></div>
+      <div class="hero-spark"><canvas id="heroSpark"></canvas></div>
     </section>
 
     <!-- KPIs -->
@@ -1924,14 +1885,14 @@ INDEX_HTML = """<!DOCTYPE html>
         <div class="card-body"><div class="chart-wrap tall"><canvas id="chart-canales"></canvas></div></div>
       </div>
 
-      <div class="card grid-full home-secondary-noise">
+      <div class="card grid-full">
         <div class="card-head"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg><h2>Tendencia diaria</h2><span class="subtitle">últimos 30 días</span>
           <div class="actions"><div class="seg-group"><button id="momToggle">vs mes anterior</button></div></div>
         </div>
         <div class="card-body"><div class="chart-wrap"><canvas id="chart-diario"></canvas></div></div>
       </div>
 
-      <div class="card home-secondary-noise">
+      <div class="card">
         <div class="card-head"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg><h2>Canales este mes</h2></div>
         <div class="card-body"><div class="bars" id="canal-mes"></div></div>
       </div>
@@ -1946,7 +1907,7 @@ INDEX_HTML = """<!DOCTYPE html>
         <div class="card-body"><div id="margen"></div></div>
       </div>
 
-      <div class="card home-secondary-noise">
+      <div class="card">
         <div class="card-head"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg><h2>Ingresos por mes</h2><div class="actions"><a class="icon-btn sm" href="/api/export/ingresos" title="Exportar CSV" download><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a></div></div>
         <div class="card-body" id="ingresos"></div>
       </div>
@@ -1961,7 +1922,10 @@ INDEX_HTML = """<!DOCTYPE html>
         <div class="card-body"><div class="bars" id="categorias"></div></div>
       </div>
 
-
+      <div class="card grid-full">
+        <div class="card-head"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h4"/></svg><h2>Últimas facturas</h2><div class="actions"><a class="icon-btn sm" href="/api/export/facturas" title="Exportar CSV" download><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a></div></div>
+        <div class="card-body" id="facturas"></div>
+      </div>
     </div>
     </section><!-- /view dashboard -->
 
@@ -1981,7 +1945,7 @@ INDEX_HTML = """<!DOCTYPE html>
           <div class="card-body" id="ventas-resumen"></div>
         </div>
       </div>
-      <p class="view-hint">__ICON__info__ ¿Quieres más detalle? Abre el <b>asistente AI</b> __ICON__message-circle__ y pregunta «¿cuáles son mis 5 productos más vendidos esta semana?».</p>
+      <p class="view-hint">💡 ¿Quieres más detalle? Abre el <b>asistente AI</b> 💬 y pregunta «¿cuáles son mis 5 productos más vendidos esta semana?».</p>
     </section>
 
     <!-- ═══ Vista: Gastos ═══ -->
@@ -2016,7 +1980,7 @@ INDEX_HTML = """<!DOCTYPE html>
       <!-- Desglose multidimensional -->
       <div class="card gd-desglose-card">
         <div class="card-head">
-          <h2>__ICON__bar-chart-3__ Desglose multidimensional</h2>
+          <h2>📊 Desglose multidimensional</h2>
           <span class="subtitle">Agrupar facturas por varias dimensiones</span>
         </div>
         <div class="card-body">
@@ -2095,11 +2059,61 @@ INDEX_HTML = """<!DOCTYPE html>
       </div>
     </section>
 
+    <!-- ═══ Vista: Alertas (nueva v6) ═══ -->
+    <section class="view" data-view="alertas">
+      <div class="al-header">
+        <div>
+          <h2>🔔 Alertas y anomalías</h2>
+          <span class="subtitle">Detector automático · Última actualización: <span id="al-generated">—</span></span>
+        </div>
+        <div class="al-header-actions">
+          <button class="btn ghost" id="al-bulk-ack" style="display:none">✓ Marcar todas como revisadas</button>
+          <div class="al-resumen" id="al-resumen"></div>
+        </div>
+      </div>
+      <div id="al-list" class="al-list">
+        <div class="skeleton-card" aria-hidden="true"></div>
+        <div class="skeleton-card" aria-hidden="true"></div>
+      </div>
+    </section>
 
     <!-- ═══ Vista: Desglose (nueva v8) ═══ -->
     <section class="view" data-view="desglose">
-      <!-- Controles mínimos del libro -->
-      <div class="card gd-filters cr-toolbar">
+      <!-- Tabs estilo Excel -->
+      <div class="excel-tabs" id="excel-tabs">
+        <button class="excel-tab active" data-tab="resumen">
+          <span class="excel-tab-ico">📋</span>
+          <span>Resumen</span>
+        </button>
+        <button class="excel-tab" data-tab="analisis">
+          <span class="excel-tab-ico">📊</span>
+          <span>Análisis (matriz)</span>
+        </button>
+        <button class="excel-tab" data-tab="top">
+          <span class="excel-tab-ico">🏆</span>
+          <span>Top N</span>
+        </button>
+        <button class="excel-tab" data-tab="calendario">
+          <span class="excel-tab-ico">📅</span>
+          <span>Calendario</span>
+        </button>
+        <button class="excel-tab" data-tab="comparar">
+          <span class="excel-tab-ico">⚖️</span>
+          <span>Comparar</span>
+        </button>
+        <button class="excel-tab" data-tab="pyg">
+          <span class="excel-tab-ico">💰</span>
+          <span>PYG / Análisis</span>
+        </button>
+        <div class="excel-tabs-spacer"></div>
+        <button class="excel-tab-excel" id="desglose-export-btn" title="Exportar pestaña activa a CSV">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span>CSV</span>
+        </button>
+      </div>
+
+      <!-- Filtros globales persistentes -->
+      <div class="card gd-filters">
         <div class="gd-filter-row">
           <label class="gd-field"><span>Desde</span><input type="date" id="dg-from"></label>
           <label class="gd-field"><span>Hasta</span><input type="date" id="dg-to"></label>
@@ -2110,7 +2124,7 @@ INDEX_HTML = """<!DOCTYPE html>
               <option value="secundaria">secundaria</option>
             </select>
           </label>
-          <button class="btn primary" id="dg-apply">__ICON__refresh-cw__ Actualizar datos</button>
+          <button class="btn primary" id="dg-apply">🔄 Aplicar a todas las pestañas</button>
           <span class="dg-gen-at" id="dg-gen-at"></span>
         </div>
       </div>
@@ -2129,7 +2143,7 @@ INDEX_HTML = """<!DOCTYPE html>
       <div class="excel-panel" data-tab-panel="analisis">
         <div class="card">
           <div class="card-head">
-            <h2>__ICON__bar-chart-3__ Matriz cruzada</h2>
+            <h2>📊 Matriz cruzada</h2>
             <span class="subtitle">Selecciona dimensiones filas × columnas</span>
           </div>
           <div class="card-body">
@@ -2171,7 +2185,7 @@ INDEX_HTML = """<!DOCTYPE html>
       <div class="excel-panel" data-tab-panel="top">
         <div class="card">
           <div class="card-head">
-            <h2>__ICON__trophy__ Top N elementos</h2>
+            <h2>🏆 Top N elementos</h2>
             <div class="gd-top-controls">
               <label class="gd-field"><span>Agrupar por</span>
                 <select id="top-by">
@@ -2206,7 +2220,7 @@ INDEX_HTML = """<!DOCTYPE html>
       <div class="excel-panel" data-tab-panel="calendario">
         <div class="card">
           <div class="card-head">
-            <h2>__ICON__calendar__ Calendario de gastos</h2>
+            <h2>📅 Calendario de gastos</h2>
             <div class="gd-cal-controls">
               <label class="gd-field"><span>Año</span>
                 <input type="number" id="cal-year" min="2024" max="2030" step="1">
@@ -2230,7 +2244,7 @@ INDEX_HTML = """<!DOCTYPE html>
       <div class="excel-panel" data-tab-panel="comparar">
         <div class="card">
           <div class="card-head">
-            <h2>__ICON__scale__ Comparar 2 períodos</h2>
+            <h2>⚖️ Comparar 2 períodos</h2>
             <div class="gd-cmp-controls">
               <label class="gd-field"><span>Agrupar por</span>
                 <select id="cmp-by">
@@ -2264,41 +2278,78 @@ INDEX_HTML = """<!DOCTYPE html>
         </div>
       </div>
 
-      <!-- TAB: Libro financiero reconstruido desde la referencia Excel -->
+      <!-- TAB: PYG / Análisis (jerárquico) -->
       <div class="excel-panel" data-tab-panel="pyg">
-        <div class="cr-workbook" id="cr-workbook">
-
-
-          <div class="cr-meta-line">
-            <span id="cr-meta">REAL · importes en € · fuente: Last.app + facturas</span>
-            <label class="cr-month-filter"><span>Separar por mes</span><select id="cr-month-filter"><option value="">Todos los meses</option></select></label>
-            <div class="cr-actions"><button class="cr-sheet-button" id="cr-expand-all">Expandir detalle</button></div>
+        <div class="card">
+          <div class="card-head">
+            <h2>💰 PYG jerárquico (waterfall)</h2>
+            <span class="subtitle">P&L con totales, márgenes y EBITDA · Drill-down por sub-categoría y vendor</span>
           </div>
-          <div class="cr-issues" id="cr-issues"></div>
-          <div class="cr-grid-shell">
-            <table class="cr-table" id="cr-table">
-              <thead id="cr-head"></thead>
-              <tbody id="cr-body"><tr><td class="muted">Seleccione un periodo y pulse Aplicar.</td></tr></tbody>
-            </table>
-          </div>
-          <div class="cr-sheetbar">
-            <div class="cr-sheet-tabs" role="tablist" aria-label="Hojas del libro">
-              <button class="cr-sheet-tab cr-tab-red active" data-cr-sheet="resumen" role="tab">Resumen Ejecutivo</button>
-              <button class="cr-sheet-tab cr-tab-blue" data-cr-sheet="evolucion" role="tab">Evolución Mensual</button>
-              <button class="cr-sheet-tab cr-tab-green" data-cr-sheet="proveedores" role="tab">Análisis Proveedores</button>
-              <button class="cr-sheet-tab cr-tab-orange" data-cr-sheet="categorias" role="tab">Por Categorías</button>
+          <div class="card-body">
+            <div class="gd-pyg-controls">
+              <label class="gd-field"><span>Comparar con período</span>
+                <select id="pyg-cmp-mode">
+                  <option value="none">Sin comparador</option>
+                  <option value="prev">Período anterior (mismo nº días)</option>
+                  <option value="custom">Personalizado</option>
+                </select>
+              </label>
+              <label class="gd-field pyg-cmp-custom" style="display:none"><span>Desde</span><input type="date" id="pyg-cmp-from"></label>
+              <label class="gd-field pyg-cmp-custom" style="display:none"><span>Hasta</span><input type="date" id="pyg-cmp-to"></label>
+              <button class="btn primary" id="pyg-apply">Calcular PYG</button>
+            </div>
+
+            <div class="gd-pyg-issues" id="pyg-issues"></div>
+
+            <div class="gd-pyg-kpis" id="pyg-kpis">
+              <div class="kpi-card"><div class="kpi-label">Ingresos</div><div class="kpi-value" id="pyg-kpi-ingresos">—</div><div class="kpi-pct" id="pyg-kpi-ingresos-pct"></div></div>
+              <div class="kpi-card"><div class="kpi-label">Margen bruto</div><div class="kpi-value" id="pyg-kpi-margenbruto">—</div><div class="kpi-pct" id="pyg-kpi-margenbruto-pct"></div></div>
+              <div class="kpi-card"><div class="kpi-label">MC</div><div class="kpi-value" id="pyg-kpi-mc">—</div><div class="kpi-pct" id="pyg-kpi-mc-pct"></div></div>
+              <div class="kpi-card kpi-highlight"><div class="kpi-label">EBITDA</div><div class="kpi-value" id="pyg-kpi-ebitda">—</div><div class="kpi-pct" id="pyg-kpi-ebitda-pct"></div></div>
+            </div>
+
+            <div class="gd-pyg-comparison" id="pyg-comparison" style="display:none">
+              <h3>📊 Comparativa con período anterior</h3>
+              <div id="pyg-comparison-table"></div>
+            </div>
+
+            <h3>Líneas del P&L</h3>
+            <div class="gd-pyg-table-wrap">
+              <table class="gd-pyg-table" id="pyg-table">
+                <thead>
+                  <tr><th>Concepto</th><th class="num">Valor (€)</th><th class="num">% s/ingresos</th></tr>
+                </thead>
+                <tbody id="pyg-tbody">
+                  <tr><td colspan="3" class="muted">Pulsa "Calcular PYG" para cargar los datos</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="gd-pyg-drilldown" id="pyg-drilldown" style="display:none">
+              <h3>🔍 Drill-down por bucket</h3>
+              <div id="pyg-drilldown-content"></div>
             </div>
           </div>
         </div>
       </div>
+    </section>
 
-    <!-- ═══ Vista: Productos (v8.3 — feed en tiempo real) ═══ -->
+    <!-- ═══ Vista: Productos (próximamente) ═══ -->
+    <section class="view" data-view="productos">
+      <div class="coming-soon">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18M16 10a4 4 0 0 1-8 0"/></svg>
+        <h2>Catálogo de productos</h2>
+        <p>Próximamente: top productos más vendidos, disponibilidad por local y control de stock. Mientras tanto, pregunta al <b>asistente AI</b> 💬 por tus productos más vendidos.</p>
+      </div>
+    </section>
+
+    <!-- ═══ Vista: Productos (nueva v8.3) ═══ -->
     <section class="view" data-view="productos">
       <div class="pr-stats" id="pr-stats">
         <div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div>
       </div>
       <div class="pr-controls">
-        <input type="search" id="pr-search" placeholder="__ICON__search__ Buscar producto..." autocomplete="off">
+        <input type="search" id="pr-search" placeholder="🔍 Buscar producto..." autocomplete="off">
         <label class="pr-toggle"><input type="checkbox" id="pr-available-only"> <span>Solo disponibles</span></label>
         <select id="pr-sort">
           <option value="name">Nombre A-Z</option>
@@ -2315,13 +2366,13 @@ INDEX_HTML = """<!DOCTYPE html>
     <!-- ═══ Vista: Configuración (nueva v6) ═══ -->
     <section class="view" data-view="config">
       <div class="card">
-        <div class="card-head"><h2>__ICON__plug__ Fuentes de datos</h2><span class="subtitle">Estado de los conectores</span></div>
+        <div class="card-head"><h2>🔌 Fuentes de datos</h2><span class="subtitle">Estado de los conectores</span></div>
         <div class="card-body" id="cfg-fuentes">
           <div class="skeleton-card" aria-hidden="true"></div>
         </div>
       </div>
       <div class="card">
-        <div class="card-head"><h2>__ICON__wrench__ Sistema</h2></div>
+        <div class="card-head"><h2>🛠️ Sistema</h2></div>
         <div class="card-body">
           <dl class="cfg-list">
             <dt>Versión dashboard</dt><dd id="cfg-version">—</dd>
@@ -2341,7 +2392,7 @@ INDEX_HTML = """<!DOCTYPE html>
 <button class="chat-fab" id="chatFab" title="Asistente AI"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span class="fab-badge"></span></button>
 <div class="chat-panel" id="chatPanel">
   <div class="chat-head">
-    <div class="title"><span class="av">__ICON__sparkles__</span> Asistente Liados</div>
+    <div class="title"><span class="av">🤖</span> Asistente Liados</div>
     <button class="icon-btn" id="chatClose"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
   </div>
   <div class="chat-body" id="chatBody"></div>
@@ -2420,7 +2471,6 @@ INDEX_HTML = """<!DOCTYPE html>
   </div>
 </div>
 
-<script src="/static/icons.js"></script>
 <script src="/static/app.js"></script>
 <script>
 if ('serviceWorker' in navigator) {
@@ -2563,28 +2613,7 @@ def last_invoice_card(account: str = "", user: str = Depends(get_current_user)):
 
 @app.get("/", response_class=HTMLResponse)
 def index(user: str = Depends(get_current_user)):
-    # v9-premium: reemplazar __ICON__name__ placeholders por HTML <svg> inline
-    # El cliente también puede regenerarlos via icon() si quiere refrescos.
-    import re as _re
-    def _icon_repl(m):
-        name = m.group(1)
-        cls = m.group(2) or 'ico'
-        # Reproduce la función icon() del cliente. Si el nombre no existe,
-        # devuelve un svg con ? para no romper la UI.
-        path = _ICON_PATHS.get(name, '<text x="12" y="16" text-anchor="middle" font-size="10" fill="currentColor">?</text>')
-        return ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" '
-                'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" '
-                f'class="{cls}" aria-hidden="true">{path}</svg>')
-    # _ICON_PATHS debe estar disponible — lo definimos cerca de INDEX_HTML
-    return _re.sub(r'__ICON__([\w-]+)__(?:\{([^}]+)\})?', _icon_repl, INDEX_HTML)
-
-
-LOGIN_HTML = '<!DOCTYPE html>\n<html lang="es">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width,initial-scale=1">\n<title>Liados - Login</title>\n<style>\nbody{margin:0;font-family:-apple-system,BlinkMacSystemFont,Inter,Segoe UI,sans-serif;background:linear-gradient(135deg,#0f172a 0%,#1e293b 100%);color:#e2e8f0;min-height:100vh;display:flex;align-items:center;justify-content:center}\n.card{background:rgba(15,23,42,.85);backdrop-filter:blur(8px);border:1px solid rgba(148,163,184,.18);border-radius:16px;padding:40px;width:380px;box-shadow:0 24px 60px rgba(0,0,0,.5)}\nh1{margin:0 0 4px;font-size:22px;font-weight:600;color:#f8fafc}\n.sub{color:#94a3b8;font-size:13px;margin:0 0 28px}\nlabel{display:block;font-size:12px;color:#cbd5e1;margin:14px 0 6px;text-transform:uppercase;letter-spacing:.04em}\ninput{width:100%;padding:11px 14px;background:rgba(2,6,23,.6);border:1px solid rgba(148,163,184,.22);border-radius:8px;color:#f8fafc;font-size:14px;outline:none;transition:.15s;box-sizing:border-box}\ninput:focus{border-color:#38bdf8;box-shadow:0 0 0 3px rgba(56,189,248,.15)}\nbutton{width:100%;margin-top:24px;padding:12px;background:#0ea5e9;border:0;color:#fff;border-radius:8px;font-weight:600;font-size:14px;cursor:pointer;transition:.15s}\nbutton:hover{background:#0284c7}\nbutton:disabled{background:#475569;cursor:not-allowed}\n.err{margin-top:14px;padding:10px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);border-radius:8px;color:#fca5a5;font-size:13px;display:none}\n.help{margin-top:20px;padding-top:18px;border-top:1px solid rgba(148,163,184,.12);font-size:12px;color:#64748b;text-align:center;line-height:1.6}\n</style>\n</head>\n<body>\n<form class="card" id="f" autocomplete="off">\n<h1>Liados</h1>\n<p class="sub">Acceso al dashboard de gestion</p>\n<label>Usuario</label><input id="u" name="username" required autofocus>\n<label>Contrasena</label><input id="p" name="password" type="password" required>\n<button id="btn" type="submit">Entrar</button>\n<div class="err" id="err"></div>\n<div class="help">Acceso restringido a personal autorizado.<br>Si olvidas la contrasena, contacta con tu administrador.</div>\n</form>\n<script>\nconst f=document.getElementById(\'f\'),u=document.getElementById(\'u\'),p=document.getElementById(\'p\'),b=document.getElementById(\'btn\'),e=document.getElementById(\'err\');\nf.onsubmit=async ev=>{\n  ev.preventDefault();b.disabled=true;b.textContent=\'Verificando...\';e.style.display=\'none\';\n  try{\n    const r=await fetch(\'/api/health\',{headers:{Authorization:\'Basic \'+btoa(u.value+\':\'+p.value)}});\n    if(r.ok){sessionStorage.setItem(\'liados_user\',u.value);sessionStorage.setItem(\'liados_pass\',p.value);window.location=\'/\'}\n    else{e.textContent=\'Usuario o contrasena incorrectos\';e.style.display=\'block\';b.disabled=false;b.textContent=\'Entrar\'}\n  }catch(x){e.textContent=\'Error de conexion\';e.style.display=\'block\';b.disabled=false;b.textContent=\'Entrar\'}\n};\n</script>\n</body>\n</html>\n'
-
-
-@app.get("/login", response_class=HTMLResponse)
-def login_page():
-    return LOGIN_HTML
+    return INDEX_HTML
 
 
 # ── v7.1 PRO: Reclasificar v2 (seguro, solo categoria) ─────────────────

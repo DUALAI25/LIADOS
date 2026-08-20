@@ -278,9 +278,46 @@ def classify_factura(
     """
     rules = rules or DEFAULT_RULES
 
-    # 0) El vendor manda si es marketplace multicategoría
+    # 0) El vendor manda si es marketplace multicategoría (Glovo, Uber, etc.)
+    #    Y la categoría NO es explícitamente Marketing/Software/Servicios/
+    #    Impuestos/Bancarios/Oficina. Esto evita que "Glovo + Marketing"
+    #    (visibilidad pagada) se clasifique como comisiones.
+    #    Caso base: "Glovo + Restauración" → comisiones (caso del test).
     if _is_marketplace_vendor(vendor_name):
-        return "comisiones"
+        NON_COMISION_MARKETPLACE_CATS = (
+            "marketing", "marketing y publicidad", "publicidad",
+            "software", "software y saas",
+            "servicios profesionales", "asesoria", "asesoría",
+            "impuestos", "impuestos y tasas",
+            "bancarios", "gastos bancarios",
+            "seguros", "alquiler",
+            "oficina",
+        )
+        cat_n = _norm(category_raw)
+        if cat_n not in NON_COMISION_MARKETPLACE_CATS:
+            return "comisiones"
+        # Si la categoría ES de las anteriores, el loop de buckets NO debe
+        # matchear el vendor como comisiones. Hacemos skip del bucket
+        # 'comisiones' en el siguiente loop.
+        ven_n = _norm(vendor_name)
+        for bucket in BUCKETS:
+            if bucket == "comisiones":
+                continue  # el vendor manda pero la categoría dice otra cosa
+            rule = rules.get(bucket)
+            if not rule:
+                continue
+            cat_n_loop = _norm(category_raw)
+            if rule.get("categories") and any(
+                _norm(c) == cat_n_loop for c in rule["categories"]
+            ):
+                return bucket
+            if rule.get("vendors_any") and any(
+                _norm(v) == ven_n for v in rule["vendors_any"]
+            ):
+                return bucket
+            if _matches_vendor_regex(ven_n, rule.get("vendor_regex", [])):
+                return bucket
+        return "otros_gastos"
 
     cat_n = _norm(category_raw)
     ven_n = _norm(vendor_name)

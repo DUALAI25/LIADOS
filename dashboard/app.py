@@ -407,6 +407,30 @@ def api_margen_por_mes(user: str = Depends(get_current_user)):
         build_ytd_row, ytd_dates, is_valid_period_key,
     )
 
+    # P0.10: la serie mensual muestra los últimos 6 meses (UX), pero
+    # el YTD necesita TODO el año natural desde enero, no solo esos 6 meses.
+    ingresos_all = {r["mes"]: float(r["total_eur"]) for r in q("""
+        SELECT to_char(creation_time, 'YYYY-MM') as mes,
+               coalesce(sum(total_cents), 0)/100.0 as total_eur
+        FROM lastapp_bills
+        WHERE deleted = false
+          AND creation_time >= date_trunc('year', now())
+        GROUP BY mes
+    """)}
+    gastos_all_raw = q(f"""
+        SELECT to_char(invoice_date, 'YYYY-MM') as mes,
+               coalesce(sum(total_amount), 0) as total_eur
+        FROM invoices
+        WHERE {expense_filter()}
+          AND invoice_date >= date_trunc('year', now())
+        GROUP BY mes
+    """)
+    gastos_all = {}
+    for r in gastos_all_raw:
+        m = r["mes"]
+        if m and is_valid_period_key(m):
+            gastos_all[m] = float(r["total_eur"])
+
     ingresos = {r["mes"]: float(r["total_eur"]) for r in q("""
         SELECT to_char(creation_time, 'YYYY-MM') as mes,
                coalesce(sum(total_cents), 0)/100.0 as total_eur
@@ -437,20 +461,26 @@ def api_margen_por_mes(user: str = Depends(get_current_user)):
     )
 
     monthly = []
-    ing_total_ytd = 0.0
-    gas_total_ytd = 0.0
     for m in keys:
         ing = ingresos.get(m, 0.0)
         gas = gastos.get(m, 0.0)
         row = build_monthly_row(m, ingresos=ing, gastos=gas)
         monthly.append(row)
-        # YTD del año en curso
-        if int(m[0:4]) == today.year:
-            ing_total_ytd += ing
-            gas_total_ytd += gas
+
+    # YTD: usa los datos COMPLETOS del año natural, no la ventana móvil
+    # de 6 meses. Si no hay datos del año en curso, ytd = None.
+    ing_total_ytd = sum(
+        v for k, v in ingresos_all.items()
+        if is_valid_period_key(k) and int(k[0:4]) == today.year
+    )
+    gas_total_ytd = sum(
+        v for k, v in gastos_all.items()
+        if is_valid_period_key(k) and int(k[0:4]) == today.year
+    )
 
     out = {"monthly": monthly, "ytd": None}
-    if today.month > 1 or any(int(k[0:4]) == today.year for k in keys):
+    # Solo mostramos YTD si hay datos del año en curso
+    if ing_total_ytd > 0 or gas_total_ytd > 0:
         out["ytd"] = build_ytd_row(
             today.year,
             ingresos=ing_total_ytd,
@@ -1224,7 +1254,34 @@ def api_gastos_pyg(
             LIMIT 20000
         """
         pp = [p_from, p_to] + ([p_cuenta] if p_cuenta else [])
-        return q(sql, tuple(pp))
+        rows = q(sql, tuple(pp))
+
+        # Las ventas no viven en `invoices`: proceden de Last.app.  El PYG
+        # debe combinar ambos libros; de lo contrario sólo ve gastos y
+        # `ventas_brutas` queda a cero aunque el dashboard tenga ingresos.
+        # Las facturas de venta de Last.app no llevan source_account, por lo
+        # que se consideran de la cuenta principal cuando se filtra cuenta.
+        if not p_cuenta or p_cuenta == "principal":
+            sales = q("""
+                SELECT
+                  creation_time::date::text AS invoice_date,
+                  COALESCE(company_name, 'Last.app') AS vendor_name,
+                  'Ventas' AS category_raw,
+                  'principal' AS source_account,
+                  (total_cents + COALESCE(discount_total_cents, 0)) / 100.0 AS total_amount,
+                  COALESCE(discount_total_cents, 0) / 100.0 AS discount_amount
+                FROM lastapp_bills
+                WHERE creation_time::date >= %s AND creation_time::date <= %s
+                  AND deleted = false
+                ORDER BY creation_time
+                LIMIT 20000
+            """, (p_from, p_to))
+            for sale in sales:
+                discount = float(sale.pop("discount_amount", 0) or 0)
+                rows.append(sale)
+                if discount > 0:
+                    rows.append({**sale, "category_raw": "Descuentos", "total_amount": discount})
+        return rows
 
     raw_rows = _fetch_rows(df, dt, cuenta)
     rows = [{
@@ -1338,7 +1395,39 @@ def api_gastos_pyg_canonical(
             LIMIT 20000
         """
         pp = [p_from, p_to] + ([p_cuenta] if p_cuenta else [])
-        return q(sql, tuple(pp))
+        rows = q(sql, tuple(pp))
+        if not p_cuenta or p_cuenta == "principal":
+            sales = q("""
+                SELECT creation_time::date::text AS invoice_date,
+                       COALESCE(company_name, 'Last.app') AS vendor_name,
+                       'Ventas' AS category_raw,
+                       'principal' AS source_account,
+                       (total_cents + COALESCE(discount_total_cents, 0)) / 100.0 AS total_amount,
+                       (taxable_base_cents + COALESCE(discount_total_cents, 0)) / 100.0 AS base_amount,
+                       COALESCE(tax_cents, 0) / 100.0 AS tax_amount,
+                       'Venta Last.app' AS description,
+                       number AS invoice_number,
+                       customer_tax_id AS vendor_tax_id,
+                       COALESCE(discount_total_cents, 0) / 100.0 AS discount_amount
+                FROM lastapp_bills
+                WHERE creation_time::date >= %s AND creation_time::date <= %s
+                  AND deleted = false
+                ORDER BY creation_time
+                LIMIT 20000
+            """, (p_from, p_to))
+            for sale in sales:
+                discount = float(sale.pop("discount_amount", 0) or 0)
+                rows.append(sale)
+                if discount > 0:
+                    rows.append({
+                        **sale,
+                        "category_raw": "Descuentos",
+                        "total_amount": discount,
+                        "base_amount": discount,
+                        "tax_amount": 0,
+                        "description": "Descuento Last.app",
+                    })
+        return rows
 
     raw_rows = _fetch_rows(date_from, date_to, cuenta)
     rows = []
@@ -2739,6 +2828,33 @@ DESGLOSE_ALLOWED_DIMS = {
 DESGLOSE_ALLOWED_METRICS = {"count", "sum", "avg", "min", "max"}
 
 
+def _desglose_category_expr(raw_expr="COALESCE(c.name, i.category_raw)") -> str:
+    """Categoría canónica para agregaciones sin alterar el dato original."""
+    return f"""CASE lower(trim(COALESCE({raw_expr}, '')))
+        WHEN 'suministros' THEN 'Suministros'
+        WHEN 'hosteleria' THEN 'Restauración y Hostelería'
+        WHEN 'restauración y hostelería' THEN 'Restauración y Hostelería'
+        WHEN 'restauracion y hosteleria' THEN 'Restauración y Hostelería'
+        WHEN 'software' THEN 'Software y SaaS'
+        WHEN 'software y saas' THEN 'Software y SaaS'
+        WHEN 'servicios' THEN 'Servicios Profesionales'
+        WHEN 'servicios profesionales' THEN 'Servicios Profesionales'
+        WHEN 'oficina' THEN 'Oficina'
+        WHEN 'otros' THEN 'Otros'
+        ELSE NULLIF(trim(COALESCE({raw_expr}, '')), '')
+    END"""
+
+
+def _desglose_vendor_expr(raw_expr="i.vendor_name") -> str:
+    """Proveedor canónico para los alias reales conocidos del cliente."""
+    return f"""CASE
+        WHEN lower(regexp_replace(COALESCE({raw_expr}, ''), '[^a-zA-Z0-9]+', '', 'g'))
+             IN ('vamosalliosl', 'vamosallioslu', 'vamosalliosa')
+          THEN 'VAMOS AL LIO SL'
+        ELSE NULLIF(trim(COALESCE({raw_expr}, '')), '')
+    END"""
+
+
 def _desglose_sql_for(metric_alias: str, total_col: str = "total_amount") -> str:
     """Traduce la métrica pública a SQL real. count NO multiplica por importe."""
     return {
@@ -2873,10 +2989,15 @@ def api_desglose_resumen(
         params.append(cuenta)
     where_sql = " AND ".join(where_parts)
 
+    # La tarjeta mensual representa el último mes del periodo seleccionado.
+    # Sin fecha final, conserva el comportamiento de mes natural actual.
+    period_end = dt or date.today()
+    period_month_start = period_end.replace(day=1)
+
     row = q(f"""
         WITH base AS (
-          SELECT i.vendor_name as vendor_name,
-                 COALESCE(c.name, i.category_raw) as category,
+          SELECT {_desglose_vendor_expr()} as vendor_name,
+                 {_desglose_category_expr()} as category,
                  i.total_amount as total_amount,
                  i.invoice_date as invoice_date
           FROM invoices i
@@ -2895,10 +3016,10 @@ def api_desglose_resumen(
           COALESCE((SELECT sum(total_amount) FROM base WHERE vendor_name IS NOT NULL GROUP BY vendor_name ORDER BY sum(total_amount) DESC NULLS LAST LIMIT 1), 0) as top_vendor_eur,
           (SELECT category FROM base WHERE category IS NOT NULL GROUP BY category ORDER BY sum(total_amount) DESC LIMIT 1) as top_category,
           COALESCE((SELECT sum(total_amount) FROM base WHERE category IS NOT NULL GROUP BY category ORDER BY sum(total_amount) DESC LIMIT 1), 0) as top_category_eur,
-          (SELECT count(*) FROM base WHERE invoice_date >= date_trunc('month', now())) as facturas_mes_actual,
-          (SELECT coalesce(sum(total_amount),0) FROM base WHERE invoice_date >= date_trunc('month', now())) as eur_mes_actual
+          (SELECT count(*) FROM base WHERE invoice_date BETWEEN %s AND %s) as facturas_mes_actual,
+          (SELECT coalesce(sum(total_amount),0) FROM base WHERE invoice_date BETWEEN %s AND %s) as eur_mes_actual
         FROM base
-    """, tuple(params))[0]
+    """, tuple(params) + (period_month_start, period_end, period_month_start, period_end))[0]
 
     out = {
         "total_facturas": int(row["total_facturas"]),
@@ -2914,6 +3035,7 @@ def api_desglose_resumen(
         "top_category_eur": float(row["top_category_eur"] or 0),
         "facturas_mes_actual": int(row["facturas_mes_actual"] or 0),
         "eur_mes_actual": float(row["eur_mes_actual"] or 0),
+        "period_month": period_month_start.strftime("%Y-%m"),
         "generated_at": _dt.utcnow().isoformat() + "Z",
     }
     _cache_put(cache_key, out)
@@ -2984,6 +3106,10 @@ def api_desglose_matrix(
             if dim_alias == "_year":   return f"to_char({base}, \'YYYY\')"
             if dim_alias == "_week":   return f"to_char({base}, \'YYYY\') || \'-W\' || to_char(extract(week from {base}))"
             if dim_alias == "_day":    return f"to_char({base}, \'YYYY-MM-DD\')"
+        if dim_alias == "category_raw":
+            return _desglose_category_expr()
+        if dim_alias == "vendor_name":
+            return _desglose_vendor_expr()
         return dim_alias
 
     row_sel = _select_expr(row_alias)
@@ -3173,8 +3299,11 @@ def api_desglose_top(
 
     # SELECT expr: category necesita JOIN
     if by == "category":
-        dim_expr = "COALESCE(c.name, i.category_raw)"
+        dim_expr = _desglose_category_expr()
         join = "LEFT JOIN categories c ON c.id = i.category_id"
+    elif by == "vendor":
+        dim_expr = _desglose_vendor_expr()
+        join = ""
     elif by_alias.startswith("_"):
         # dims derivadas de invoice_date
         if by_alias == "_month": dim_expr = "to_char(invoice_date, 'YYYY-MM')"
@@ -3336,8 +3465,11 @@ def api_desglose_compare(
     p2df, p2dt = _parse_period(p2_from, p2_to)
 
     if by == "category":
-        dim_expr = "COALESCE(c.name, i.category_raw)"
+        dim_expr = _desglose_category_expr()
         join = "LEFT JOIN categories c ON c.id = i.category_id"
+    elif by == "vendor":
+        dim_expr = _desglose_vendor_expr()
+        join = ""
     elif DESGLOSE_ALLOWED_DIMS[by].startswith("_"):
         if DESGLOSE_ALLOWED_DIMS[by] == "_month": dim_expr = "to_char(invoice_date, 'YYYY-MM')"
         else: dim_expr = "invoice_date::text"
@@ -3420,8 +3552,11 @@ def api_desglose_export_csv(
     df, dt = _parse_period(date_from, date_to)
 
     if by == "category":
-        dim_expr = "COALESCE(c.name, i.category_raw)"
+        dim_expr = _desglose_category_expr()
         join = "LEFT JOIN categories c ON c.id = i.category_id"
+    elif by == "vendor":
+        dim_expr = _desglose_vendor_expr()
+        join = ""
     elif DESGLOSE_ALLOWED_DIMS[by] == "_month":
         dim_expr = "to_char(invoice_date, 'YYYY-MM')"
         join = ""

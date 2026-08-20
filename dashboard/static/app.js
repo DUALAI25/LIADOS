@@ -6,7 +6,7 @@
 // ── Constantes ───────────────────────────────────────────────────────────
 const COLORS = { card:'#3b82f6', cash:'#22c55e', uber:'#f97316', glovo:'#eab308', shop:'#a855f7', justeat:'#ef4444' };
 const LABELS = { card:'Tarjeta', cash:'Efectivo', uber:'Uber Eats', glovo:'Glovo', shop:'Shop', justeat:'Just Eat' };
-const ICONS  = { card:'💳', cash:'💵', uber:'🚗', glovo:'🟡', shop:'🛒', justeat:'🛵' };
+const ICONS  = { card:'credit-card', cash:'banknote', uber:'car', glovo:'shopping-bag', shop:'shopping-cart', justeat:'bike' };
 
 const $  = (s, r=document) => r.querySelector(s);
 const $$ = (s, r=document) => [...r.querySelectorAll(s)];
@@ -111,6 +111,7 @@ function initNav() {
       e.preventDefault();
       const v = item.getAttribute('data-view');
       if (!v) return;
+      document.body.classList.toggle('cr-workbook-active', v === 'desglose' && DG.activeTab === 'pyg');
       $$('.nav-item').forEach(n => n.classList.remove('active'));
       item.classList.add('active');
       $$('.view').forEach(s => s.classList.toggle('active', s.getAttribute('data-view') === v));
@@ -368,7 +369,7 @@ async function loadGastos() {
           <td>${r.source_account ? esc(r.source_account) : '<span class="muted">—</span>'}</td>
           <td><span class="status status-${esc(r.status||'pending')}">${esc(statusLabel(r.status||'pending'))}</span></td>
           <td class="num"><b>${eur(r.total_amount||0)}</b></td>
-          <td>${r.raw_file_url ? '<span class="pdf-yes" title="PDF disponible">📎</span>' : '<span class="muted" title="Sin PDF">—</span>'}</td>
+          <td>${r.raw_file_url ? '<span class="pdf-yes" title="PDF disponible">' + icon('paperclip', 'ico ico-xs') + '</span>' : '<span class="muted" title="Sin PDF">—</span>'}</td>
         </tr>
       `).join('')}</tbody>
     </table></div>`;
@@ -419,7 +420,7 @@ async function openFacturaModal(id) {
     ).join('');
     const pdfBlock = f.raw_file_url
       ? (f.pdf_exists
-          ? `<a class="btn primary" href="/api/gastos/${id}/pdf" target="_blank" rel="noopener" download>📄 Ver/Descargar PDF (${(f.pdf_size_bytes/1024).toFixed(1)} KB)</a>`
+          ? `<a class="btn primary" href="/api/gastos/${id}/pdf" target="_blank" rel="noopener" download>${icon('file-text', 'ico ico-xs')} Ver/Descargar PDF (${(f.pdf_size_bytes/1024).toFixed(1)} KB)</a>`
           : `<span class="muted">PDF no disponible en disco (${esc(f.raw_file_url)})</span>`)
       : '<span class="muted">Esta factura no tiene PDF adjunto</span>';
     const pagosBlock = f.pagos && f.pagos.length > 0
@@ -452,8 +453,8 @@ async function openFacturaModal(id) {
         ${f.created_at ? `<small>Creada: ${esc(f.created_at)}</small>` : ''}
       </div>
       <div class="factura-actions">
-        <button class="btn ghost" onclick="chatPrefill('Analiza la factura ${esc(f.invoice_number||id)} de ${esc((f.vendor_name||'').replace(/'/g, ''))}')">💬 Abrir en chat AI</button>
-        <button class="btn ghost" id="reclass-toggle-${esc(id)}" onclick="toggleReclassPanel('${esc(id)}')">✏️ Reclasificar</button>
+        <button class="btn ghost" onclick="chatPrefill('Analiza la factura ${esc(f.invoice_number||id)} de ${esc((f.vendor_name||'').replace(/'/g, ''))}')">${icon('message-circle', 'ico ico-xs')} Abrir en chat AI</button>
+        <button class="btn ghost" id="reclass-toggle-${esc(id)}" onclick="toggleReclassPanel('${esc(id)}')">${icon('file-text', 'ico ico-xs')} Reclasificar</button>
       </div>
       <div class="reclass-panel" id="reclass-panel-${esc(id)}" style="display:none">
         <h4>Reclasificar factura</h4>
@@ -580,7 +581,7 @@ async function loadAlertas() {
       const isAcked = ackedIds.has(a.id);
       const ackInfo = acks.find(x => x.alert_id === a.id);
       const isDismissed = dismissed[a.id] && (now - dismissed[a.id] < 24*3600*1000);
-      const dismissBtn = (isAcked || isDismissed) ? '' : `<button class="al-dismiss" data-id="${esc(a.id)}" aria-label="Descartar alerta">✕</button>`;
+      const dismissBtn = (isAcked || isDismissed) ? '' : `<button class="al-dismiss" data-id="${esc(a.id)}" aria-label="Descartar alerta">'×'</button>`;
       const ackBtn = isAcked
         ? `<span class="al-acked" title="Revisada por ${esc(ackInfo?.acked_by || '')} el ${esc((ackInfo?.acked_at || '').replace('T',' ').slice(0,16))}">✓ Revisada</span>`
         : `<button class="al-ack" data-id="${esc(a.id)}">✓ Marcar revisada</button>`;
@@ -600,8 +601,8 @@ async function loadAlertas() {
             ${dismissBtn}
           </div>
           <p class="al-desc">${esc(a.descripcion)}</p>
-          ${a.accion_sugerida ? `<p class="al-accion">💡 <b>Acción:</b> ${esc(a.accion_sugerida)}</p>` : ''}
-          ${isAcked && ackInfo?.note ? `<p class="al-note"><b>📝 Nota:</b> ${esc(ackInfo.note)}</p>` : ''}
+          ${a.accion_sugerida ? `<p class="al-accion">${icon('info', 'ico ico-xs')} <b>Acción:</b> ${esc(a.accion_sugerida)}</p>` : ''}
+          ${isAcked && ackInfo?.note ? `<p class="al-note"><b>${icon('file-text', 'ico ico-xs')} Nota:</b> ${esc(ackInfo.note)}</p>` : ''}
           <div class="al-foot">
             ${cta}
             ${ackBtn}
@@ -708,24 +709,24 @@ async function renderConfig() {
       const clientStr = a.client_id || '—';
       return `<div class="cfg-fuente">
         <div class="cfg-fuente-head">
-          <b>📧 ${esc(a.account)}</b>
+          <b>${icon('mail', 'ico ico-xs')} ${esc(a.account)}</b>
           ${statusBadge}
         </div>
         <div class="cfg-fuente-grid">
-          <div><span>Credentials</span><b>${a.credentials_file_exists ? '✓' : '✗'}</b></div>
-          <div><span>Token</span><b>${a.token_file_exists ? '✓' : '✗'}</b></div>
-          <div><span>Refresh</span><b>${a.has_refresh_token ? '✓' : '✗'}</b></div>
+          <div><span>Credentials</span><b>${a.credentials_file_exists ? '✓' : '×'}</b></div>
+          <div><span>Token</span><b>${a.token_file_exists ? '✓' : '×'}</b></div>
+          <div><span>Refresh</span><b>${a.has_refresh_token ? '✓' : '×'}</b></div>
           <div><span>Edad token</span><b>${ageStr}</b></div>
           <div><span>Client ID</span><b><code>${esc(clientStr)}</code></b></div>
           <div><span>Scope</span><b><code>${esc(a.scope||'—')}</code></b></div>
         </div>
-        ${a.status === 'MISSING_TOKEN' || a.status === 'STALE' ? `<details class="cfg-reauth"><summary>🔄 Reautorizar esta cuenta</summary>
+        ${a.status === 'MISSING_TOKEN' || a.status === 'STALE' ? `<details class="cfg-reauth"><summary>${icon('refresh-cw', 'ico ico-xs')} Reautorizar esta cuenta</summary>
           <ol>
             <li>En tu máquina local, ejecuta:<br><code>python3 -m agente.scripts.gmail_auth --account ${esc(a.account)} --force</code></li>
             <li>Sube el nuevo token al VPS:<br><code>scp agente/credentials/gmail_token_${esc(a.account)}.json vps:/root/liados/agente/credentials/</code></li>
             <li>Prueba el collector:<br><code>python3 -m agente.scripts.gmail_collector --account ${esc(a.account)} --dry-run</code></li>
           </ol>
-          <p class="muted">⚠️ El re-OAuth requiere navegador interactivo. No se puede automatizar desde el dashboard.</p>
+          <p class="muted">${icon('alert-triangle', 'ico ico-xs')} El re-OAuth requiere navegador interactivo. No se puede automatizar desde el dashboard.</p>
         </details>` : ''}
       </div>`;
     }).join('');
@@ -743,7 +744,7 @@ function toast(msg, type='info', ms=3500) {
   const t = document.createElement('div');
   t.className = `toast toast-${type}`;
   t.setAttribute('role', 'status');
-  t.innerHTML = `<span class="toast-ico">${type==='error'?'⛔':type==='success'?'✓':type==='warn'?'⚠':'ℹ'}</span><span>${esc(msg)}</span><button class="toast-x" aria-label="Cerrar">✕</button>`;
+  t.innerHTML = `<span class="toast-ico">${type==='error' ? icon('x', 'ico ico-xs') : type==='success' ? '✓' : type==='warn' ? icon('alert-triangle', 'ico ico-xs') : 'ℹ'}</span><span>${esc(msg)}</span><button class="toast-x" aria-label="Cerrar">×</button>`;
   c.appendChild(t);
   // Animate in
   requestAnimationFrame(() => t.classList.add('toast-in'));
@@ -759,20 +760,19 @@ function toast(msg, type='info', ms=3500) {
 
 // ── v6: Command palette (⌘K) ────────────────────────────────────────────
 const COMMANDS = [
-  { id: 'nav:dashboard', label: 'Ir a Dashboard', icon: '📊', action: () => switchView('dashboard') },
-  { id: 'nav:ventas', label: 'Ir a Ventas', icon: '📈', action: () => switchView('ventas') },
-  { id: 'nav:gastos', label: 'Ir a Gastos (resumen)', icon: '📄', action: () => switchView('gastos') },
-  { id: 'nav:gastos-detalle', label: 'Ir a Detalle gastos', icon: '🧾', action: () => switchView('gastos-detalle') },
-  { id: 'nav:alertas', label: 'Ir a Alertas', icon: '🔔', action: () => switchView('alertas') },
-  { id: 'nav:config', label: 'Ir a Configuración', icon: '⚙️', action: () => switchView('config') },
-  { id: 'act:chat', label: 'Abrir asistente AI', icon: '💬', action: () => { if (!$('#chatPanel').classList.contains('open')) $('#chatFab').click(); $('#chatText').focus(); } },
-  { id: 'act:refresh', label: 'Refrescar datos', icon: '🔄', action: () => { loadAll(); toast('Datos refrescados', 'success'); } },
-  { id: 'act:export-facturas', label: 'Exportar facturas a CSV', icon: '⬇️', action: () => window.location = '/api/export/facturas' },
-  { id: 'act:export-proveedores', label: 'Exportar gastos por proveedor a CSV', icon: '⬇️', action: () => window.location = '/api/export/proveedores' },
-  { id: 'act:export-categorias', label: 'Exportar gastos por categoría a CSV', icon: '⬇️', action: () => window.location = '/api/export/categorias' },
-  { id: 'act:export-ingresos', label: 'Exportar ingresos a CSV', icon: '⬇️', action: () => window.location = '/api/export/ingresos' },
-  { id: 'act:theme', label: 'Cambiar tema claro/oscuro', icon: '🌗', action: () => toggleTheme() },
-  { id: 'act:help', label: 'Ver atajos de teclado', icon: '❓', action: () => openModal('helpModal') },
+  { id: 'nav:dashboard', label: 'Ir a Dashboard', icon: 'bar-chart-3', action: () => switchView('dashboard') },
+  { id: 'nav:ventas', label: 'Ir a Ventas', icon: 'trending-up', action: () => switchView('ventas') },
+  { id: 'nav:gastos', label: 'Ir a Gastos (resumen)', icon: 'file-text', action: () => switchView('gastos') },
+
+  { id: 'nav:config', label: 'Ir a Configuración', icon: 'cog', action: () => switchView('config') },
+  { id: 'act:chat', label: 'Abrir asistente AI', icon: 'message-circle', action: () => { if (!$('#chatPanel').classList.contains('open')) $('#chatFab').click(); $('#chatText').focus(); } },
+  { id: 'act:refresh', label: 'Refrescar datos', icon: 'refresh-cw', action: () => { loadAll(); toast('Datos refrescados', 'success'); } },
+  { id: 'act:export-facturas', label: 'Exportar facturas a CSV', icon: '⬇', action: () => window.location = '/api/export/facturas' },
+  { id: 'act:export-proveedores', label: 'Exportar gastos por proveedor a CSV', icon: '⬇', action: () => window.location = '/api/export/proveedores' },
+  { id: 'act:export-categorias', label: 'Exportar gastos por categoría a CSV', icon: '⬇', action: () => window.location = '/api/export/categorias' },
+  { id: 'act:export-ingresos', label: 'Exportar ingresos a CSV', icon: '⬇', action: () => window.location = '/api/export/ingresos' },
+  { id: 'act:theme', label: 'Cambiar tema claro/oscuro', icon: 'moon', action: () => toggleTheme() },
+  { id: 'act:help', label: 'Ver atajos de teclado', icon: 'help-circle', action: () => openModal('helpModal') },
 ];
 function switchView(v) {
   const nav = $(`.nav-item[data-view="${v}"]`);
@@ -955,39 +955,35 @@ function _getAuthHeaders() { return _authHeader(); }  // compat: usado por strea
 
 // ── Render ───────────────────────────────────────────────────────────────
 function renderHero() {
-  // v8.0: si los datos aún no han llegado, no pintar nada (evita "0€" fantasma)
-  const k = DATA.kpis || {}, comp = DATA.comp || {}, sp = DATA.spark6m || [];
-  if (!k.margen_mes && k.margen_mes !== 0) return;
+  // Audit fix: si los datos no han llegado, no pintar (evita "0€").
+  const k = DATA.kpis || {}, comp = DATA.comp || {};
+  if (k.margen_mes === undefined || k.margen_mes === null) return;
   const margin = k.margen_mes;
-  const dp = comp.margen ? comp.margen.delta_pct : null;
-  const dpU = dp != null && dp >= 0;
+  const margenPct = k.ventas_mes ? (margin / k.ventas_mes * 100) : 0;
   const heroValue = $('#heroValue');
   const heroDelta = $('#heroDelta');
   const heroMeta = $('#heroMeta');
-  if (!heroValue) return;  // DOM no está listo (vista Dashboard oculta)
-  heroValue.className = 'hero-value ' + (margin >= 0 ? 'pos' : 'neg');
-  animateCount(heroValue, margin, {decimals:2});
-  heroDelta.className = 'delta ' + (dp==null ? 'flat' : (dpU ? 'up' : 'down'));
-  heroDelta.innerHTML = deltaInner(dp);
-  const margenPct = k.ventas_mes ? (margin/k.ventas_mes*100) : 0;
-  heroMeta.innerHTML = `
-    <div class="meta">Ventas <b>${eur(k.ventas_mes)}</b></div>
-    <div class="meta">Gastos <b>${eur(k.gastos_mes)}</b></div>
-    <div class="meta">Margen s/ventas <b>${margenPct.toFixed(1)}%</b></div>`;
-  // sparkline hero
+  if (!heroValue || !heroDelta || !heroMeta) return;  // DOM no listo
+  heroValue.textContent = eur(margin);
+  heroValue.className = margin >= 0 ? 'finance-positive' : 'finance-negative';
+  heroDelta.className = 'finance-delta ' + (margin >= 0 ? 'good' : 'bad');
+  heroDelta.textContent = margenPct.toFixed(1) + '% sobre ventas';
+  heroMeta.innerHTML = '<span>' + k.facturas_ventas + ' tickets procesados</span><span>' + k.facturas_gastos + ' facturas de gasto</span>';
+  // sparkline hero (si existe)
+  const sp = DATA.spark6m || [];
   const ctx = $('#heroSpark');
-  if (typeof Chart !== 'undefined' && ctx) {
+  if (typeof Chart !== 'undefined' && ctx && sp.length > 0) {
     if (charts.hero) charts.hero.destroy();
     charts.hero = new Chart(ctx, {
-      type:'line',
-      data:{ labels: sp.map(r=>r.mes.slice(5)), datasets:[{
-        data: sp.map(r=>r.total_eur), borderColor: css('--blue'),
-        backgroundColor: 'rgba(59,130,246,.12)', fill:true, tension:.4,
-        pointRadius:0, borderWidth:2.5
+      type: 'line',
+      data: { labels: sp.map(r => r.mes.slice(5)), datasets: [{
+        data: sp.map(r => r.total_eur), borderColor: css('--blue'),
+        backgroundColor: 'rgba(59,130,246,.12)', fill: true, tension: .4,
+        pointRadius: 0, borderWidth: 2.5
       }]},
-      options:{ responsive:true, maintainAspectRatio:false,
-        plugins:{ legend:{display:false}, tooltip:{ enabled:false } },
-        scales:{ x:{display:false}, y:{display:false} } }
+      options: { responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: { enabled: false } },
+        scales: { x: { display: false }, y: { display: false } } }
     });
   }
 }
@@ -1001,10 +997,10 @@ function deltaInner(d) {
 function renderKpis() {
   const k = DATA.kpis, comp = DATA.comp;
   const cards = [
-    { label:'Ventas mes', value:k.ventas_mes, color:'green', sub:`${k.facturas_ventas} facturas`, delta:comp.ventas.delta_pct, deltaGood: v=>v>=0 },
-    { label:'Gastos mes', value:k.gastos_mes, color:'red', sub:`${k.facturas_gastos} facturas`, delta:comp.gastos.delta_pct, deltaGood: v=>v<0 },
-    { label:'IVA repercutido', value:k.iva_mes, color:'blue', sub:'Soportado sobre ventas', delta:null },
-    { label:'Delivery', value:k.delivery_mes, color:'yellow', sub:'Comisiones reparto', delta:null },
+    { label:'Ventas netas', value:k.ventas_mes, color:'green', sub:`${k.facturas_ventas} tickets · mes actual`, delta:comp.ventas.delta_pct, deltaGood: v=>v>=0 },
+    { label:'Gastos operativos', value:k.gastos_mes, color:'red', sub:`${k.facturas_gastos} facturas · mes actual`, delta:comp.gastos.delta_pct, deltaGood: v=>v<0 },
+    { label:'Margen operativo', value:k.margen_mes, color:'blue', sub:'Ventas menos gastos', delta:comp.margen.delta_pct, deltaGood: v=>v>=0 },
+    { label:'Tickets procesados', value:k.facturas_ventas, color:'yellow', sub:'Ventas contabilizadas', delta:null },
   ];
   $('#kpis').innerHTML = cards.map((c,i) => {
     let dhtml = '';
@@ -1064,20 +1060,19 @@ function emptyState(title, desc, err=false) {
 }
 
 function renderCharts() {
-  // v8.0: si los datos aún no han llegado, no pintar (evita canvas vacíos)
+  // Audit fix: si los datos no han llegado, no pintar (evita canvas vacíos).
   if (!DATA || !DATA.kpis) return;
   const c = chartColors();
   const tip = { enabled:false, external: externalTooltip() };
 
   // 1. Stacked canales x mes (con filtro)
-  let canalMeses = DATA.canalMeses || [];
+  let canalMeses = DATA.canalMeses;
   if (canalFilter !== 'all') canalMeses = canalMeses.filter(r => r.canal === canalFilter);
   const meses = [...new Set(canalMeses.map(r=>r.mes))].sort();
   const canales = canalFilter !== 'all' ? [canalFilter] : [...new Set(canalMeses.map(r=>r.canal))];
   const byMes = {}; canalMeses.forEach(r => { (byMes[r.mes] = byMes[r.mes]||{})[r.canal] = r.total_eur; });
   const ds = canales.map(cn => ({
-    label: (ICONS[cn] || '') + ' ' + (LABELS[cn] || cn),
-    icon: ICONS[cn],
+    label: ICONS[cn]+' '+LABELS[cn], icon: ICONS[cn],
     data: meses.map(m => byMes[m]?.[cn]||0),
     backgroundColor: COLORS[cn]||'#64748b', stack:'s', borderRadius:4, borderSkipped:false,
   }));
@@ -1090,7 +1085,7 @@ function renderCharts() {
   });
 
   // 2. Tendencia diaria (+ MoM opcional)
-  const dia = DATA.dia || [];
+  const dia = DATA.dia;
   const labels = dia.map(r=>r.dia.slice(5));
   const datasets = [{
     label:'Ingresos/día', data: dia.map(r=>r.total_eur),
@@ -1113,17 +1108,14 @@ function renderCharts() {
       scales:{ x:{ grid:{display:false}, ticks:{color:c.ticks, maxTicksLimit:10} }, y:{ grid:{color:c.grid}, border:{display:false}, ticks:{color:c.ticks, callback:v=>fmt(v)} } } }
   });
 
-  // v8.0: reintento si los contenedores estaban ocultos al pintar
-  // (común cuando loadAll() se ejecuta antes de que la vista Dashboard
-  // sea visible). Chart.js mide altura 0 → chart invisible.
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      const cw = $('#chart-canales');
-      const dw = $('#chart-diario');
-      const cwEmpty = cw && cw.clientHeight < 20;
-      const dwEmpty = dw && dw.clientHeight < 20;
-      if (cwEmpty && charts.canales) { charts.canales.resize(); }
-      if (dwEmpty && charts.diario) { charts.diario.resize(); }
+  // Audit fix: reintento si los contenedores estaban ocultos al pintar
+  // (Chart.js mide altura 0 cuando la vista Dashboard no está visible).
+  requestAnimationFrame(function() {
+    requestAnimationFrame(function() {
+      var cw = $('#chart-canales');
+      var dw = $('#chart-diario');
+      if (cw && cw.clientHeight < 20 && charts.canales) charts.canales.resize();
+      if (dw && dw.clientHeight < 20 && charts.diario) charts.diario.resize();
     });
   });
 }
@@ -1158,11 +1150,16 @@ function renderRest() {
   renderBars('#proveedores', DATA.proveedores, r=>'#8b5cf6', r=>(r.proveedor||'').slice(0,18), r=>r.total_eur, r=>`${r.facturas} fc.`);
   // Categorías
   renderBars('#categorias', DATA.categorias, r=>r.color||'#6b7280', r=>(r.categoria||'').slice(0,15), r=>r.total_eur, r=>`${r.facturas} fc.`);
-  // Facturas recientes
-  $('#facturas').innerHTML = `<div class="table-wrap"><table>
-    <thead><tr><th>Nº</th><th>Fecha</th><th>Cliente</th><th>Canales</th><th class="num">Total</th></tr></thead>
-    <tbody>${DATA.facturas.map(f=>{const tags=(f.canales||'').split(',').map(x=>x.trim()).filter(Boolean).map(x=>`<span class="tag tag-${x}">${ICONS[x]||''} ${x}</span>`).join(' ');return `<tr><td>${esc(f.number||'')}</td><td>${esc(f.fecha||'')}</td><td>${esc(f.cliente||'')}</td><td>${tags}</td><td class="num"><b>${eur(f.total_eur)}</b></td></tr>`;}).join('')}</tbody>
-  </table></div>`;
+
+}
+
+function ensureHomeDataBlocks() {
+  if (DATA.proveedores?.length && !$('#proveedores')?.children.length) {
+    renderBars('#proveedores', DATA.proveedores, r=>'#8b5cf6', r=>(r.proveedor||'').slice(0,18), r=>r.total_eur, r=>`${r.facturas} fc.`);
+  }
+  if (DATA.categorias?.length && !$('#categorias')?.children.length) {
+    renderBars('#categorias', DATA.categorias, r=>r.color||'#6b7280', r=>(r.categoria||'').slice(0,15), r=>r.total_eur, r=>`${r.facturas} fc.`);
+  }
 }
 
 function buildCanalFilter() {
@@ -1175,15 +1172,15 @@ function buildCanalFilter() {
 
 // ── Carga principal ──────────────────────────────────────────────────────
 async function loadAll(opts = {}) {
-  const [kpis, comp, canalMes, canalMeses, margen, ingresos, proveedores, facturas, categorias, localesMes, dia, spark6m] = await Promise.all([
+  const [kpis, comp, canalMes, canalMeses, margen, ingresos, proveedores, categorias, localesMes, dia, spark6m] = await Promise.all([
     getJSON('/api/kpis'), getJSON('/api/kpis-comparativa'),
     getJSON('/api/ventas-por-canal'), getJSON('/api/canal-por-mes'),
     getJSON('/api/margen-por-mes'), getJSON('/api/ingresos-por-mes'),
-    getJSON('/api/gastos-por-proveedor'), getJSON('/api/facturas-recientes'),
-    getJSON('/api/gastos-por-categoria'), getJSON('/api/ventas-por-local'),
+    getJSON('/api/gastos-por-proveedor'), getJSON('/api/gastos-por-categoria'),
+    getJSON('/api/ventas-por-local'),
     getJSON('/api/ventas-por-dia?days=30'), getJSON('/api/ingresos-6m'),
   ]);
-  DATA = { kpis, comp, canalMes, canalMeses, margen, ingresos, proveedores, facturas, categorias, localesMes, dia, spark6m };
+  DATA = { kpis, comp, canalMes, canalMeses, margen, ingresos, proveedores, categorias, localesMes, dia, spark6m };
   // Mostrar "última sync"
   $('#syncTime').textContent = 'hace unos segundos';
   renderHero();
@@ -1192,6 +1189,7 @@ async function loadAll(opts = {}) {
   renderCharts();
   renderRest();
   wireBarDrillDown();
+  requestAnimationFrame(ensureHomeDataBlocks);
 }
 
 // ── MoM toggle (chart diario) ────────────────────────────────────────────
@@ -1220,7 +1218,7 @@ function initChat() {
 function renderSuggest() { $('#chatSuggest').innerHTML = SUGGEST.map(s=>`<button>${s}</button>`).join(''); $$('#chatSuggest button').forEach(b=>b.onclick=()=>{$('#chatText').value=b.textContent;sendMsg();}); }
 function saveHist(){ try{ localStorage.setItem('liados_chat_hist',JSON.stringify(chatHistory.slice(-20))); }catch(e){} }
 function addMsg(text,cls,extra){ const d=document.createElement('div'); d.className='msg '+cls; d.innerHTML=text+(extra||''); $('#chatBody').appendChild(d); d.scrollIntoView({behavior:'smooth'}); return d; }
-function renderHistory(){ $('#chatBody').innerHTML=''; if(chatHistory.length===0){$('#chatBody').innerHTML='<div class="msg bot">¡Hola! 👋 Soy el asistente de Liados. Pregúntame sobre ventas, gastos, productos o reservas.</div>';} else chatHistory.forEach(m=>addMsg(m.role==='user'?esc(m.content):mdToHtml(m.content), m.role==='user'?'user':'bot')); }
+function renderHistory(){ $('#chatBody').innerHTML=''; if(chatHistory.length===0){$('#chatBody').innerHTML='<div class="msg bot">¡Hola! ' + icon('message-circle', 'ico ico-xs') + ' Soy el asistente de Liados. Pregúntame sobre ventas, gastos, productos o reservas.</div>';} else chatHistory.forEach(m=>addMsg(m.role==='user'?esc(m.content):mdToHtml(m.content), m.role==='user'?'user':'bot')); }
 
 async function sendMsg(){
   const txt=$('#chatText'); const msg=txt.value.trim(); if(!msg) return;
@@ -1292,7 +1290,7 @@ async function sendMsg(){
           toolsUsed.push(payload.name);
           // Crear/actualizar chips de tools en la burbuja bot (si ya existe) o en una provisional
           if (!toolsChip) { toolsChip = document.createElement('div'); toolsChip.className='msg bot'; toolsChip.style.background='transparent'; toolsChip.style.border='none'; toolsChip.style.padding='0'; toolsChip.style.alignSelf='flex-start'; toolsChip.innerHTML='<div class="tools" style="border:none;padding:0;margin:0"></div>'; $('#chatBody').appendChild(toolsChip); }
-          toolsChip.querySelector('.tools').innerHTML += `<span class="tchip">🔧 ${esc(payload.name)}</span>`;
+          toolsChip.querySelector('.tools').innerHTML += `<span class="tchip">${icon('wrench', 'ico ico-xs')} ${esc(payload.name)}</span>`;
           toolsChip.scrollIntoView({behavior:'smooth'});
         } else if (type === 'token') {
           if (typing.parentNode) typing.remove();
@@ -1306,7 +1304,7 @@ async function sendMsg(){
           pending = payload.pending_confirmation;
           // Adjuntar chips de tools a la burbuja final si existen
           if (toolsUsed.length) {
-            const chips = `<div class="tools">${toolsUsed.map(t=>`<span class="tchip">🔧 ${esc(t)}</span>`).join('')}</div>`;
+            const chips = `<div class="tools">${toolsUsed.map(t=>`<span class="tchip">${icon('wrench', 'ico ico-xs')} ${esc(t)}</span>`).join('')}</div>`;
             if (botMsg) botMsg.innerHTML = mdToHtml(fullReply) + chips;
             if (toolsChip) toolsChip.remove();
           }
@@ -1316,7 +1314,7 @@ async function sendMsg(){
         } else if (type === 'error') {
           if (typing.parentNode) typing.remove();
           if (toolsChip) toolsChip.remove();
-          addMsg('⚠️ '+(payload.message||'Error del agente'),'error');
+          addMsg(icon('alert-triangle', 'ico ico-xs') + ' ' + (payload.message||'Error del agente'), 'error')
           return;
         }
       }
@@ -1346,7 +1344,7 @@ async function sendMsg(){
 // v6.0.2: Fallback al endpoint no-stream cuando el stream falla o se agota el timeout.
 async function _fallbackNonStream(originalMsg) {
   try {
-    addMsg('🔄 Conectando con modo alternativo...', 'bot');
+    addMsg(icon('refresh-cw', 'ico ico-xs') + ' Conectando con modo alternativo...', 'bot');
     const r = await _fetchAuth('/api/chat', { method:'POST', json:{message: originalMsg, history: chatHistory} });
     if (!r.ok) {
       addMsg('❌ Error HTTP '+r.status+' (rate limit o servidor caído). Espera unos segundos.', 'error');
@@ -1374,7 +1372,7 @@ async function _fallbackNonStream(originalMsg) {
 
 function showConfirm(p){
   const box=document.createElement('div'); box.className='confirm-box';
-  box.innerHTML=`<div><b>⚠️ ${esc(p.action)}</b><br>${esc(p.message||'Esta acción requiere confirmación.')}</div><div class="btns"><button class="yes">Confirmar</button><button class="no">Cancelar</button></div>`;
+  box.innerHTML=`<div><b>${icon('alert-triangle', 'ico ico-xs')} ${esc(p.action)}</b><br>${esc(p.message||'Esta acción requiere confirmación.')}</div><div class="btns"><button class="yes">Confirmar</button><button class="no">Cancelar</button></div>`;
   $('#chatBody').appendChild(box); box.scrollIntoView();
   box.querySelector('.yes').onclick=async()=>{box.innerHTML='Ejecutando…';try{const r=await _fetchAuth('/api/chat/confirm',{method:'POST',json:{confirmation_token:pendingToken}});const d=await r.json().catch(()=>({error:'Respuesta no es JSON valido'}));box.remove();addMsg('```json\n'+JSON.stringify(d,null,2)+'\n```','bot');pendingToken=null;}catch(e){box.remove();addMsg('Error al confirmar: '+esc(e.message),'error');pendingToken=null;}};
   box.querySelector('.no').onclick=async()=>{try{await _fetchAuth('/api/chat/cancel',{method:'POST',json:{confirmation_token:pendingToken}});box.remove();addMsg('Acción cancelada.','bot');}catch(e){box.remove();addMsg('No se pudo cancelar (la acción puede seguir pendiente en el servidor): '+esc(e.message),'error');}pendingToken=null;};
@@ -1462,7 +1460,7 @@ async function openDrill(type, name) {
   name = (name || '').trim();
   if (!name) return;
   openModal('drillModal');
-  $('#drillTitle').textContent = (type==='proveedor' ? '🧾 ' : '📦 ') + name;
+  $('#drillTitle').textContent = (type==='proveedor' ? icon('receipt', 'ico ico-xs') + ' ' : icon('package', 'ico ico-xs') + ' ') + name;
   $('#drillBody').innerHTML = '<div class="search-empty">Cargando…</div>';
   try {
     const url = type==='proveedor'
@@ -1533,7 +1531,7 @@ function initShortcuts() {
       pendingG = false;
       clearTimeout(pendingGTimer);
       const k = e.key.toLowerCase();
-      const map = { d:'dashboard', v:'ventas', g:'gastos', a:'alertas', b:'desglose', c:'config' };
+      const map = { d:'dashboard', v:'ventas', g:'gastos', b:'desglose', c:'config' };
       if (map[k]) { e.preventDefault(); switchView(map[k]); return; }
     }
     if (e.key.toLowerCase() === 'g') {
@@ -1565,8 +1563,6 @@ function init() {
   applyChartTheme();
   $('#themeToggle').onclick = toggleTheme;
   tick(); setInterval(tick, 30000);
-  // v7.1 PRO: badge de alertas en sidebar SI se carga al init() (no esperar a abrir vista)
-  loadAlertBadge().catch(() => {});
 
   loadAll().catch(e => {
     $$('.card-body, .kpis, .hero').forEach(el => { el.style.opacity=1; });
@@ -1630,7 +1626,8 @@ if (document.readyState === 'loading') {
 // ── v8.0 PRO: Desglose Excel-style ──────────────────────────────────
 
 const DG = {
-  activeTab: 'resumen',
+  // La entrada principal replica directamente el libro de los vídeos.
+  activeTab: 'pyg',
   filters: {},
   _tabs: null,
 };
@@ -1685,12 +1682,14 @@ async function renderDesglose() {
   wireCalendarControls();
   wireCompareControls();
 
-  // Cargar pestaña activa (Resumen por defecto)
-  loadDesgloseTab(DG.activeTab);
+  // Abrir directamente el libro financiero; el resto queda disponible
+  // como herramientas auxiliares en las pestañas superiores.
+  switchDesgloseTab(DG.activeTab);
 }
 
 function switchDesgloseTab(tabName) {
   DG.activeTab = tabName;
+  document.body.classList.toggle('cr-workbook-active', tabName === 'pyg');
   DG._tabs.forEach(t => t.classList.toggle('active', t.getAttribute('data-tab') === tabName));
   $$('.excel-panel').forEach(p => p.classList.toggle('active', p.getAttribute('data-tab-panel') === tabName));
   loadDesgloseTab(tabName);
@@ -1703,6 +1702,7 @@ async function loadDesgloseTab(tabName) {
     case 'top': await loadDesgloseTop(); break;
     case 'calendario': await loadDesgloseCalendar(); break;
     case 'comparar': await loadDesgloseCompare(); break;
+    case 'pyg': await loadCuentaResultados(); break;
   }
   // mostrar timestamp de generación
   const el = $('#dg-gen-at');
@@ -1778,7 +1778,7 @@ async function loadDesgloseMatrix() {
     const d = await getJSON('/api/gastos/desglose/matrix?' + params.toString());
 
     if (!d.cells || d.cells.length === 0) {
-      wrap.innerHTML = '<div class="excel-empty"><div class="ico">📭</div><h3>Sin datos</h3><p>No hay facturas que coincidan con los filtros actuales.</p></div>';
+      wrap.innerHTML = '<div class="excel-empty"><div class="ico">' + icon('mail', 'ico ico-xs') + '</div><h3>Sin datos</h3><p>No hay facturas que coincidan con los filtros actuales.</p></div>';
       return;
     }
 
@@ -1863,7 +1863,7 @@ async function loadDesgloseTop() {
     const d = await getJSON('/api/gastos/desglose/top?' + params.toString());
 
     if (!d.items || d.items.length === 0) {
-      wrap.innerHTML = '<div class="excel-empty"><div class="ico">🏆</div><h3>Sin datos</h3></div>';
+      wrap.innerHTML = '<div class="excel-empty"><div class="ico">' + icon('trophy', 'ico ico-xs') + '</div><h3>Sin datos</h3></div>';
       return;
     }
 
@@ -2046,7 +2046,7 @@ async function loadDesgloseCompare() {
     const d = await getJSON('/api/gastos/desglose/compare?' + params.toString());
 
     if (!d.items || d.items.length === 0) {
-      wrap.innerHTML = '<div class="excel-empty"><div class="ico">⚖️</div><h3>Sin datos comparables</h3><p>Ajusta los rangos de fechas.</p></div>';
+      wrap.innerHTML = '<div class="excel-empty"><div class="ico">' + icon('scale', 'ico ico-xs') + '</div><h3>Sin datos comparables</h3><p>Ajusta los rangos de fechas.</p></div>';
       return;
     }
 
@@ -2179,7 +2179,7 @@ async function loadProductosStats() {
       </div>
     `;
   } catch(e) {
-    grid.innerHTML = `<div class="pr-error"><h3>⚠️ No se pudo cargar estadísticas</h3><p>${esc(e.message)}</p></div>`;
+    grid.innerHTML = `<div class="pr-error"><h3>${icon('alert-triangle', 'ico ico-xs')} No se pudo cargar estadísticas</h3><p>${esc(e.message)}</p></div>`;
   }
 }
 
@@ -2200,7 +2200,7 @@ async function loadProductosList() {
     const el = $('#pr-gen-at');
     if (el) el.textContent = `Última actualización: ${new Date().toLocaleString('es-ES')}`;
   } catch(e) {
-    list.innerHTML = `<div class="pr-error"><h3>⚠️ Error cargando catálogo</h3><p>${esc(e.message)}</p></div>`;
+    list.innerHTML = `<div class="pr-error"><h3>${icon('alert-triangle', 'ico ico-xs')} Error cargando catálogo</h3><p>${esc(e.message)}</p></div>`;
   }
 }
 
@@ -2214,7 +2214,7 @@ function renderProductosList() {
   else if (sort === 'price-desc') items.sort((a,b) => (b.price||0) - (a.price||0));
   
   if (items.length === 0) {
-    list.innerHTML = `<div class="pr-empty"><h3>📦 Sin productos</h3><p>No se encontraron productos que coincidan con los filtros.</p></div>`;
+    list.innerHTML = `<div class="pr-empty"><h3>${icon('package', 'ico ico-xs')} Sin productos</h3><p>No se encontraron productos que coincidan con los filtros.</p></div>`;
     return;
   }
 
@@ -2263,10 +2263,10 @@ async function openProductoDetail(productId) {
             ✓ Marcar disponible
           </button>
           <button class="pr-mini-btn danger" onclick="toggleProducto('${esc(p.id)}', false)" ${!p.available ? 'disabled style="opacity:.5"' : ''}>
-            ✕ Marcar no disponible
+            '×' Marcar no disponible
           </button>
           <button class="pr-mini-btn" onclick="chatPrefill('Analiza el producto ${esc(p.name.replace(/'/g, "\\'"))} con ID ${p.id}')">
-            💬 Preguntar al chat
+            icon('message-circle', 'ico ico-xs') Preguntar al chat
           </button>
         </div>
       </div>
@@ -2292,7 +2292,7 @@ async function toggleProducto(productId, available) {
       toast(`✓ Disponibilidad actualizada`, 'success');
       await loadProductosList();
     } else {
-      toast('⚠️ La operación requiere confirmación', 'warn');
+      toast(icon('alert-triangle', 'ico ico-xs') + ' La operación requiere confirmación', 'warn');
     }
   } catch(e) {
     toast('Error: ' + e.message, 'error');
@@ -2320,7 +2320,7 @@ async function loadDesglosePyg() {
   const tbody = $('#pyg-tbody');
   const issuesEl = $('#pyg-issues');
   if (!fromVal || !toVal) {
-    toast('⚠️ Selecciona Desde y Hasta en los filtros globales', 'warn');
+    toast(icon('alert-triangle', 'ico ico-xs') + ' Selecciona Desde y Hasta en los filtros globales', 'warn');
     return;
   }
 
@@ -2489,20 +2489,21 @@ function wirePygControls() {
     };
   }
 
-  // v8.0: rango por defecto = mes actual (en lugar de un año entero)
+  // Audit fix: rango por defecto = mes actual (en lugar de 1 año entero)
   const fromInput = $('#dg-from');
   const toInput = $('#dg-to');
   if (fromInput && !fromInput.dataset.userTouched) {
     const today = new Date();
     const y = today.getFullYear();
     const m = today.getMonth(); // 0-based
-    const firstOfMonth = `${y}-${String(m + 1).padStart(2, '0')}-01`;
+    const firstOfMonth = y + '-' + String(m + 1).padStart(2, '0') + '-01';
     const lastOfMonth = new Date(y, m + 1, 0);
-    const lastIso = `${lastOfMonth.getFullYear()}-${String(lastOfMonth.getMonth() + 1).padStart(2, '0')}-${String(lastOfMonth.getDate()).padStart(2, '0')}`;
+    const lastIso = lastOfMonth.getFullYear() + '-' +
+      String(lastOfMonth.getMonth() + 1).padStart(2, '0') + '-' +
+      String(lastOfMonth.getDate()).padStart(2, '0');
     fromInput.value = firstOfMonth;
     if (toInput) toInput.value = lastIso;
   }
-  // Marcar como "tocado por el usuario" cuando cambie (para no pisar la elección)
   if (fromInput && !fromInput.dataset.touchWired) {
     fromInput.dataset.touchWired = '1';
     fromInput.addEventListener('input', () => { fromInput.dataset.userTouched = '1'; });
@@ -2516,25 +2517,25 @@ function wirePygControls() {
     pygTab.addEventListener('click', () => {
       // Espera a que el panel esté visible
       setTimeout(() => {
-        if ($('#pyg-tbody').children.length <= 1) {
+        const legacyPygBody = $('#pyg-tbody');
+        if (legacyPygBody && legacyPygBody.children.length <= 1) {
           loadDesglosePyg();
         }
       }, 100);
     });
   }
 
-  // v8.0: también auto-cargar al entrar por primera vez en la vista Desglose
+  // Audit fix: auto-cargar al entrar a la vista Desglose si la tab PYG
+  // está activa (evita tener que pulsar 'Calcular PYG' manualmente)
   if (!window._pygAutoWired) {
     window._pygAutoWired = true;
     const desgloseNav = $$('.nav-item').find(n => n.getAttribute('data-view') === 'desglose');
     if (desgloseNav) {
       desgloseNav.addEventListener('click', () => {
-        // Pequeño delay para asegurar que la vista está visible
         setTimeout(() => {
-          // Si la pestaña PYG está activa (la última seleccionada), cargar.
-          const activeTab = $$('.excel-tab.active');
-          if (activeTab.length === 0) return;
-          const isPyg = activeTab.some(t => t.getAttribute('data-tab') === 'pyg');
+          const activeTabs = $$('.excel-tab.active');
+          if (activeTabs.length === 0) return;
+          const isPyg = activeTabs.some(t => t.getAttribute('data-tab') === 'pyg');
           if (isPyg && $('#pyg-tbody') && $('#pyg-tbody').children.length <= 1) {
             loadDesglosePyg();
           }
@@ -2548,3 +2549,172 @@ function wirePygControls() {
 document.addEventListener('DOMContentLoaded', () => {
   setTimeout(wirePygControls, 200);
 });
+
+
+// ── Libro financiero reconstruido desde la referencia Excel ─────────
+const CR = { data: null, sheet: 'resumen', month: '' };
+
+function crMonthLabel(key) {
+  const [y,m] = key.split('-');
+  const names = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+  return `${names[Number(m)-1]}-${y.slice(2)}`;
+}
+function crNumber(value, percentage=false) {
+  if (value == null || Number.isNaN(Number(value))) return '—';
+  let n = Number(value);
+  if (Math.abs(n) < 1e-9) n = 0;
+  if (percentage) {
+    const pct = n * 100;
+    const digits = pct !== 0 && Math.abs(pct) < 1 ? 1 : 0;
+    return `${pct.toLocaleString('es-ES',{minimumFractionDigits:digits,maximumFractionDigits:digits})}%`;
+  }
+  const rounded = Math.round(Math.abs(n)).toString().replace(/\B(?=(\d{3})+(?!\d))/g,'.');
+  return `${n < 0 ? '-' : ''}${rounded}`;
+}
+function crColumnName(index) {
+  let name = '';
+  for (let n = index + 1; n; n = Math.floor((n - 1) / 26)) name = String.fromCharCode(65 + ((n - 1) % 26)) + name;
+  return name;
+}
+
+function crRenderRow(row, columns, parentCode=null) {
+  const percentage = row.kind === 'percentage';
+  const unavailable = row.availability === 'unavailable';
+  const classes = [`cr-kind-${row.kind || 'line'}`, row.section ? 'cr-section' : '', parentCode ? 'cr-child' : ''].filter(Boolean).join(' ');
+  const parentAttr = parentCode ? ` data-parent="${esc(parentCode)}" style="display:none"` : '';
+  const code = esc(row.code);
+  let html = `<tr class="${classes}" data-code="${code}"${parentAttr}>`;
+  html += `<td class="cr-label" style="padding-left:${16 + (row.level||0)*18}px">${row.children && row.children.length ? `<button class="cr-chevron" aria-label="Mostrar desglose">+</button>` : ''}<span>${esc(row.label)}</span>${unavailable ? '<small class="cr-na">N/D</small>' : ''}</td>`;
+  columns.forEach(col => {
+    const value = unavailable ? null : (row.values || {})[col];
+    html += `<td class="cr-num ${value < 0 ? 'cr-negative' : ''}">${crNumber(value, percentage)}</td>`;
+  });
+  html += '</tr>';
+  (row.children || []).forEach(child => { html += crRenderRow(child, columns, row.code); });
+  return html;
+}
+
+function crTableHead(columns, title) {
+  return `<tr class="cr-head-month"><th>${esc(title)}</th>${columns.map(c => `<th>${c === 'YTD' ? 'YTD' : crMonthLabel(c)}</th>`).join('')}</tr>`;
+}
+
+function crCollectProviders(rows, columns) {
+  const merged = new Map();
+  function visit(row) {
+    if (row.kind === 'provider') {
+      const key = row.provider_key || row.label;
+      if (!merged.has(key)) merged.set(key, {code:`provider.${key}`, label:row.label, kind:'provider', level:0, values:{}});
+      const target = merged.get(key);
+      columns.forEach(col => { target.values[col] = Number(target.values[col] || 0) + Number((row.values || {})[col] || 0); });
+    }
+    (row.children || []).forEach(visit);
+  }
+  (rows || []).forEach(visit);
+  return [...merged.values()].sort((a,b) => Math.abs(b.values.YTD || 0) - Math.abs(a.values.YTD || 0));
+}
+
+function crCategoryRows(rows) {
+  return (rows || []).filter(row => row.section || row.kind === 'percentage').map(row => ({...row, children: row.children || []}));
+}
+
+function crRenderSheet(sheet=CR.sheet) {
+  if (!CR.data) return;
+  CR.sheet = sheet;
+  $$('.cr-sheet-tab').forEach(tab => {
+    const active = tab.dataset.crSheet === sheet;
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  const allColumns = CR.data.columns || [];
+  let columns = allColumns, rows = CR.data.rows || [], title = 'A. Cuenta de resultados';
+  if (sheet === 'resumen') {
+    const monthCols = allColumns.filter(c => c !== 'YTD');
+    columns = [CR.month || monthCols.at(-1), 'YTD'].filter(Boolean);
+    rows = (CR.data.rows || []).filter(row => row.section || row.kind === 'percentage');
+    title = 'Resumen Ejecutivo';
+  } else if (sheet === 'evolucion') {
+    title = 'Evolución Mensual';
+  } else if (sheet === 'proveedores') {
+    rows = crCollectProviders(CR.data.rows || [], allColumns);
+    if (CR.month) columns = [CR.month, 'YTD'];
+    title = 'Análisis Proveedores';
+  } else if (sheet === 'categorias') {
+    rows = crCategoryRows(CR.data.rows || []);
+    if (CR.month) columns = [CR.month, 'YTD'];
+    title = 'Por Categorías';
+  }
+  $('#cr-head').innerHTML = crTableHead(columns, title);
+  const body = $('#cr-body');
+  body.innerHTML = rows.map(row => crRenderRow(row, columns)).join('') || `<tr><td colspan="${columns.length + 1}" class="muted">Sin datos para esta vista.</td></tr>`;
+  body.classList.remove('cr-sheet-enter');
+  void body.offsetWidth;
+  body.classList.add('cr-sheet-enter');
+}
+async function loadCuentaResultados() {
+  const today = new Date().toISOString().slice(0,10);
+  const selectedFrom = $('#dg-from')?.value || '';
+  const selectedTo = $('#dg-to')?.value || today;
+  const to = selectedTo > today ? today : selectedTo;
+  const targetYear = Number(to.slice(0,4)) || new Date().getFullYear();
+  const defaultFrom = `${targetYear}-01-01`;
+  const from = selectedFrom && selectedFrom <= to ? selectedFrom : defaultFrom;
+  const cuenta = $('#dg-cuenta')?.value;
+  const head = $('#cr-head'), body = $('#cr-body');
+  if (!head || !body || !from || !to) return;
+  body.innerHTML = '<tr><td class="muted">Calculando cuenta de resultados…</td></tr>';
+  try {
+    const params = new URLSearchParams({date_from: from, date_to: to});
+    if (cuenta) params.set('cuenta', cuenta);
+    const data = await getJSON('/api/gastos/cuenta-resultados?' + params.toString());
+    CR.data = data;
+    const monthFilter = $('#cr-month-filter');
+    if (monthFilter) {
+      const months = (data.columns || []).filter(c => c !== 'YTD');
+      const previous = CR.month;
+      monthFilter.innerHTML = '<option value="">Todos los meses</option>' + months.map(c => `<option value="${esc(c)}">${crMonthLabel(c)}</option>`).join('');
+      CR.month = months.includes(previous) ? previous : '';
+      monthFilter.value = CR.month;
+      if (!monthFilter._wired) {
+        monthFilter._wired = true;
+        monthFilter.onchange = () => { CR.month = monthFilter.value; crRenderSheet(CR.sheet); };
+      }
+    }
+    crRenderSheet(CR.sheet);
+    $('#cr-meta').textContent = `REAL · ${data.period.from} → ${data.period.to} · ${data.rows_used || 0} registros · importes en €`;
+    const issues = (data.issues || []).filter(i => i.level && i.level !== 'info');
+    $('#cr-issues').innerHTML = issues.map(i => `<span class="cr-issue">${icon('alert-triangle','ico ico-xs')} ${esc(i.message)}</span>`).join('');
+    const reload = $('#cr-reload');
+    if (reload && !reload._wired) { reload._wired = true; reload.onclick = loadCuentaResultados; }
+    const expand = $('#cr-expand-all');
+    if (expand && !expand._wired) {
+      expand._wired = true;
+      expand.onclick = () => {
+        const hidden = $$('.cr-child').some(el => el.style.display === 'none');
+        $$('.cr-child').forEach(el => { el.style.display = hidden ? 'table-row' : 'none'; });
+        expand.textContent = hidden ? 'Ocultar detalle' : 'Expandir detalle';
+      };
+    }
+    body.onclick = (event) => {
+      const cell = event.target.closest('td');
+      if (cell) {
+        $$('#cr-body td.cr-selected').forEach(el => el.classList.remove('cr-selected'));
+        cell.classList.add('cr-selected');
+      }
+      const button = event.target.closest('.cr-chevron');
+      if (!button) return;
+      const row = button.closest('tr');
+      const code = row?.dataset.code;
+      const children = $$(`.cr-child[data-parent="${CSS.escape(code)}"]`);
+      const show = children.some(el => el.style.display === 'none');
+      children.forEach(el => { el.style.display = show ? 'table-row' : 'none'; });
+      button.textContent = show ? '−' : '+';
+    };
+    $$('.cr-sheet-tab').forEach(tab => {
+      if (tab._wired) return;
+      tab._wired = true;
+      tab.onclick = () => crRenderSheet(tab.dataset.crSheet);
+    });
+  } catch (e) {
+    body.innerHTML = `<tr><td class="state error">${esc(e.message)}</td></tr>`;
+  }
+}
